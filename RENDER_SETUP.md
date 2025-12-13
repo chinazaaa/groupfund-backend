@@ -70,6 +70,9 @@ FRONTEND_URL=<your-frontend-url>
 
 # Optional: Expo Push Notifications
 # EXPO_ACCESS_TOKEN=<your-expo-access-token>
+
+# Optional: Migration Secret Token (for API-based migrations)
+# MIGRATION_SECRET_TOKEN=<generate-a-secure-token>
 ```
 
 **Important Notes:**
@@ -81,41 +84,77 @@ FRONTEND_URL=<your-frontend-url>
 
 ## Step 4: Run Database Migrations
 
-You have two options to run migrations:
+**Note:** If you're on Render's free tier, Shell access is not available. Use one of the options below.
 
-### Option A: Using Render Shell (Recommended)
+### Option A: Using Build Command (Recommended for Free Tier)
+
+Add migrations to your build command so they run automatically on each deploy:
+
+1. Go to your backend service settings on Render
+2. Find **"Build Command"** field
+3. Set it to:
+   ```bash
+   npm install && npm run migrate:all
+   ```
+4. Click **"Save Changes"**
+5. Trigger a new deploy (push a commit or manually redeploy)
+6. Migrations will run automatically during the build (safe due to `IF NOT EXISTS` clauses)
+
+### Option B: Using Migration API Endpoint (For Free Tier)
+
+Run migrations via an API call:
+
+1. **First, set a migration secret token** in your Render environment variables:
+   ```env
+   MIGRATION_SECRET_TOKEN=your-secret-token-here
+   ```
+   Generate a secure token:
+   ```bash
+   openssl rand -base64 32
+   ```
+
+2. **Deploy your code** (the migration endpoint is now available)
+
+3. **Call the migration endpoint** using curl or Postman:
+   ```bash
+   curl -X POST https://groupfund-backend.onrender.com/api/migrations/run \
+     -H "Content-Type: application/json" \
+     -H "x-migration-token: your-secret-token-here" \
+     -d '{}'
+   ```
+
+4. **Check migration status**:
+   ```bash
+   curl https://groupfund-backend.onrender.com/api/migrations/status
+   ```
+
+**Security Note:** After running migrations, you can remove the migration endpoint or keep it secured with the token for future use.
+
+### Option C: Run from Local Machine (For Free Tier)
+
+Connect to your Render database from your local machine:
+
+1. **Get your External Database URL** from Render database dashboard
+2. **Set it locally** (temporarily in your `.env`):
+   ```env
+   DATABASE_URL=<your-external-database-url>
+   ```
+3. **Run migrations locally**:
+   ```bash
+   npm run migrate:all
+   ```
+4. **Remove the DATABASE_URL** from local `.env` after migrations complete
+
+### Option D: Using Render Shell (Paid Plans Only)
+
+If you upgrade to a paid plan with Shell access:
 
 1. Go to your backend service on Render
 2. Click on **"Shell"** tab
 3. Run the migration command:
    ```bash
-   npm run migrate
+   npm run migrate:all
    ```
-4. Then run the comprehensive migration script:
-   ```bash
-   node migrations/runAllMigrations.js
-   ```
-
-### Option B: Using Build Command
-
-Add the migration to your build command in Render:
-
-1. Go to your backend service settings
-2. Find **"Build Command"**
-3. Set it to:
-   ```bash
-   npm install && npm run migrate && node migrations/runAllMigrations.js
-   ```
-4. This will run migrations every time you deploy (safe due to `IF NOT EXISTS` clauses)
-
-### Option C: One-Time Migration Script
-
-If you prefer to run migrations manually via Render's shell:
-
-```bash
-# Connect to your database via Render Shell
-node migrations/runAllMigrations.js
-```
 
 ## Step 5: Verify Database Setup
 
