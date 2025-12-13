@@ -1,0 +1,58 @@
+const pool = require('../config/database');
+const fs = require('fs');
+const path = require('path');
+
+// List of migrations in order
+const migrations = [
+  'schema.sql',
+  'add_admin_field.sql',
+  'add_contact_submissions.sql',
+  'add_currency_to_groups.sql',
+  'add_expo_push_token.sql',
+  'add_international_payment_fields.sql',
+  'add_notification_preferences.sql',
+  'add_user_active_status.sql',
+  'update_contribution_status.sql',
+  'update_rejected_to_not_received.sql'
+];
+
+async function runAllMigrations() {
+  try {
+    console.log('🚀 Starting database migrations...\n');
+    
+    for (const migration of migrations) {
+      const migrationPath = path.join(__dirname, migration);
+      
+      if (!fs.existsSync(migrationPath)) {
+        console.log(`⚠️  Skipping ${migration} (file not found)`);
+        continue;
+      }
+      
+      console.log(`📄 Running ${migration}...`);
+      const sql = fs.readFileSync(migrationPath, 'utf8');
+      
+      try {
+        await pool.query(sql);
+        console.log(`✅ ${migration} completed successfully\n`);
+      } catch (error) {
+        // If it's a "already exists" error, that's okay for IF NOT EXISTS statements
+        if (error.message.includes('already exists') || 
+            error.message.includes('duplicate') ||
+            error.code === '42P07' || // duplicate_table
+            error.code === '42710') { // duplicate_object
+          console.log(`ℹ️  ${migration} skipped (already applied)\n`);
+        } else {
+          throw error;
+        }
+      }
+    }
+    
+    console.log('✅ All database migrations completed successfully!');
+    process.exit(0);
+  } catch (error) {
+    console.error('❌ Error running migrations:', error);
+    process.exit(1);
+  }
+}
+
+runAllMigrations();

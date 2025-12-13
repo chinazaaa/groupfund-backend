@@ -32,7 +32,7 @@ Node.js and PostgreSQL backend for the GroupFund mobile application.
    
    DB_HOST=localhost
    DB_PORT=5432
-   DB_NAME=birthday_wallet
+   DB_NAME=groupfund
    DB_USER=postgres
    DB_PASSWORD=your_password_here
    
@@ -42,19 +42,19 @@ Node.js and PostgreSQL backend for the GroupFund mobile application.
    RESEND_API_KEY=your_resend_api_key_here
    EMAIL_FROM=GroupFund <onboarding@resend.dev>
    
-   FRONTEND_URL=http://localhost:19006
+   FRONTEND_URL=
    ```
 
 3. **Create PostgreSQL database:**
    ```bash
-   createdb birthday_wallet
+   createdb groupfund
    ```
 
 4. **Run migrations:**
    ```bash
    npm run migrate
    # Also run the admin migration
-   psql -d birthday_wallet -f migrations/add_admin_field.sql
+   psql -d groupfund -f migrations/add_admin_field.sql
    ```
 
 5. **Set up an admin user:**
