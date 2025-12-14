@@ -745,6 +745,338 @@ router.post('/birthdays/trigger-reminders', async (req, res) => {
   }
 });
 
+// Trigger birthday reminders with detailed results (respects user preferences)
+router.post('/birthdays/trigger-reminders-detailed', async (req, res) => {
+  try {
+    const { checkBirthdayReminders } = require('../jobs/birthdayReminders');
+    const { createNotification } = require('../utils/notifications');
+    
+    const results = {
+      today_birthdays: {
+        sent: 0,
+        skipped: 0,
+        details: []
+      },
+      reminders_7_days: {
+        sent: 0,
+        skipped: 0,
+        details: []
+      },
+      reminders_1_day: {
+        sent: 0,
+        skipped: 0,
+        details: []
+      },
+      reminders_same_day: {
+        sent: 0,
+        skipped: 0,
+        details: []
+      }
+    };
+
+    const today = new Date();
+    
+    // Process today's birthdays
+    const todayBirthdayUsers = await pool.query(
+      `SELECT 
+        u.id, u.name, u.email, u.birthday, u.expo_push_token,
+        CASE 
+          WHEN EXISTS (
+            SELECT 1 FROM notifications n 
+            WHERE n.user_id = u.id 
+              AND n.type = 'birthday_wish' 
+              AND n.created_at::date = CURRENT_DATE
+          ) THEN true 
+          ELSE false 
+        END as in_app_notification_sent,
+        CASE 
+          WHEN EXISTS (
+            SELECT 1 FROM birthday_email_log bel 
+            WHERE bel.user_id = u.id 
+              AND bel.sent_at = CURRENT_DATE
+          ) THEN true 
+          ELSE false 
+        END as email_sent
+       FROM users u
+       WHERE u.birthday IS NOT NULL 
+         AND u.is_verified = TRUE
+         AND DATE_PART('month', u.birthday) = DATE_PART('month', CURRENT_DATE)
+         AND DATE_PART('day', u.birthday) = DATE_PART('day', CURRENT_DATE)`
+    );
+
+    for (const user of todayBirthdayUsers.rows) {
+      if (!user.in_app_notification_sent) {
+        await createNotification(
+          user.id,
+          'birthday_wish',
+          '🎉 Happy Birthday!',
+          `Happy Birthday, ${user.name}! 🎂🎉 Wishing you a wonderful day filled with joy and celebration!`,
+          null,
+          user.id
+        );
+        results.today_birthdays.sent++;
+        results.today_birthdays.details.push({
+          user_id: user.id,
+          name: user.name,
+          email: user.email,
+          notification_sent: true
+        });
+      } else {
+        results.today_birthdays.skipped++;
+      }
+
+      if (user.email && !user.email_sent) {
+        const { sendBirthdayEmail } = require('../utils/email');
+        await sendBirthdayEmail(user.email, user.name);
+        await pool.query(
+          `INSERT INTO birthday_email_log (user_id, email, sent_at)
+           VALUES ($1, $2, CURRENT_DATE)
+           ON CONFLICT (user_id, sent_at) DO NOTHING`,
+          [user.id, user.email]
+        );
+      }
+    }
+
+    // Process reminders (7 days, 1 day, same day) - respects user preferences
+    const usersResult = await pool.query(
+      `SELECT id, name, email, birthday, 
+              notify_7_days_before, notify_1_day_before, notify_same_day
+       FROM users 
+       WHERE birthday IS NOT NULL AND is_verified = TRUE`
+    );
+
+    for (const user of usersResult.rows) {
+      const userBirthday = new Date(user.birthday);
+      const currentYear = today.getFullYear();
+      
+      let nextBirthday = new Date(currentYear, userBirthday.getMonth(), userBirthday.getDate());
+      if (nextBirthday < today) {
+        nextBirthday = new Date(currentYear + 1, userBirthday.getMonth(), userBirthday.getDate());
+      }
+      
+      const daysUntil = Math.floor((nextBirthday - today) / (1000 * 60 * 60 * 24));
+      
+      const groupsResult = await pool.query(
+        `SELECT g.id, g.name, g.contribution_amount, g.currency
+         FROM groups g
+         JOIN group_members gm ON g.id = gm.group_id
+         WHERE gm.user_id = $1 AND gm.status = 'active'`,
+        [user.id]
+      );
+      
+      for (const group of groupsResult.rows) {
+        const membersResult = await pool.query(
+          `SELECT u.id, u.name, u.birthday
+           FROM users u
+           JOIN group_members gm ON u.id = gm.user_id
+           WHERE gm.group_id = $1 AND gm.status = 'active' AND u.id != $2 AND u.birthday IS NOT NULL`,
+          [group.id, user.id]
+        );
+        
+        for (const member of membersResult.rows) {
+          const memberBirthday = new Date(member.birthday);
+          let memberNextBirthday = new Date(currentYear, memberBirthday.getMonth(), memberBirthday.getDate());
+          if (memberNextBirthday < today) {
+            memberNextBirthday = new Date(currentYear + 1, memberBirthday.getMonth(), memberBirthday.getDate());
+          }
+          
+          const daysUntilMemberBirthday = Math.floor((memberNextBirthday - today) / (1000 * 60 * 60 * 24));
+          
+          // Check if user has already paid (for all reminder types)
+          // Skip reminders if status is 'paid', 'confirmed', or 'not_received'
+          const contributionCheck = await pool.query(
+            `SELECT id FROM birthday_contributions 
+             WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3 
+             AND status IN ('paid', 'confirmed', 'not_received')`,
+            [group.id, member.id, user.id]
+          );
+          
+          const hasPaid = contributionCheck.rows.length > 0;
+          
+          // Check if reminder was already sent today (to prevent duplicates)
+          const reminderCheck = await pool.query(
+            `SELECT id FROM notifications 
+             WHERE user_id = $1 AND type = 'birthday_reminder' 
+             AND group_id = $2 AND related_user_id = $3 
+             AND created_at::date = CURRENT_DATE`,
+            [user.id, group.id, member.id]
+          );
+          
+          const reminderAlreadySent = reminderCheck.rows.length > 0;
+          
+          // 7 days before reminder
+          if (daysUntilMemberBirthday === 7 && user.notify_7_days_before && !hasPaid && !reminderAlreadySent) {
+            await createNotification(
+              user.id,
+              'birthday_reminder',
+              'Birthday Reminder',
+              `Reminder: ${member.name}'s birthday is in 7 days. Don't forget to pay ₦${parseFloat(group.contribution_amount).toLocaleString('en-NG')} in ${group.name}.`,
+              group.id,
+              member.id
+            );
+            
+            // Send reminder email
+            if (user.email) {
+              try {
+                const { sendBirthdayReminderEmail } = require('../utils/email');
+                await sendBirthdayReminderEmail(
+                  user.email,
+                  user.name,
+                  member.name,
+                  7,
+                  `${group.currency || 'NGN'} ${parseFloat(group.contribution_amount).toLocaleString('en-NG')}`,
+                  group.currency || 'NGN',
+                  group.name
+                );
+              } catch (err) {
+                console.error(`Error sending 7-day reminder email to ${user.email}:`, err);
+              }
+            }
+            
+            results.reminders_7_days.sent++;
+            results.reminders_7_days.details.push({
+              user_id: user.id,
+              user_name: user.name,
+              member_id: member.id,
+              member_name: member.name,
+              group_id: group.id,
+              group_name: group.name
+            });
+          } else if (daysUntilMemberBirthday === 7) {
+            if (!user.notify_7_days_before) {
+              results.reminders_7_days.skipped++;
+            } else if (hasPaid) {
+              results.reminders_7_days.skipped++;
+            }
+          }
+          
+          // 1 day before reminder
+          if (daysUntilMemberBirthday === 1 && user.notify_1_day_before && !hasPaid && !reminderAlreadySent) {
+            await createNotification(
+              user.id,
+              'birthday_reminder',
+              'Birthday Reminder',
+              `Reminder: ${member.name}'s birthday is tomorrow! Don't forget to pay ₦${parseFloat(group.contribution_amount).toLocaleString('en-NG')} in ${group.name}.`,
+              group.id,
+              member.id
+            );
+            
+            // Send reminder email
+            if (user.email) {
+              try {
+                const { sendBirthdayReminderEmail } = require('../utils/email');
+                await sendBirthdayReminderEmail(
+                  user.email,
+                  user.name,
+                  member.name,
+                  1,
+                  `${group.currency || 'NGN'} ${parseFloat(group.contribution_amount).toLocaleString('en-NG')}`,
+                  group.currency || 'NGN',
+                  group.name
+                );
+              } catch (err) {
+                console.error(`Error sending 1-day reminder email to ${user.email}:`, err);
+              }
+            }
+            
+            results.reminders_1_day.sent++;
+            results.reminders_1_day.details.push({
+              user_id: user.id,
+              user_name: user.name,
+              member_id: member.id,
+              member_name: member.name,
+              group_id: group.id,
+              group_name: group.name
+            });
+          } else if (daysUntilMemberBirthday === 1) {
+            if (!user.notify_1_day_before) {
+              results.reminders_1_day.skipped++;
+            } else if (hasPaid) {
+              results.reminders_1_day.skipped++;
+            }
+          }
+          
+          // Same day reminder
+          if (daysUntilMemberBirthday === 0 && user.notify_same_day && !hasPaid && !reminderAlreadySent) {
+            await createNotification(
+              user.id,
+              'birthday_reminder',
+              'Birthday Reminder - Action Required',
+              `Today is ${member.name}'s birthday! Please mark your contribution of ₦${parseFloat(group.contribution_amount).toLocaleString('en-NG')} as paid in ${group.name}.`,
+              group.id,
+              member.id
+            );
+            
+            // Send reminder email
+            if (user.email) {
+              try {
+                const { sendBirthdayReminderEmail } = require('../utils/email');
+                await sendBirthdayReminderEmail(
+                  user.email,
+                  user.name,
+                  member.name,
+                  0,
+                  `${group.currency || 'NGN'} ${parseFloat(group.contribution_amount).toLocaleString('en-NG')}`,
+                  group.currency || 'NGN',
+                  group.name
+                );
+              } catch (err) {
+                console.error(`Error sending same-day reminder email to ${user.email}:`, err);
+              }
+            }
+            
+            results.reminders_same_day.sent++;
+            results.reminders_same_day.details.push({
+              user_id: user.id,
+              user_name: user.name,
+              member_id: member.id,
+              member_name: member.name,
+              group_id: group.id,
+              group_name: group.name
+            });
+          } else if (daysUntilMemberBirthday === 0) {
+            if (!user.notify_same_day) {
+              results.reminders_same_day.skipped++;
+            } else if (hasPaid) {
+              results.reminders_same_day.skipped++;
+            }
+          }
+        }
+      }
+    }
+
+    res.json({
+      message: 'Birthday reminders processed successfully',
+      summary: {
+        today_birthdays: {
+          total: results.today_birthdays.sent + results.today_birthdays.skipped,
+          sent: results.today_birthdays.sent,
+          skipped: results.today_birthdays.skipped
+        },
+        reminders_7_days: {
+          total: results.reminders_7_days.sent + results.reminders_7_days.skipped,
+          sent: results.reminders_7_days.sent,
+          skipped: results.reminders_7_days.skipped
+        },
+        reminders_1_day: {
+          total: results.reminders_1_day.sent + results.reminders_1_day.skipped,
+          sent: results.reminders_1_day.sent,
+          skipped: results.reminders_1_day.skipped
+        },
+        reminders_same_day: {
+          total: results.reminders_same_day.sent + results.reminders_same_day.skipped,
+          sent: results.reminders_same_day.sent,
+          skipped: results.reminders_same_day.skipped
+        }
+      },
+      details: results
+    });
+  } catch (error) {
+    console.error('Error triggering birthday reminders:', error);
+    res.status(500).json({ error: 'Server error triggering birthday reminders', message: error.message });
+  }
+});
+
 // Manually send birthday notifications to a specific user
 router.post('/birthdays/:userId/send-notifications', async (req, res) => {
   try {

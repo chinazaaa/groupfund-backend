@@ -1,6 +1,6 @@
 const pool = require('../config/database');
 const { createNotification } = require('../utils/notifications');
-const { sendBirthdayEmail } = require('../utils/email');
+const { sendBirthdayEmail, sendBirthdayReminderEmail } = require('../utils/email');
 
 /**
  * Check for upcoming birthdays and send reminder notifications
@@ -128,7 +128,7 @@ async function checkBirthdayReminders() {
       
       // Get all groups the user is in
       const groupsResult = await pool.query(
-        `SELECT g.id, g.name, g.contribution_amount
+        `SELECT g.id, g.name, g.contribution_amount, g.currency
          FROM groups g
          JOIN group_members gm ON g.id = gm.group_id
          WHERE gm.user_id = $1 AND gm.status = 'active'`,
@@ -155,8 +155,30 @@ async function checkBirthdayReminders() {
           
           const daysUntilMemberBirthday = Math.floor((memberNextBirthday - today) / (1000 * 60 * 60 * 24));
           
+          // Check if user has already paid (for all reminder types)
+          // Skip reminders if status is 'paid', 'confirmed', or 'not_received'
+          const contributionCheck = await pool.query(
+            `SELECT id FROM birthday_contributions 
+             WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3 
+             AND status IN ('paid', 'confirmed', 'not_received')`,
+            [group.id, member.id, user.id]
+          );
+          
+          const hasPaid = contributionCheck.rows.length > 0;
+          
+          // Check if reminder was already sent today (to prevent duplicates)
+          const reminderCheck = await pool.query(
+            `SELECT id FROM notifications 
+             WHERE user_id = $1 AND type = 'birthday_reminder' 
+             AND group_id = $2 AND related_user_id = $3 
+             AND created_at::date = CURRENT_DATE`,
+            [user.id, group.id, member.id]
+          );
+          
+          const reminderAlreadySent = reminderCheck.rows.length > 0;
+          
           // Check if user wants to be notified for this reminder time
-          if (daysUntilMemberBirthday === 7 && user.notify_7_days_before) {
+          if (daysUntilMemberBirthday === 7 && user.notify_7_days_before && !hasPaid && !reminderAlreadySent) {
             await createNotification(
               user.id,
               'birthday_reminder',
@@ -165,7 +187,24 @@ async function checkBirthdayReminders() {
               group.id,
               member.id
             );
-          } else if (daysUntilMemberBirthday === 1 && user.notify_1_day_before) {
+
+            // Send reminder email
+            if (user.email) {
+              try {
+                await sendBirthdayReminderEmail(
+                  user.email,
+                  user.name,
+                  member.name,
+                  7,
+                  `${group.currency || 'NGN'} ${parseFloat(group.contribution_amount).toLocaleString('en-NG')}`,
+                  group.currency || 'NGN',
+                  group.name
+                );
+              } catch (err) {
+                console.error(`Error sending 7-day reminder email to ${user.email}:`, err);
+              }
+            }
+          } else if (daysUntilMemberBirthday === 1 && user.notify_1_day_before && !hasPaid && !reminderAlreadySent) {
             await createNotification(
               user.id,
               'birthday_reminder',
@@ -174,24 +213,49 @@ async function checkBirthdayReminders() {
               group.id,
               member.id
             );
-          } else if (daysUntilMemberBirthday === 0 && user.notify_same_day) {
-            // Check if user has already paid
-            const contributionCheck = await pool.query(
-              `SELECT id FROM birthday_contributions 
-               WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3 AND status = 'paid'`,
-              [group.id, member.id, user.id]
+
+            // Send reminder email
+            if (user.email) {
+              try {
+                await sendBirthdayReminderEmail(
+                  user.email,
+                  user.name,
+                  member.name,
+                  1,
+                  `${group.currency || 'NGN'} ${parseFloat(group.contribution_amount).toLocaleString('en-NG')}`,
+                  group.currency || 'NGN',
+                  group.name
+                );
+              } catch (err) {
+                console.error(`Error sending 1-day reminder email to ${user.email}:`, err);
+              }
+            }
+          } else if (daysUntilMemberBirthday === 0 && user.notify_same_day && !hasPaid && !reminderAlreadySent) {
+            // User hasn't paid yet, send reminder
+            await createNotification(
+              user.id,
+              'birthday_reminder',
+              'Birthday Reminder - Action Required',
+              `Today is ${member.name}'s birthday! Please mark your contribution of ₦${parseFloat(group.contribution_amount).toLocaleString('en-NG')} as paid in ${group.name}.`,
+              group.id,
+              member.id
             );
-            
-            if (contributionCheck.rows.length === 0) {
-              // User hasn't paid yet, send reminder
-              await createNotification(
-                user.id,
-                'birthday_reminder',
-                'Birthday Reminder - Action Required',
-                `Today is ${member.name}'s birthday! Please mark your contribution of ₦${parseFloat(group.contribution_amount).toLocaleString('en-NG')} as paid in ${group.name}.`,
-                group.id,
-                member.id
-              );
+
+            // Send reminder email
+            if (user.email) {
+              try {
+                await sendBirthdayReminderEmail(
+                  user.email,
+                  user.name,
+                  member.name,
+                  0,
+                  `${group.currency || 'NGN'} ${parseFloat(group.contribution_amount).toLocaleString('en-NG')}`,
+                  group.currency || 'NGN',
+                  group.name
+                );
+              } catch (err) {
+                console.error(`Error sending same-day reminder email to ${user.email}:`, err);
+              }
             }
           }
         }

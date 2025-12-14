@@ -246,10 +246,111 @@ const sendBirthdayEmail = async (email, name) => {
   }
 };
 
+// Send birthday reminder email (7 days before, 1 day before, or same day)
+const sendBirthdayReminderEmail = async (email, userName, memberName, daysUntil, contributionAmount, currency, groupName) => {
+  try {
+    let subject = '';
+    let titleText = '';
+    let messageText = '';
+    let urgencyText = '';
+
+    if (daysUntil === 7) {
+      subject = `Birthday Reminder: ${memberName}'s birthday is in 7 days - GroupFund`;
+      titleText = 'Birthday Reminder - 7 Days';
+      messageText = `${memberName}'s birthday is in 7 days. Don't forget to prepare your contribution!`;
+      urgencyText = 'You have 7 days to prepare your contribution.';
+    } else if (daysUntil === 1) {
+      subject = `Birthday Reminder: ${memberName}'s birthday is tomorrow! - GroupFund`;
+      titleText = 'Birthday Reminder - Tomorrow!';
+      messageText = `${memberName}'s birthday is tomorrow! Don't forget to mark your contribution as paid!`;
+      urgencyText = 'Action needed: Please mark your contribution as paid today.';
+    } else if (daysUntil === 0) {
+      subject = `Action Required: ${memberName}'s birthday is today! - GroupFund`;
+      titleText = 'Birthday Reminder - Today!';
+      messageText = `Today is ${memberName}'s birthday! Please mark your contribution as paid.`;
+      urgencyText = 'Action required: Please mark your contribution as paid now.';
+    } else {
+      // Fallback for any other day
+      subject = `Birthday Reminder: ${memberName}'s birthday is in ${daysUntil} days - GroupFund`;
+      titleText = `Birthday Reminder - ${daysUntil} Days`;
+      messageText = `${memberName}'s birthday is in ${daysUntil} days.`;
+      urgencyText = `You have ${daysUntil} days to prepare your contribution.`;
+    }
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">🎂 GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1a1a1a; font-size: 24px; margin-top: 0;">${titleText}</h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${userName},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            ${messageText}
+          </p>
+          
+          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
+            <p style="color: #374151; font-size: 16px; margin: 0 0 10px 0; font-weight: 600;">📋 Contribution Details:</p>
+            <p style="color: #6b7280; font-size: 14px; margin: 5px 0;">
+              <strong>Group:</strong> ${groupName}
+            </p>
+            <p style="color: #6b7280; font-size: 14px; margin: 5px 0;">
+              <strong>Amount:</strong> ${contributionAmount}
+            </p>
+            <p style="color: #6b7280; font-size: 14px; margin: 5px 0;">
+              <strong>Celebrant:</strong> ${memberName}
+            </p>
+          </div>
+
+          <div style="background: #e0e7ff; padding: 20px; border-radius: 8px; margin: 20px 0; border: 2px solid #6366f1;">
+            <p style="color: #4338ca; font-size: 16px; margin: 0; font-weight: 600; text-align: center;">
+              ⚠️ ${urgencyText}
+            </p>
+          </div>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Log in to the GroupFund app to mark your contribution as paid and wish ${memberName} a happy birthday! 🎉
+          </p>
+          
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Best regards,<br/>
+            <strong style="color: #6366f1;">The GroupFund Team</strong>
+          </p>
+          
+          <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            This is an automated reminder email from GroupFund. You can manage your notification preferences in the app settings.
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject,
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error sending birthday reminder email:', error);
+      return false;
+    }
+
+    console.log('Birthday reminder email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending birthday reminder email:', error);
+    return false;
+  }
+};
+
 module.exports = {
   sendOTPEmail,
   sendOTPSMS,
   sendContactConfirmationEmail,
   sendWelcomeEmail,
   sendBirthdayEmail,
+  sendBirthdayReminderEmail,
 };
