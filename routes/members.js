@@ -83,6 +83,7 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
 
     const user = userResult.rows[0];
     const today = new Date();
+    today.setHours(0, 0, 0, 0); // Normalize to start of day
     const currentYear = today.getFullYear();
 
     // Get all groups the user is/was a member of (active or past)
@@ -95,7 +96,7 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
       [userId]
     );
 
-    let totalContributions = 0;
+    let totalContributions = 0; // Total contributions expected (all past/today birthdays)
     let totalOverdue = 0;
     let totalOnTime = 0;
     let totalGroups = groupsResult.rows.length;
@@ -103,6 +104,7 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
     // Calculate metrics for each group
     for (const group of groupsResult.rows) {
       const userJoinDate = new Date(group.joined_at);
+      userJoinDate.setHours(0, 0, 0, 0); // Normalize to start of day
 
       // Get all members in this group with birthdays
       const membersResult = await pool.query(
@@ -116,14 +118,12 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
       for (const member of membersResult.rows) {
         const memberBirthday = new Date(member.birthday);
         const thisYearBirthday = new Date(currentYear, memberBirthday.getMonth(), memberBirthday.getDate());
+        thisYearBirthday.setHours(0, 0, 0, 0); // Normalize to start of day
         
         // Only count if user was a member when birthday occurred
         if (userJoinDate <= thisYearBirthday) {
-          // Count today and past birthdays as expected
-          // Today's birthday: count as expected but not overdue if not paid
-          // Past birthday: count as expected and overdue if not paid
-          const isToday = thisYearBirthday.toDateString() === today.toDateString();
           const isPast = thisYearBirthday < today;
+          const isToday = thisYearBirthday.getTime() === today.getTime();
           const isPastOrToday = isPast || isToday;
           
           if (isPastOrToday) {
@@ -152,13 +152,11 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
                 contributionDate.setHours(0, 0, 0, 0);
                 paidOnTime = contributionDate <= thisYearBirthday;
               }
-            }
-
-            // "Expected" = contributions that are still needed
-            // Expected includes: not_paid, paid (awaiting confirmation), not_received (rejected)
-            // NOT expected: confirmed (regardless of when paid - it's fully done)
-            if (!isFullyPaid) {
-              totalContributions++; // Only count non-confirmed as "expected"
+              
+              // Total contributions = only confirmed contributions
+              if (isFullyPaid) {
+                totalContributions++;
+              }
             }
 
             // On-time = confirmed AND paid on or before birthday
@@ -198,6 +196,7 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
     let reliabilityScore = 50; // Default neutral score
     let onTimeRate = 0;
 
+    // totalContributions should include ALL contributions (confirmed or not) for reliability calculation
     if (totalContributions > 0) {
       onTimeRate = (totalOnTime / totalContributions) * 100;
       reliabilityScore = Math.round(onTimeRate);
@@ -241,10 +240,10 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
       },
       metrics: {
         total_groups: totalGroups,
-        total_contributions: totalContributions,
-        total_on_time: totalOnTime,
-        total_overdue: totalOverdue,
-        on_time_rate: Math.round(onTimeRate * 10) / 10, // Round to 1 decimal
+        total_contributions: totalContributions, // All contributions (past/today birthdays)
+        total_on_time: totalOnTime, // Confirmed and paid on/before birthday
+        total_overdue: totalOverdue, // Overdue contributions
+        on_time_rate: totalContributions > 0 ? Math.round(onTimeRate * 10) / 10 : 0, // Round to 1 decimal
         reliability_score: reliabilityScore
       },
       summary: {
