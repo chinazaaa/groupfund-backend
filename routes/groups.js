@@ -450,6 +450,51 @@ router.put('/:groupId/close', authenticate, async (req, res) => {
   }
 });
 
+// Reopen group (creator or admin only)
+router.put('/:groupId/reopen', authenticate, async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const userId = req.user.id;
+    const isSystemAdmin = req.user.is_admin;
+
+    // Get group details
+    const groupResult = await pool.query(
+      'SELECT id, admin_id, status FROM groups WHERE id = $1',
+      [groupId]
+    );
+
+    if (groupResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const group = groupResult.rows[0];
+
+    // Check if user is the creator or a system admin
+    if (group.admin_id !== userId && !isSystemAdmin) {
+      return res.status(403).json({ error: 'Only the group creator or an admin can reopen this group' });
+    }
+
+    // Check if group is already active
+    if (group.status === 'active') {
+      return res.status(400).json({ error: 'Group is already open' });
+    }
+
+    // Reopen the group
+    const result = await pool.query(
+      'UPDATE groups SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING id, name, status',
+      ['active', groupId]
+    );
+
+    res.json({
+      message: 'Group reopened successfully',
+      group: result.rows[0],
+    });
+  } catch (error) {
+    console.error('Reopen group error:', error);
+    res.status(500).json({ error: 'Server error reopening group' });
+  }
+});
+
 // Get group compliance view (shows who hasn't paid for each birthday in a group)
 router.get('/:groupId/compliance', authenticate, async (req, res) => {
   try {
