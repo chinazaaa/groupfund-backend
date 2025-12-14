@@ -360,6 +360,20 @@ router.post('/contribute', authenticate, require('../middleware/rateLimiter').co
       return res.status(400).json({ error: 'Both users must be active members of the group' });
     }
 
+    // Check if group is closed (closed groups cannot accept new contributions)
+    const groupStatusCheck = await pool.query(
+      'SELECT status FROM groups WHERE id = $1',
+      [groupId]
+    );
+
+    if (groupStatusCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    if (groupStatusCheck.rows[0].status === 'closed') {
+      return res.status(400).json({ error: 'This group is closed and no longer accepting contributions' });
+    }
+
     // Get group contribution amount and currency
     const groupResult = await pool.query(
       'SELECT contribution_amount, currency FROM groups WHERE id = $1',
@@ -508,7 +522,7 @@ router.post('/contribute/:contributionId/confirm', authenticate, async (req, res
 
     // Get contribution details
     const contributionResult = await pool.query(
-      `SELECT bc.*, g.name as group_name, g.currency, u.name as contributor_name
+      `SELECT bc.*, g.name as group_name, g.currency, g.status as group_status, u.name as contributor_name
        FROM birthday_contributions bc
        JOIN groups g ON bc.group_id = g.id
        JOIN users u ON bc.contributor_id = u.id
@@ -521,6 +535,11 @@ router.post('/contribute/:contributionId/confirm', authenticate, async (req, res
     }
 
     const contribution = contributionResult.rows[0];
+
+    // Check if group is closed (closed groups cannot have contributions confirmed/rejected)
+    if (contribution.group_status === 'closed') {
+      return res.status(400).json({ error: 'This group is closed and no longer accepting contribution confirmations' });
+    }
 
     if (contribution.status !== 'paid') {
       return res.status(400).json({ error: 'Contribution is not in paid status' });
@@ -598,7 +617,7 @@ router.post('/contribute/:contributionId/reject', authenticate, async (req, res)
 
     // Get contribution details
     const contributionResult = await pool.query(
-      `SELECT bc.*, g.name as group_name, g.currency, u.name as contributor_name
+      `SELECT bc.*, g.name as group_name, g.currency, g.status as group_status, u.name as contributor_name
        FROM birthday_contributions bc
        JOIN groups g ON bc.group_id = g.id
        JOIN users u ON bc.contributor_id = u.id
@@ -611,6 +630,11 @@ router.post('/contribute/:contributionId/reject', authenticate, async (req, res)
     }
 
     const contribution = contributionResult.rows[0];
+
+    // Check if group is closed (closed groups cannot have contributions confirmed/rejected)
+    if (contribution.group_status === 'closed') {
+      return res.status(400).json({ error: 'This group is closed and no longer accepting contribution rejections' });
+    }
 
     if (contribution.status !== 'paid') {
       return res.status(400).json({ error: 'Contribution is not in paid status' });

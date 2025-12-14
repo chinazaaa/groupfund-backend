@@ -6,7 +6,9 @@ ALTER TABLE groups ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active';
 UPDATE groups SET status = 'active' WHERE status IS NULL;
 
 -- Add comment to document the status values
-COMMENT ON COLUMN groups.status IS 'Group status: active (open for members), closed (no longer accepting members)';
+-- Note: 'closed' status freezes ALL group activity (no new members, no contributions, no confirmations)
+-- This is different from accepting_requests=false which only pauses new member requests
+COMMENT ON COLUMN groups.status IS 'Group status: active (fully operational), closed (frozen - no new members, contributions, or confirmations allowed)';
 
 -- Create index for status queries
 CREATE INDEX IF NOT EXISTS idx_groups_status ON groups(status);
