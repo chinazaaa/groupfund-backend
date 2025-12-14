@@ -571,6 +571,14 @@ router.get('/stats', async (req, res) => {
     const recentGroups = await pool.query(`
       SELECT COUNT(*) as count FROM groups WHERE created_at >= NOW() - INTERVAL '30 days'
     `);
+    
+    // Total waitlist entries
+    const totalWaitlist = await pool.query('SELECT COUNT(*) as count FROM waitlist');
+    
+    // Waitlist entries in last 30 days
+    const recentWaitlist = await pool.query(`
+      SELECT COUNT(*) as count FROM waitlist WHERE created_at >= NOW() - INTERVAL '30 days'
+    `);
 
     res.json({
       users: {
@@ -602,6 +610,10 @@ router.get('/stats', async (req, res) => {
       },
       wallets: {
         total_balance: parseFloat(totalWalletBalance.rows[0].total || 0),
+      },
+      waitlist: {
+        total: parseInt(totalWaitlist.rows[0].count),
+        recent_30_days: parseInt(recentWaitlist.rows[0].count),
       },
     });
   } catch (error) {
@@ -826,6 +838,93 @@ router.delete('/contact-submissions/:id', async (req, res) => {
   } catch (error) {
     console.error('Delete contact submission error:', error);
     res.status(500).json({ error: 'Server error deleting contact submission' });
+  }
+});
+
+// Get all waitlist entries
+router.get('/waitlist', async (req, res) => {
+  try {
+    const { page = 1, limit = 50, search, groupType } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    let query = `
+      SELECT 
+        id, name, email, phone, group_type, created_at
+      FROM waitlist
+      WHERE 1=1
+    `;
+    const params = [];
+    let paramCount = 1;
+
+    if (search) {
+      query += ` AND (name ILIKE $${paramCount} OR email ILIKE $${paramCount} OR phone ILIKE $${paramCount})`;
+      params.push(`%${search}%`);
+      paramCount++;
+    }
+
+    if (groupType) {
+      query += ` AND group_type = $${paramCount++}`;
+      params.push(groupType);
+    }
+
+    // Get total count
+    let countQuery = `
+      SELECT COUNT(*) as total
+      FROM waitlist
+      WHERE 1=1
+    `;
+    const countParams = [];
+    let countParamCount = 1;
+
+    if (search) {
+      countQuery += ` AND (name ILIKE $${countParamCount} OR email ILIKE $${countParamCount} OR phone ILIKE $${countParamCount})`;
+      countParams.push(`%${search}%`);
+      countParamCount++;
+    }
+
+    if (groupType) {
+      countQuery += ` AND group_type = $${countParamCount++}`;
+      countParams.push(groupType);
+    }
+
+    const countResult = await pool.query(countQuery, countParams);
+    const total = parseInt(countResult.rows[0].total);
+
+    query += ` ORDER BY created_at DESC LIMIT $${paramCount++} OFFSET $${paramCount++}`;
+    params.push(parseInt(limit), offset);
+
+    const result = await pool.query(query, params);
+
+    res.json({
+      entries: result.rows,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / parseInt(limit)),
+      },
+    });
+  } catch (error) {
+    console.error('Get waitlist entries error:', error);
+    res.status(500).json({ error: 'Server error fetching waitlist entries' });
+  }
+});
+
+// Delete waitlist entry
+router.delete('/waitlist/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await pool.query('DELETE FROM waitlist WHERE id = $1 RETURNING id', [id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Waitlist entry not found' });
+    }
+
+    res.json({ message: 'Waitlist entry deleted successfully' });
+  } catch (error) {
+    console.error('Delete waitlist entry error:', error);
+    res.status(500).json({ error: 'Server error deleting waitlist entry' });
   }
 });
 
