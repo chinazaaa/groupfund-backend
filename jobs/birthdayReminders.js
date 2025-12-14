@@ -351,6 +351,16 @@ async function checkOverdueContributions() {
       };
 
       for (const group of groupsResult.rows) {
+        // Get user's join date for this group
+        const userJoinDateResult = await pool.query(
+          `SELECT joined_at FROM group_members 
+           WHERE group_id = $1 AND user_id = $2 AND status = 'active'`,
+          [group.id, user.id]
+        );
+        
+        if (userJoinDateResult.rows.length === 0) continue;
+        const userJoinDate = new Date(userJoinDateResult.rows[0].joined_at);
+
         // Get all active members in this group
         const membersResult = await pool.query(
           `SELECT u.id, u.name, u.birthday
@@ -364,8 +374,9 @@ async function checkOverdueContributions() {
           const memberBirthday = new Date(member.birthday);
           const thisYearBirthday = new Date(currentYear, memberBirthday.getMonth(), memberBirthday.getDate());
           
-          // Check if birthday has passed this year
-          if (thisYearBirthday < today) {
+          // Check if birthday has passed this year AND user was a member when the birthday occurred
+          // Only consider overdue if user joined before or on the birthday date
+          if (thisYearBirthday < today && userJoinDate <= thisYearBirthday) {
             const daysOverdue = Math.floor((today - thisYearBirthday) / (1000 * 60 * 60 * 24));
             
             // Check if user has paid for this birthday

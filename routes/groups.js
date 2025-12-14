@@ -550,9 +550,9 @@ router.get('/:groupId/compliance', authenticate, async (req, res) => {
       const isPast = thisYearBirthday < today;
       const daysUntilOrSince = Math.floor((today - thisYearBirthday) / (1000 * 60 * 60 * 24));
 
-      // Get all active members who should contribute
+      // Get all active members who should contribute (only those who were members when birthday occurred)
       const contributorsResult = await pool.query(
-        `SELECT u.id, u.name
+        `SELECT u.id, u.name, gm.joined_at
          FROM users u
          JOIN group_members gm ON u.id = gm.user_id
          WHERE gm.group_id = $1 AND gm.status = 'active' AND u.id != $2`,
@@ -565,6 +565,13 @@ router.get('/:groupId/compliance', authenticate, async (req, res) => {
       let overdueCount = 0;
 
       for (const contributor of contributorsResult.rows) {
+        // Only include contributors who were members when the birthday occurred
+        const contributorJoinDate = new Date(contributor.joined_at);
+        if (contributorJoinDate > thisYearBirthday) {
+          // Contributor joined after the birthday, skip them
+          continue;
+        }
+
         // Check contribution status for this year's birthday
         const contributionCheck = await pool.query(
           `SELECT id, status, contribution_date, amount, note

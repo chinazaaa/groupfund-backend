@@ -249,6 +249,16 @@ router.get('/overdue', authenticate, async (req, res) => {
     const overdueContributions = [];
 
     for (const group of groups) {
+      // Get user's join date for this group
+      const userJoinDateResult = await pool.query(
+        `SELECT joined_at FROM group_members 
+         WHERE group_id = $1 AND user_id = $2 AND status = 'active'`,
+        [group.id, userId]
+      );
+      
+      if (userJoinDateResult.rows.length === 0) continue;
+      const userJoinDate = new Date(userJoinDateResult.rows[0].joined_at);
+
       // Get all active members in this group
       const membersResult = await pool.query(
         `SELECT u.id, u.name, u.birthday
@@ -267,8 +277,9 @@ router.get('/overdue', authenticate, async (req, res) => {
         // Get this year's birthday date
         const thisYearBirthday = new Date(currentYear, memberBirthday.getMonth(), memberBirthday.getDate());
         
-        // Check if birthday has passed
-        if (thisYearBirthday < today) {
+        // Check if birthday has passed AND user was a member when the birthday occurred
+        // Only consider overdue if user joined before or on the birthday date
+        if (thisYearBirthday < today && userJoinDate <= thisYearBirthday) {
           // Birthday has passed, check if user has paid
           const contributionCheck = await pool.query(
             `SELECT id, status, contribution_date, amount
