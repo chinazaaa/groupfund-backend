@@ -135,7 +135,7 @@ const adminLimiter = rateLimit({
  */
 const contactLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: 5, // Limit each IP to 5 submissions per hour
+  max: 50, // Limit each IP to 50 submissions per hour
   message: (req, res) => {
     let retryAfter = 60; // Default to 60 minutes (1 hour)
     if (req.rateLimit && req.rateLimit.resetTime) {
@@ -147,9 +147,9 @@ const contactLimiter = rateLimit({
     
     return {
       error: 'Too many submissions. Please wait before submitting again.',
-      message: `You've exceeded the limit of 5 submissions per hour. Please try again in ${timeText}.`,
+      message: `You've exceeded the limit of 50 submissions per hour. Please try again in ${timeText}.`,
       retryAfter: retryAfter,
-      limit: 5,
+      limit: 50,
       window: '1 hour',
     };
   },
