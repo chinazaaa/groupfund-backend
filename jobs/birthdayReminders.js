@@ -47,11 +47,14 @@ async function checkBirthdayReminders() {
 
         // Send birthday email to the celebrant
         if (user.email) {
-          // Send email (non-blocking - don't fail if email fails)
-          sendBirthdayEmail(user.email, user.name).catch(err => {
+          try {
+            // Send email (non-blocking - don't fail if email fails)
+            await sendBirthdayEmail(user.email, user.name);
+            console.log(`Birthday email sent successfully to ${user.email}`);
+          } catch (err) {
             console.error(`Error sending birthday email to ${user.email}:`, err);
-            // Don't throw - email is non-critical
-          });
+            // Don't throw - email is non-critical, continue with other users
+          }
         }
       }
       

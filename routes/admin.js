@@ -675,6 +675,30 @@ router.get('/birthdays/today', async (req, res) => {
   }
 });
 
+// Trigger birthday reminders job manually (for testing)
+router.post('/birthdays/trigger-reminders', async (req, res) => {
+  try {
+    const { checkBirthdayReminders } = require('../jobs/birthdayReminders');
+    
+    // Run the job in the background (don't wait for it to complete)
+    checkBirthdayReminders()
+      .then(() => {
+        console.log('Birthday reminders job completed successfully');
+      })
+      .catch((error) => {
+        console.error('Birthday reminders job failed:', error);
+      });
+
+    res.json({ 
+      message: 'Birthday reminders job has been triggered. Check logs for results.',
+      note: 'This job runs in the background. Emails and notifications will be sent to users whose birthday is today.'
+    });
+  } catch (error) {
+    console.error('Error triggering birthday reminders:', error);
+    res.status(500).json({ error: 'Server error triggering birthday reminders' });
+  }
+});
+
 // Get all notifications
 router.get('/notifications', async (req, res) => {
   try {
