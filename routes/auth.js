@@ -172,7 +172,7 @@ router.post('/login', authLimiter, [
 
     // Find user
     const userResult = await pool.query(
-      'SELECT id, name, email, phone, password_hash, is_verified FROM users WHERE email = $1',
+      'SELECT id, name, email, phone, password_hash, is_verified, is_active FROM users WHERE email = $1',
       [email]
     );
 
@@ -191,6 +191,11 @@ router.post('/login', authLimiter, [
     // Check if verified
     if (!user.is_verified) {
       return res.status(403).json({ error: 'Please verify your email first' });
+    }
+
+    // Check if account is active
+    if (user.is_active === false) {
+      return res.status(403).json({ error: 'Your account has been deactivated. Please contact support.' });
     }
 
     // Generate JWT token
