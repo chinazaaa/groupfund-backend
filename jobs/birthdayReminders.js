@@ -1,5 +1,6 @@
 const pool = require('../config/database');
 const { createNotification } = require('../utils/notifications');
+const { sendBirthdayEmail } = require('../utils/email');
 
 /**
  * Check for upcoming birthdays and send reminder notifications
@@ -12,7 +13,7 @@ async function checkBirthdayReminders() {
     
     // Get all active users with their notification preferences
     const usersResult = await pool.query(
-      `SELECT id, name, birthday, 
+      `SELECT id, name, email, birthday, 
               notify_7_days_before, notify_1_day_before, notify_same_day
        FROM users 
        WHERE birthday IS NOT NULL AND is_verified = TRUE`
@@ -43,6 +44,15 @@ async function checkBirthdayReminders() {
           null,
           user.id
         );
+
+        // Send birthday email to the celebrant
+        if (user.email) {
+          // Send email (non-blocking - don't fail if email fails)
+          sendBirthdayEmail(user.email, user.name).catch(err => {
+            console.error(`Error sending birthday email to ${user.email}:`, err);
+            // Don't throw - email is non-critical
+          });
+        }
       }
       
       // Get all groups the user is in
