@@ -131,12 +131,12 @@ async function checkBirthdayReminders() {
       // Calculate days until birthday
       const daysUntil = Math.floor((nextBirthday - today) / (1000 * 60 * 60 * 24));
       
-      // Get all groups the user is in
+      // Get all groups the user is in (exclude closed groups - they don't accept contributions)
       const groupsResult = await pool.query(
         `SELECT g.id, g.name, g.contribution_amount, g.currency
          FROM groups g
          JOIN group_members gm ON g.id = gm.group_id
-         WHERE gm.user_id = $1 AND gm.status = 'active'`,
+         WHERE gm.user_id = $1 AND gm.status = 'active' AND g.status = 'active'`,
         [user.id]
       );
       
@@ -334,12 +334,12 @@ async function checkOverdueContributions() {
     );
 
     for (const user of usersResult.rows) {
-      // Get all groups the user is in
+      // Get all groups the user is in (exclude closed groups - they don't accept contributions)
       const groupsResult = await pool.query(
         `SELECT g.id, g.name, g.contribution_amount, g.currency
          FROM groups g
          JOIN group_members gm ON g.id = gm.group_id
-         WHERE gm.user_id = $1 AND gm.status = 'active'`,
+         WHERE gm.user_id = $1 AND gm.status = 'active' AND g.status = 'active'`,
         [user.id]
       );
 

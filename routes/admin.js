@@ -867,11 +867,12 @@ router.post('/birthdays/trigger-reminders', async (req, res) => {
       
       const daysUntil = Math.floor((nextBirthday - today) / (1000 * 60 * 60 * 24));
       
+      // Get all groups the user is in (exclude closed groups - they don't accept contributions)
       const groupsResult = await pool.query(
         `SELECT g.id, g.name, g.contribution_amount, g.currency
          FROM groups g
          JOIN group_members gm ON g.id = gm.group_id
-         WHERE gm.user_id = $1 AND gm.status = 'active'`,
+         WHERE gm.user_id = $1 AND gm.status = 'active' AND g.status = 'active'`,
         [user.id]
       );
       

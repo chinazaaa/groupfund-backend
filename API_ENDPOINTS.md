@@ -112,8 +112,27 @@ Base URL: `http://localhost:3000`
 ### Update Group Settings
 - **PUT** `/api/groups/:groupId`
   - **Requires authentication** (Admin only)
-  - Body: `{ name?, contributionAmount?, maxMembers? }` (optional fields)
+  - Body: `{ name?, contributionAmount?, maxMembers?, acceptingRequests? }` (optional fields)
   - Returns: `{ group }`
+  - `acceptingRequests`: Boolean to pause/resume accepting new join requests (temporary pause)
+
+### Close Group
+- **PUT** `/api/groups/:groupId/close`
+  - **Requires authentication** (Group creator or system admin only)
+  - Returns: `{ message, group }`
+  - **Freezes all group activity**: No new members, no contributions, no confirmations/rejections
+  - Members can still view data (read-only mode)
+  - More permanent than `acceptingRequests=false`
+
+### Reopen Group
+- **PUT** `/api/groups/:groupId/reopen`
+  - **Requires authentication** (Group creator or system admin only)
+  - Returns: `{ message, group }`
+  - Reopens a closed group, restoring full functionality
+
+**Note: Difference between Closing and Accepting Requests**
+- **`acceptingRequests = false`**: Temporarily pauses new member requests only. Existing members can still contribute, confirm payments, etc.
+- **`status = 'closed'`**: Freezes ALL group activity. No new members, no contributions, no confirmations/rejections. Use when group is permanently inactive or needs to be frozen.
 
 ---
 
