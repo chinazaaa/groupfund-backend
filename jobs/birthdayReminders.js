@@ -4,7 +4,12 @@ const { sendBirthdayEmail } = require('../utils/email');
 
 /**
  * Check for upcoming birthdays and send reminder notifications
- * This should be run daily (e.g., via cron job)
+ * NOTE: This job is currently disabled. Use the admin endpoints instead:
+ * - POST /api/admin/birthdays/trigger-birthday-wishes
+ * - POST /api/admin/birthdays/trigger-reminders
+ * - POST /api/admin/birthdays/send-monthly-newsletter
+ * 
+ * This function is kept for reference but should not be run automatically.
  */
 async function checkBirthdayReminders() {
   try {
@@ -298,16 +303,17 @@ async function checkBirthdayReminders() {
 }
 
 // Run if called directly (for testing)
-if (require.main === module) {
-  checkBirthdayReminders()
-    .then(() => {
-      console.log('Birthday reminders job completed');
-      process.exit(0);
-    })
-    .catch((error) => {
-      console.error('Birthday reminders job failed:', error);
-      process.exit(1);
-    });
-}
+// COMMENTED OUT: Use admin endpoints instead for manual triggering
+// if (require.main === module) {
+//   checkBirthdayReminders()
+//     .then(() => {
+//       console.log('Birthday reminders job completed');
+//       process.exit(0);
+//     })
+//     .catch((error) => {
+//       console.error('Birthday reminders job failed:', error);
+//       process.exit(1);
+//     });
+// }
 
 module.exports = { checkBirthdayReminders };
