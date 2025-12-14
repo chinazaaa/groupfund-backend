@@ -179,17 +179,30 @@ This backend uses Expo push notifications. To enable push notifications, especia
 - No additional configuration needed
 
 ### For Production (Android/FCM)
-1. **Get your FCM Server Key:**
-   - Go to [Firebase Console](https://console.firebase.google.com/)
-   - Select your project (or create one)
-   - Go to Project Settings → Cloud Messaging
+1. **Enable Firebase Cloud Messaging API (Legacy):**
+   - Go to [Google Cloud Console](https://console.cloud.google.com/)
+   - Make sure your Firebase project is selected
+   - Go to "APIs & Services" → "Library"
+   - Search for "Firebase Cloud Messaging API"
+   - Click on it and click "Enable"
+   - Also search for "Firebase Cloud Messaging API (Legacy)" and enable it if available
+
+2. **Get your FCM Server Key:**
+   - Go back to [Firebase Console](https://console.firebase.google.com/)
+   - Select your project
+   - Go to Project Settings (gear icon) → Cloud Messaging tab
+   - Under "Cloud Messaging API (Legacy)" section, you should now see the "Server key"
    - Copy the "Server key" (not the Sender ID)
 
-2. **Configure FCM in Expo:**
+3. **Configure FCM in Expo:**
    - Go to [Expo Dashboard](https://expo.dev)
    - Navigate to your project
    - Go to Credentials → Android
    - Add your FCM Server Key
+   - Alternatively, you can use the Expo CLI:
+     ```bash
+     expo push:android:upload --api-key YOUR_FCM_SERVER_KEY
+     ```
 
 3. **Optional: Add Expo Access Token (Recommended):**
    - Go to [Expo Account Settings](https://expo.dev/accounts/[your-account]/settings/access-tokens)
