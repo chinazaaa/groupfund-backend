@@ -1,6 +1,6 @@
 const pool = require('../config/database');
 const { createNotification } = require('../utils/notifications');
-const { sendBirthdayEmail, sendBirthdayReminderEmail } = require('../utils/email');
+const { sendBirthdayEmail } = require('../utils/email');
 
 /**
  * Check for upcoming birthdays and send reminder notifications
