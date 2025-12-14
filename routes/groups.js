@@ -438,4 +438,145 @@ router.put('/:groupId/close', authenticate, async (req, res) => {
   }
 });
 
+// Get group compliance view (shows who hasn't paid for each birthday in a group)
+router.get('/:groupId/compliance', authenticate, async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const userId = req.user.id;
+
+    // Check if user is active member of the group
+    const memberCheck = await pool.query(
+      'SELECT role, status FROM group_members WHERE group_id = $1 AND user_id = $2',
+      [groupId, userId]
+    );
+
+    if (memberCheck.rows.length === 0 || memberCheck.rows[0].status !== 'active') {
+      return res.status(403).json({ error: 'You are not an active member of this group' });
+    }
+
+    // Get group details
+    const groupResult = await pool.query(
+      'SELECT id, name, contribution_amount, currency FROM groups WHERE id = $1',
+      [groupId]
+    );
+
+    if (groupResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const group = groupResult.rows[0];
+    const currentYear = new Date().getFullYear();
+    const today = new Date();
+
+    // Get all active members with birthdays
+    const membersResult = await pool.query(
+      `SELECT u.id, u.name, u.birthday
+       FROM users u
+       JOIN group_members gm ON u.id = gm.user_id
+       WHERE gm.group_id = $1 AND gm.status = 'active' AND u.birthday IS NOT NULL
+       ORDER BY 
+         EXTRACT(MONTH FROM u.birthday),
+         EXTRACT(DAY FROM u.birthday)`,
+      [groupId]
+    );
+
+    const complianceData = [];
+
+    for (const member of membersResult.rows) {
+      const memberBirthday = new Date(member.birthday);
+      const thisYearBirthday = new Date(currentYear, memberBirthday.getMonth(), memberBirthday.getDate());
+      const nextYearBirthday = new Date(currentYear + 1, memberBirthday.getMonth(), memberBirthday.getDate());
+      
+      // Determine which birthday to check (this year or next year)
+      const birthdayToCheck = thisYearBirthday < today ? nextYearBirthday : thisYearBirthday;
+      const isPast = thisYearBirthday < today;
+      const daysUntilOrSince = Math.floor((today - thisYearBirthday) / (1000 * 60 * 60 * 24));
+
+      // Get all active members who should contribute
+      const contributorsResult = await pool.query(
+        `SELECT u.id, u.name
+         FROM users u
+         JOIN group_members gm ON u.id = gm.user_id
+         WHERE gm.group_id = $1 AND gm.status = 'active' AND u.id != $2`,
+        [groupId, member.id]
+      );
+
+      const contributors = [];
+      let paidCount = 0;
+      let unpaidCount = 0;
+      let overdueCount = 0;
+
+      for (const contributor of contributorsResult.rows) {
+        // Check contribution status for this year's birthday
+        const contributionCheck = await pool.query(
+          `SELECT id, status, contribution_date, amount, note
+           FROM birthday_contributions 
+           WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3
+           AND EXTRACT(YEAR FROM contribution_date) = $4`,
+          [groupId, member.id, contributor.id, currentYear]
+        );
+
+        let status = 'not_paid';
+        let contributionDate = null;
+        let amount = null;
+        let note = null;
+
+        if (contributionCheck.rows.length > 0) {
+          status = contributionCheck.rows[0].status;
+          contributionDate = contributionCheck.rows[0].contribution_date;
+          amount = parseFloat(contributionCheck.rows[0].amount);
+          note = contributionCheck.rows[0].note;
+        }
+
+        const isPaid = status === 'paid' || status === 'confirmed';
+        const isOverdue = isPast && !isPaid && status === 'not_paid';
+
+        if (isPaid) paidCount++;
+        else if (isOverdue) {
+          unpaidCount++;
+          overdueCount++;
+        } else {
+          unpaidCount++;
+        }
+
+        contributors.push({
+          contributor_id: contributor.id,
+          contributor_name: contributor.name,
+          status: status,
+          contribution_date: contributionDate,
+          amount: amount,
+          note: note,
+          is_overdue: isOverdue,
+          days_overdue: isOverdue ? daysUntilOrSince : null
+        });
+      }
+
+      complianceData.push({
+        birthday_user_id: member.id,
+        birthday_user_name: member.name,
+        birthday_date: member.birthday,
+        this_year_birthday: thisYearBirthday.toISOString().split('T')[0],
+        is_past: isPast,
+        days_until_or_since: daysUntilOrSince,
+        total_contributors: contributors.length,
+        paid_count: paidCount,
+        unpaid_count: unpaidCount,
+        overdue_count: overdueCount,
+        contributors: contributors
+      });
+    }
+
+    res.json({
+      group_id: group.id,
+      group_name: group.name,
+      currency: group.currency || 'NGN',
+      contribution_amount: parseFloat(group.contribution_amount),
+      compliance: complianceData
+    });
+  } catch (error) {
+    console.error('Get group compliance error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 module.exports = router;
