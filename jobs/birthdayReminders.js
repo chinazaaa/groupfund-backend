@@ -12,6 +12,43 @@ async function checkBirthdayReminders() {
     const todayDate = today.toISOString().split('T')[0];
     
     // Get all active users with their notification preferences
+    // First, get users whose birthday is TODAY (using SQL date comparison to avoid timezone issues)
+    const todayBirthdayUsers = await pool.query(
+      `SELECT id, name, email, birthday, 
+              notify_7_days_before, notify_1_day_before, notify_same_day
+       FROM users 
+       WHERE birthday IS NOT NULL 
+         AND is_verified = TRUE
+         AND DATE_PART('month', birthday) = DATE_PART('month', CURRENT_DATE)
+         AND DATE_PART('day', birthday) = DATE_PART('day', CURRENT_DATE)`
+    );
+
+    // Send birthday wishes to users whose birthday is today
+    for (const user of todayBirthdayUsers.rows) {
+      // Send birthday wish notification
+      await createNotification(
+        user.id,
+        'birthday_wish',
+        '🎉 Happy Birthday!',
+        `Happy Birthday, ${user.name}! 🎂🎉 Wishing you a wonderful day filled with joy and celebration!`,
+        null,
+        user.id
+      );
+
+      // Send birthday email to the celebrant
+      if (user.email) {
+        try {
+          // Send email (non-blocking - don't fail if email fails)
+          await sendBirthdayEmail(user.email, user.name);
+          console.log(`Birthday email sent successfully to ${user.email}`);
+        } catch (err) {
+          console.error(`Error sending birthday email to ${user.email}:`, err);
+          // Don't throw - email is non-critical, continue with other users
+        }
+      }
+    }
+
+    // Get all active users with their notification preferences for reminder calculations
     const usersResult = await pool.query(
       `SELECT id, name, email, birthday, 
               notify_7_days_before, notify_1_day_before, notify_same_day
@@ -32,31 +69,6 @@ async function checkBirthdayReminders() {
       
       // Calculate days until birthday
       const daysUntil = Math.floor((nextBirthday - today) / (1000 * 60 * 60 * 24));
-      
-      // Check if it's the user's birthday today
-      if (daysUntil === 0) {
-        // Send birthday wish notification
-        await createNotification(
-          user.id,
-          'birthday_wish',
-          '🎉 Happy Birthday!',
-          `Happy Birthday, ${user.name}! 🎂🎉 Wishing you a wonderful day filled with joy and celebration!`,
-          null,
-          user.id
-        );
-
-        // Send birthday email to the celebrant
-        if (user.email) {
-          try {
-            // Send email (non-blocking - don't fail if email fails)
-            await sendBirthdayEmail(user.email, user.name);
-            console.log(`Birthday email sent successfully to ${user.email}`);
-          } catch (err) {
-            console.error(`Error sending birthday email to ${user.email}:`, err);
-            // Don't throw - email is non-critical, continue with other users
-          }
-        }
-      }
       
       // Get all groups the user is in
       const groupsResult = await pool.query(
