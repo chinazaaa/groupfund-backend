@@ -31,7 +31,8 @@ const corsOptions = {
     
     // In production, check against allowed origins
     if (allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
+      // Return the origin explicitly to ensure proper CORS headers
+      callback(null, origin);
     } else {
       callback(new Error('Not allowed by CORS'));
     }
