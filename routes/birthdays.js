@@ -123,7 +123,15 @@ router.get('/upcoming', authenticate, async (req, res) => {
 
     const result = await pool.query(query, params);
 
-    res.json({ birthdays: result.rows });
+    // Format dates to ensure they're strings and add formatted date strings
+    const formattedBirthdays = result.rows.map(row => ({
+      ...row,
+      birthday: row.birthday ? new Date(row.birthday).toISOString().split('T')[0] : null,
+      next_birthday_date: row.next_birthday_date ? new Date(row.next_birthday_date).toISOString().split('T')[0] : null,
+      next_birthday_formatted: row.next_birthday_date ? new Date(row.next_birthday_date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : null,
+    }));
+
+    res.json({ birthdays: formattedBirthdays });
   } catch (error) {
     console.error('Get upcoming birthdays error:', error);
     res.status(500).json({ error: 'Server error' });
@@ -192,6 +200,7 @@ router.get('/past', authenticate, async (req, res) => {
           AND u.birthday IS NOT NULL
       ) subquery
       WHERE days_since_birthday >= 0
+        AND EXTRACT(YEAR FROM last_birthday_date) = EXTRACT(YEAR FROM CURRENT_DATE)
       ORDER BY days_since_birthday ASC
       LIMIT $2
     `;
@@ -199,7 +208,15 @@ router.get('/past', authenticate, async (req, res) => {
     const params = [groupId, parseInt(limit)];
     const result = await pool.query(query, params);
 
-    res.json({ birthdays: result.rows });
+    // Format dates to ensure they're strings and add formatted date strings
+    const formattedBirthdays = result.rows.map(row => ({
+      ...row,
+      birthday: row.birthday ? new Date(row.birthday).toISOString().split('T')[0] : null,
+      last_birthday_date: row.last_birthday_date ? new Date(row.last_birthday_date).toISOString().split('T')[0] : null,
+      last_birthday_formatted: row.last_birthday_date ? new Date(row.last_birthday_date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : null,
+    }));
+
+    res.json({ birthdays: formattedBirthdays });
   } catch (error) {
     console.error('Get past birthdays error:', error);
     res.status(500).json({ error: 'Server error' });
