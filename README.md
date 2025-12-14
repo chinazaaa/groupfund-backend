@@ -170,6 +170,34 @@ Validation errors:
 - Use `npm run migrate` to run database migrations
 - Check logs in the console for debugging
 
+## Push Notifications Setup
+
+This backend uses Expo push notifications. To enable push notifications, especially for Android devices (which require FCM):
+
+### For Development
+- Push notifications work out of the box for iOS and Android in development mode
+- No additional configuration needed
+
+### For Production (Android/FCM)
+1. **Get your FCM Server Key:**
+   - Go to [Firebase Console](https://console.firebase.google.com/)
+   - Select your project (or create one)
+   - Go to Project Settings → Cloud Messaging
+   - Copy the "Server key" (not the Sender ID)
+
+2. **Configure FCM in Expo:**
+   - Go to [Expo Dashboard](https://expo.dev)
+   - Navigate to your project
+   - Go to Credentials → Android
+   - Add your FCM Server Key
+
+3. **Optional: Add Expo Access Token (Recommended):**
+   - Go to [Expo Account Settings](https://expo.dev/accounts/[your-account]/settings/access-tokens)
+   - Create a new access token
+   - Add it to your `.env` file as `EXPO_ACCESS_TOKEN`
+
+**Note:** The FCM server key must be configured in your Expo project dashboard, not in the backend code. The backend only needs the `EXPO_ACCESS_TOKEN` (optional but recommended for production).
+
 ## Production Considerations
 
 - Use environment variables for all sensitive data
@@ -182,3 +210,4 @@ Validation errors:
 - Set up proper logging
 - Use connection pooling for database
 - Implement proper error tracking
+- Configure FCM server key in Expo dashboard for Android push notifications

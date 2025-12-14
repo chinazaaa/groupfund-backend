@@ -2,7 +2,10 @@ const pool = require('../config/database');
 const { Expo } = require('expo-server-sdk');
 
 // Create a new Expo SDK client
-const expo = new Expo();
+// If EXPO_ACCESS_TOKEN is provided, use it for better reliability and FCM support
+const expo = new Expo({
+  accessToken: process.env.EXPO_ACCESS_TOKEN,
+});
 
 /**
  * Send push notification to a user
