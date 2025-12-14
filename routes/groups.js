@@ -38,7 +38,7 @@ router.post('/create', authenticate, [
     const groupResult = await pool.query(
       `INSERT INTO groups (name, invite_code, contribution_amount, max_members, admin_id, currency) 
        VALUES ($1, $2, $3, $4, $5, $6) 
-       RETURNING id, name, invite_code, contribution_amount, max_members, admin_id, currency, created_at`,
+       RETURNING id, name, invite_code, contribution_amount, max_members, admin_id, currency, accepting_requests, created_at`,
       [name, inviteCode, contributionAmount, maxMembers, adminId, currency]
     );
 
@@ -68,14 +68,14 @@ router.get('/preview/:inviteCode', authenticate, async (req, res) => {
 
     const groupResult = await pool.query(
       `SELECT 
-        g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.created_at,
+        g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.created_at,
         COUNT(gm.id) FILTER (WHERE gm.status = 'active') as current_members,
         u.name as admin_name
        FROM groups g
        LEFT JOIN group_members gm ON g.id = gm.group_id
        LEFT JOIN users u ON g.admin_id = u.id
        WHERE g.invite_code = $1
-       GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.created_at, u.name`,
+       GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.created_at, u.name`,
       [inviteCode]
     );
 
@@ -94,6 +94,7 @@ router.get('/preview/:inviteCode', authenticate, async (req, res) => {
         max_members: parseInt(group.max_members),
         currency: group.currency || 'NGN',
         status: group.status || 'active',
+        accepting_requests: group.accepting_requests !== false, // Default to true if null
         current_members: parseInt(group.current_members || 0),
         admin_name: group.admin_name,
         created_at: group.created_at,
@@ -145,6 +146,13 @@ router.post('/join', authenticate, [
       [group.id, userId]
     );
 
+    const isAdmin = group.admin_id === userId;
+
+    // Check if group is accepting new requests (admins can always rejoin)
+    if (group.accepting_requests === false && !isAdmin) {
+      return res.status(400).json({ error: 'This group is not currently accepting new join requests' });
+    }
+
     if (memberCheck.rows.length > 0) {
       const memberStatus = memberCheck.rows[0].status;
       const memberId = memberCheck.rows[0].id;
@@ -155,7 +163,6 @@ router.post('/join', authenticate, [
         return res.status(400).json({ error: 'You are already a member of this group' });
       } else if (memberStatus === 'inactive') {
         // User was previously rejected, allow them to rejoin by updating status to pending
-        const isAdmin = group.admin_id === userId;
         await pool.query(
           `UPDATE group_members 
            SET status = $1, role = $2, joined_at = CURRENT_TIMESTAMP
@@ -203,7 +210,6 @@ router.post('/join', authenticate, [
     }
 
     // Add member (pending approval if not admin)
-    const isAdmin = group.admin_id === userId;
     await pool.query(
       `INSERT INTO group_members (group_id, user_id, role, status) 
        VALUES ($1, $2, $3, $4)`,
@@ -253,7 +259,7 @@ router.get('/my-groups', authenticate, async (req, res) => {
 
     const result = await pool.query(
       `SELECT
-        g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.created_at,
+        g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.created_at,
         gm.role, gm.status as member_status,
         COUNT(DISTINCT gm2.id) FILTER (WHERE gm2.status = 'active') as active_members,
         u.name as admin_name
@@ -263,7 +269,7 @@ router.get('/my-groups', authenticate, async (req, res) => {
        LEFT JOIN users u ON g.admin_id = u.id
        WHERE gm.user_id = $1
          AND gm.status != 'inactive'
-       GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.created_at, gm.role, gm.status, u.name
+       GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.created_at, gm.role, gm.status, u.name
        ORDER BY g.created_at DESC`,
       [userId]
     );
@@ -301,7 +307,7 @@ router.get('/:groupId', authenticate, async (req, res) => {
        LEFT JOIN group_members gm ON g.id = gm.group_id AND gm.status = 'active'
        LEFT JOIN group_members gm2 ON g.id = gm2.group_id AND gm2.status = 'pending'
        WHERE g.id = $1
-       GROUP BY g.id, u.name`,
+       GROUP BY g.id, u.name, g.accepting_requests`,
       [groupId]
     );
 
@@ -342,6 +348,7 @@ router.put('/:groupId', authenticate, [
   body('name').optional().trim().notEmpty(),
   body('contributionAmount').optional().isFloat({ min: 0 }),
   body('maxMembers').optional().isInt({ min: 2 }),
+  body('acceptingRequests').optional().isBoolean(),
 ], async (req, res) => {
   try {
     const { groupId } = req.params;
@@ -357,7 +364,7 @@ router.put('/:groupId', authenticate, [
       return res.status(403).json({ error: 'Only admins can update group settings' });
     }
 
-    const { name, contributionAmount, maxMembers } = req.body;
+    const { name, contributionAmount, maxMembers, acceptingRequests } = req.body;
     const updates = [];
     const values = [];
     let paramCount = 1;
@@ -375,6 +382,11 @@ router.put('/:groupId', authenticate, [
     if (maxMembers !== undefined) {
       updates.push(`max_members = $${paramCount++}`);
       values.push(maxMembers);
+    }
+
+    if (acceptingRequests !== undefined) {
+      updates.push(`accepting_requests = $${paramCount++}`);
+      values.push(acceptingRequests);
     }
 
     if (updates.length === 0) {
