@@ -148,7 +148,7 @@ router.post('/join', authenticate, [
 
     const isAdmin = group.admin_id === userId;
 
-    // Check if group is accepting new requests (admins can always rejoin)
+    // Check if group is accepting new requests (group creator can bypass this restriction)
     if (group.accepting_requests === false && !isAdmin) {
       return res.status(400).json({ error: 'This group is not currently accepting new join requests' });
     }
@@ -162,7 +162,8 @@ router.post('/join', authenticate, [
       } else if (memberStatus === 'active') {
         return res.status(400).json({ error: 'You are already a member of this group' });
       } else if (memberStatus === 'inactive') {
-        // User was previously rejected, allow them to rejoin by updating status to pending
+        // User was previously rejected, allow them to rejoin
+        // Note: Group creator (admin) shouldn't normally be inactive, but if they are, they can rejoin directly as active
         await pool.query(
           `UPDATE group_members 
            SET status = $1, role = $2, joined_at = CURRENT_TIMESTAMP
@@ -586,7 +587,8 @@ router.get('/:groupId/compliance', authenticate, async (req, res) => {
         }
 
         const isPaid = status === 'paid' || status === 'confirmed';
-        const isOverdue = isPast && !isPaid && status === 'not_paid';
+        // 'not_received' means they marked as paid but celebrant rejected it, so still overdue
+        const isOverdue = isPast && !isPaid && (status === 'not_paid' || status === 'not_received');
 
         if (isPaid) paidCount++;
         else if (isOverdue) {

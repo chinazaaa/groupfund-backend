@@ -734,8 +734,13 @@ router.get('/overdue', authenticate, async (req, res) => {
             [group.id, member.id, userId, currentYear]
           );
 
-          // If no contribution or status is 'not_paid', it's overdue
-          if (contributionCheck.rows.length === 0 || contributionCheck.rows[0].status === 'not_paid') {
+          // If no contribution or status is 'not_paid' or 'not_received', it's overdue
+          // 'not_received' means they marked as paid but celebrant rejected it, so still overdue
+          const isOverdue = contributionCheck.rows.length === 0 || 
+                           contributionCheck.rows[0].status === 'not_paid' || 
+                           contributionCheck.rows[0].status === 'not_received';
+          
+          if (isOverdue) {
             const daysOverdue = Math.floor((today - thisYearBirthday) / (1000 * 60 * 60 * 24));
             
             overdueContributions.push({

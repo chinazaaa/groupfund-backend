@@ -377,6 +377,7 @@ async function checkOverdueContributions() {
             );
 
             // Check if contribution is paid (status is 'paid' or 'confirmed')
+            // 'not_received' means they marked as paid but celebrant rejected it, so still overdue
             const hasPaid = contributionCheck.rows.length > 0 && 
                            (contributionCheck.rows[0].status === 'paid' || 
                             contributionCheck.rows[0].status === 'confirmed');
