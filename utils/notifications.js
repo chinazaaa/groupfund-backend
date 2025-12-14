@@ -110,10 +110,8 @@ async function createNotification(userId, type, title, message, groupId = null, 
       }
 
       if (type === 'birthday_reminder' || type === 'birthday_wish') {
-        screen = 'UpcomingBirthdays';
-        if (relatedUserId) {
-          params = { userId: relatedUserId };
-        }
+        screen = 'Home';
+        params = {};
       }
 
       // Send push notification
