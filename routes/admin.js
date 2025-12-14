@@ -629,11 +629,36 @@ router.get('/birthdays/today', async (req, res) => {
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
     // Query users whose birthday month and day match today
+    // Include notification status checks
     const query = `
       SELECT 
         u.id, u.name, u.email, u.phone, u.birthday,
         u.is_verified, u.is_active, u.created_at,
-        (SELECT COUNT(*) FROM group_members gm WHERE gm.user_id = u.id) as group_count
+        u.expo_push_token,
+        (SELECT COUNT(*) FROM group_members gm WHERE gm.user_id = u.id) as group_count,
+        CASE 
+          WHEN EXISTS (
+            SELECT 1 FROM notifications n 
+            WHERE n.user_id = u.id 
+              AND n.type = 'birthday_wish' 
+              AND n.created_at::date = CURRENT_DATE
+          ) THEN true 
+          ELSE false 
+        END as in_app_notification_sent,
+        CASE 
+          WHEN EXISTS (
+            SELECT 1 FROM notifications n 
+            WHERE n.user_id = u.id 
+              AND n.type = 'birthday_wish' 
+              AND n.created_at::date = CURRENT_DATE
+          ) AND u.expo_push_token IS NOT NULL 
+          THEN true 
+          ELSE false 
+        END as push_notification_sent,
+        CASE 
+          WHEN u.email IS NOT NULL AND u.email != '' THEN true 
+          ELSE false 
+        END as email_available
       FROM users u
       WHERE u.birthday IS NOT NULL
         AND DATE_PART('month', u.birthday) = DATE_PART('month', CURRENT_DATE)
@@ -658,9 +683,22 @@ router.get('/birthdays/today', async (req, res) => {
 
     res.json({
       birthdays: result.rows.map(user => ({
-        ...user,
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        birthday: user.birthday,
+        is_verified: user.is_verified,
         is_active: user.is_active !== undefined ? user.is_active : true,
+        created_at: user.created_at,
         group_count: parseInt(user.group_count || 0),
+        notifications: {
+          in_app_sent: user.in_app_notification_sent,
+          push_sent: user.push_notification_sent,
+          push_token_available: !!user.expo_push_token,
+          email_sent: user.email_available, // We can't track actual email delivery without a log table
+          email_available: user.email_available,
+        },
       })),
       pagination: {
         page: parseInt(page),
@@ -696,6 +734,127 @@ router.post('/birthdays/trigger-reminders', async (req, res) => {
   } catch (error) {
     console.error('Error triggering birthday reminders:', error);
     res.status(500).json({ error: 'Server error triggering birthday reminders' });
+  }
+});
+
+// Manually send birthday notifications to a specific user
+router.post('/birthdays/:userId/send-notifications', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { sendInApp = true, sendPush = true, sendEmail = true } = req.body;
+
+    // Get user details
+    const userResult = await pool.query(
+      `SELECT id, name, email, expo_push_token, birthday, is_verified
+       FROM users 
+       WHERE id = $1 AND birthday IS NOT NULL`,
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found or has no birthday set' });
+    }
+
+    const user = userResult.rows[0];
+
+    // Check if today is their birthday
+    const isTodayBirthday = await pool.query(
+      `SELECT 1 FROM users 
+       WHERE id = $1 
+         AND DATE_PART('month', birthday) = DATE_PART('month', CURRENT_DATE)
+         AND DATE_PART('day', birthday) = DATE_PART('day', CURRENT_DATE)`,
+      [userId]
+    );
+
+    if (isTodayBirthday.rows.length === 0) {
+      return res.status(400).json({ 
+        error: 'Today is not this user\'s birthday',
+        user_birthday: user.birthday
+      });
+    }
+
+    const results = {
+      in_app_notification: { sent: false, error: null },
+      push_notification: { sent: false, error: null },
+      email: { sent: false, error: null },
+    };
+
+    // Send in-app notification
+    if (sendInApp) {
+      try {
+        const { createNotification } = require('../utils/notifications');
+        await createNotification(
+          user.id,
+          'birthday_wish',
+          '🎉 Happy Birthday!',
+          `Happy Birthday, ${user.name}! 🎂🎉 Wishing you a wonderful day filled with joy and celebration!`,
+          null,
+          user.id
+        );
+        results.in_app_notification.sent = true;
+      } catch (error) {
+        results.in_app_notification.error = error.message;
+        console.error('Error sending in-app notification:', error);
+      }
+    }
+
+    // Send push notification (handled by createNotification if push token exists)
+    if (sendPush) {
+      if (!user.expo_push_token) {
+        results.push_notification.error = 'User has no push token registered';
+      } else {
+        // Push notification is sent automatically by createNotification if token exists
+        // If we already sent in-app, push was sent too. Otherwise, send it separately
+        if (!sendInApp) {
+          try {
+            const { createNotification } = require('../utils/notifications');
+            await createNotification(
+              user.id,
+              'birthday_wish',
+              '🎉 Happy Birthday!',
+              `Happy Birthday, ${user.name}! 🎂🎉 Wishing you a wonderful day filled with joy and celebration!`,
+              null,
+              user.id
+            );
+            results.push_notification.sent = true;
+          } catch (error) {
+            results.push_notification.error = error.message;
+            console.error('Error sending push notification:', error);
+          }
+        } else {
+          results.push_notification.sent = results.in_app_notification.sent;
+        }
+      }
+    }
+
+    // Send email
+    if (sendEmail) {
+      if (!user.email) {
+        results.email.error = 'User has no email address';
+      } else {
+        try {
+          const { sendBirthdayEmail } = require('../utils/email');
+          await sendBirthdayEmail(user.email, user.name);
+          results.email.sent = true;
+        } catch (error) {
+          results.email.error = error.message;
+          console.error('Error sending birthday email:', error);
+        }
+      }
+    }
+
+    res.json({
+      message: 'Birthday notifications sent',
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+      },
+      results,
+    });
+  } catch (error) {
+    console.error('Error sending birthday notifications:', error);
+    res.status(500).json({ error: 'Server error sending birthday notifications' });
   }
 });
 
