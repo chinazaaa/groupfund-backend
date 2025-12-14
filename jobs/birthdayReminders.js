@@ -13,38 +13,94 @@ async function checkBirthdayReminders() {
     
     // Get all active users with their notification preferences
     // First, get users whose birthday is TODAY (using SQL date comparison to avoid timezone issues)
+    // Also check if notifications were already sent today
     const todayBirthdayUsers = await pool.query(
-      `SELECT id, name, email, birthday, 
-              notify_7_days_before, notify_1_day_before, notify_same_day
-       FROM users 
-       WHERE birthday IS NOT NULL 
-         AND is_verified = TRUE
-         AND DATE_PART('month', birthday) = DATE_PART('month', CURRENT_DATE)
-         AND DATE_PART('day', birthday) = DATE_PART('day', CURRENT_DATE)`
+      `SELECT 
+        u.id, u.name, u.email, u.birthday, u.expo_push_token,
+        u.notify_7_days_before, u.notify_1_day_before, u.notify_same_day,
+        CASE 
+          WHEN EXISTS (
+            SELECT 1 FROM notifications n 
+            WHERE n.user_id = u.id 
+              AND n.type = 'birthday_wish' 
+              AND n.created_at::date = CURRENT_DATE
+          ) THEN true 
+          ELSE false 
+        END as in_app_notification_sent,
+        CASE 
+          WHEN EXISTS (
+            SELECT 1 FROM birthday_email_log bel 
+            WHERE bel.user_id = u.id 
+              AND bel.sent_at = CURRENT_DATE
+          ) THEN true 
+          ELSE false 
+        END as email_sent
+       FROM users u
+       WHERE u.birthday IS NOT NULL 
+         AND u.is_verified = TRUE
+         AND DATE_PART('month', u.birthday) = DATE_PART('month', CURRENT_DATE)
+         AND DATE_PART('day', u.birthday) = DATE_PART('day', CURRENT_DATE)`
     );
 
     // Send birthday wishes to users whose birthday is today
     for (const user of todayBirthdayUsers.rows) {
-      // Send birthday wish notification
-      await createNotification(
-        user.id,
-        'birthday_wish',
-        '🎉 Happy Birthday!',
-        `Happy Birthday, ${user.name}! 🎂🎉 Wishing you a wonderful day filled with joy and celebration!`,
-        null,
-        user.id
-      );
+      let sentInApp = false;
+      let sentPush = false;
+      let sentEmail = false;
 
-      // Send birthday email to the celebrant
-      if (user.email) {
+      // Check and send in-app notification (if not already sent)
+      if (!user.in_app_notification_sent) {
         try {
-          // Send email (non-blocking - don't fail if email fails)
+          await createNotification(
+            user.id,
+            'birthday_wish',
+            '🎉 Happy Birthday!',
+            `Happy Birthday, ${user.name}! 🎂🎉 Wishing you a wonderful day filled with joy and celebration!`,
+            null,
+            user.id
+          );
+          sentInApp = true;
+          // Push notification is sent automatically by createNotification if push token exists
+          if (user.expo_push_token) {
+            sentPush = true;
+          }
+          console.log(`Birthday in-app notification sent to ${user.name} (${user.email})${user.expo_push_token ? ' + push notification' : ''}`);
+        } catch (err) {
+          console.error(`Error sending in-app notification to ${user.email}:`, err);
+        }
+      } else {
+        console.log(`Skipping in-app notification for ${user.name} (${user.email}): Already sent today`);
+        // Check if push was sent (notification exists and user has push token)
+        if (user.expo_push_token) {
+          sentPush = true;
+        }
+      }
+
+      // Send birthday email to the celebrant (only if not already sent)
+      if (user.email && !user.email_sent) {
+        try {
           await sendBirthdayEmail(user.email, user.name);
+          // Log email send in birthday_email_log
+          await pool.query(
+            `INSERT INTO birthday_email_log (user_id, email, sent_at)
+             VALUES ($1, $2, CURRENT_DATE)
+             ON CONFLICT (user_id, sent_at) DO NOTHING`,
+            [user.id, user.email]
+          );
+          sentEmail = true;
           console.log(`Birthday email sent successfully to ${user.email}`);
         } catch (err) {
           console.error(`Error sending birthday email to ${user.email}:`, err);
           // Don't throw - email is non-critical, continue with other users
         }
+      } else if (user.email && user.email_sent) {
+        console.log(`Skipping email for ${user.name} (${user.email}): Already sent today`);
+        sentEmail = true;
+      }
+
+      // Summary log
+      if (user.in_app_notification_sent && user.email_sent) {
+        console.log(`All notifications already sent for ${user.name} (${user.email})`);
       }
     }
 

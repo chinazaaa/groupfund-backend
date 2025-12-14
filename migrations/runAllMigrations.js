@@ -14,7 +14,8 @@ const migrations = [
   'add_notification_preferences.sql',
   'add_user_active_status.sql',
   'update_contribution_status.sql',
-  'update_rejected_to_not_received.sql'
+  'update_rejected_to_not_received.sql',
+  'add_birthday_email_log.sql'
 ];
 
 async function runAllMigrations() {

@@ -656,6 +656,14 @@ router.get('/birthdays/today', async (req, res) => {
           ELSE false 
         END as push_notification_sent,
         CASE 
+          WHEN EXISTS (
+            SELECT 1 FROM birthday_email_log bel 
+            WHERE bel.user_id = u.id 
+              AND bel.sent_at = CURRENT_DATE
+          ) THEN true 
+          ELSE false 
+        END as email_sent,
+        CASE 
           WHEN u.email IS NOT NULL AND u.email != '' THEN true 
           ELSE false 
         END as email_available
@@ -696,7 +704,7 @@ router.get('/birthdays/today', async (req, res) => {
           in_app_sent: user.in_app_notification_sent,
           push_sent: user.push_notification_sent,
           push_token_available: !!user.expo_push_token,
-          email_sent: user.email_available, // We can't track actual email delivery without a log table
+          email_sent: user.email_sent,
           email_available: user.email_available,
         },
       })),
@@ -835,6 +843,13 @@ router.post('/birthdays/:userId/send-notifications', async (req, res) => {
         try {
           const { sendBirthdayEmail } = require('../utils/email');
           await sendBirthdayEmail(user.email, user.name);
+          // Log email send in birthday_email_log
+          await pool.query(
+            `INSERT INTO birthday_email_log (user_id, email, sent_at)
+             VALUES ($1, $2, CURRENT_DATE)
+             ON CONFLICT (user_id, sent_at) DO NOTHING`,
+            [user.id, user.email]
+          );
           results.email.sent = true;
         } catch (error) {
           results.email.error = error.message;

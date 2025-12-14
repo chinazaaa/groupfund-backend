@@ -9,13 +9,15 @@ const migrations = [
   'schema.sql',
   'add_admin_field.sql',
   'add_contact_submissions.sql',
+  'add_waitlist.sql',
   'add_currency_to_groups.sql',
   'add_expo_push_token.sql',
   'add_international_payment_fields.sql',
   'add_notification_preferences.sql',
   'add_user_active_status.sql',
   'update_contribution_status.sql',
-  'update_rejected_to_not_received.sql'
+  'update_rejected_to_not_received.sql',
+  'add_birthday_email_log.sql'
 ];
 
 // Migration endpoint - SECURE THIS IN PRODUCTION!
