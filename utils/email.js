@@ -657,6 +657,117 @@ const sendWaitlistConfirmationEmail = async (email, name) => {
   }
 };
 
+// Send overdue contribution reminder email
+// overdueContributions: array of { groupName, currency, contributionAmount, birthdayUserName, birthdayDate }
+const sendOverdueContributionEmail = async (email, userName, daysOverdue, overdueContributions) => {
+  try {
+    const { formatAmount } = require('./currency');
+    
+    let subject = '';
+    let titleText = '';
+    let messageText = '';
+    let urgencyText = '';
+
+    const totalOverdue = overdueContributions.length;
+
+    if (daysOverdue === 3) {
+      subject = `⚠️ Overdue Contribution: ${totalOverdue} payment${totalOverdue > 1 ? 's' : ''} 3 days overdue - GroupFund`;
+      titleText = '⚠️ Overdue Contribution - 3 Days';
+      messageText = `You have ${totalOverdue} contribution${totalOverdue > 1 ? 's' : ''} that ${totalOverdue > 1 ? 'are' : 'is'} 3 days overdue.`;
+      urgencyText = 'Please send your contribution as soon as possible.';
+    } else if (daysOverdue === 7) {
+      subject = `⚠️ Overdue Contribution: ${totalOverdue} payment${totalOverdue > 1 ? 's' : ''} 7 days overdue - GroupFund`;
+      titleText = '⚠️ Overdue Contribution - 7 Days';
+      messageText = `You have ${totalOverdue} contribution${totalOverdue > 1 ? 's' : ''} that ${totalOverdue > 1 ? 'are' : 'is'} 7 days overdue.`;
+      urgencyText = 'This is a reminder that your contribution is now 7 days overdue. Please pay immediately.';
+    } else if (daysOverdue === 14) {
+      subject = `🚨 Urgent: ${totalOverdue} payment${totalOverdue > 1 ? 's' : ''} 14 days overdue - GroupFund`;
+      titleText = '🚨 Urgent - Overdue Contribution - 14 Days';
+      messageText = `You have ${totalOverdue} contribution${totalOverdue > 1 ? 's' : ''} that ${totalOverdue > 1 ? 'are' : 'is'} 14 days overdue.`;
+      urgencyText = 'This is a final reminder. Your contribution is significantly overdue. Please pay immediately.';
+    }
+
+    // Build contributions list
+    const contributionsHtml = overdueContributions.map(contribution => {
+      const birthdayDate = new Date(contribution.birthdayDate);
+      const formattedDate = birthdayDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+      
+      return `
+            <div style="background: #fef2f2; padding: 15px; border-radius: 8px; margin: 12px 0; border-left: 4px solid #ef4444;">
+              <p style="color: #374151; font-size: 16px; margin: 0 0 8px 0; font-weight: 600;">
+                🎂 ${contribution.birthdayUserName}
+              </p>
+              <p style="color: #6b7280; font-size: 14px; margin: 4px 0;">
+                Birthday: ${formattedDate}
+              </p>
+              <p style="color: #6b7280; font-size: 14px; margin: 4px 0;">
+                Group: ${contribution.groupName}
+              </p>
+              <p style="color: #dc2626; font-size: 16px; margin: 8px 0 0 0; font-weight: 700;">
+                Amount: ${formatAmount(contribution.contributionAmount, contribution.currency)}
+              </p>
+            </div>
+          `;
+    }).join('');
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">⚠️ GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #dc2626; font-size: 24px; margin-top: 0;">${titleText}</h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${userName},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            ${messageText}
+          </p>
+          
+          ${contributionsHtml}
+
+          <div style="background: #fee2e2; padding: 20px; border-radius: 8px; margin: 20px 0; border: 2px solid #ef4444;">
+            <p style="color: #dc2626; font-size: 16px; margin: 0; font-weight: 700; text-align: center;">
+              ⚠️ ${urgencyText}
+            </p>
+          </div>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Please log in to the GroupFund app to mark your contributions as paid. Thank you for your prompt attention to this matter.
+          </p>
+          
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Best regards,<br/>
+            <strong style="color: #6366f1;">The GroupFund Team</strong>
+          </p>
+          
+          <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            This is an automated reminder email from GroupFund. You can manage your notification preferences in the app settings.
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject,
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error sending overdue contribution email:', error);
+      return false;
+    }
+
+    console.log('Overdue contribution email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending overdue contribution email:', error);
+    return false;
+  }
+};
+
 module.exports = {
   sendOTPEmail,
   sendOTPSMS,
@@ -667,4 +778,5 @@ module.exports = {
   sendComprehensiveBirthdayReminderEmail,
   sendMonthlyBirthdayNewsletter,
   sendWaitlistConfirmationEmail,
+  sendOverdueContributionEmail,
 };

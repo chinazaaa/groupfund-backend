@@ -316,4 +316,160 @@ async function checkBirthdayReminders() {
 //     });
 // }
 
-module.exports = { checkBirthdayReminders };
+/**
+ * Check for overdue contributions and send escalating reminders
+ * Sends reminders 3, 7, and 14 days after a birthday has passed if contribution is still unpaid
+ */
+async function checkOverdueContributions() {
+  try {
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    
+    // Get all active users
+    const usersResult = await pool.query(
+      `SELECT id, name, email, expo_push_token,
+              notify_7_days_before, notify_1_day_before, notify_same_day
+       FROM users 
+       WHERE is_verified = TRUE AND is_active = TRUE`
+    );
+
+    for (const user of usersResult.rows) {
+      // Get all groups the user is in
+      const groupsResult = await pool.query(
+        `SELECT g.id, g.name, g.contribution_amount, g.currency
+         FROM groups g
+         JOIN group_members gm ON g.id = gm.group_id
+         WHERE gm.user_id = $1 AND gm.status = 'active'`,
+        [user.id]
+      );
+
+      // Track overdue contributions by days overdue (3, 7, 14)
+      const overdueByDays = {
+        3: [],
+        7: [],
+        14: []
+      };
+
+      for (const group of groupsResult.rows) {
+        // Get all active members in this group
+        const membersResult = await pool.query(
+          `SELECT u.id, u.name, u.birthday
+           FROM users u
+           JOIN group_members gm ON u.id = gm.user_id
+           WHERE gm.group_id = $1 AND gm.status = 'active' AND u.id != $2 AND u.birthday IS NOT NULL`,
+          [group.id, user.id]
+        );
+
+        for (const member of membersResult.rows) {
+          const memberBirthday = new Date(member.birthday);
+          const thisYearBirthday = new Date(currentYear, memberBirthday.getMonth(), memberBirthday.getDate());
+          
+          // Check if birthday has passed this year
+          if (thisYearBirthday < today) {
+            const daysOverdue = Math.floor((today - thisYearBirthday) / (1000 * 60 * 60 * 24));
+            
+            // Check if user has paid for this birthday
+            const contributionCheck = await pool.query(
+              `SELECT id, status FROM birthday_contributions 
+               WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3
+               AND EXTRACT(YEAR FROM contribution_date) = $4`,
+              [group.id, member.id, user.id, currentYear]
+            );
+
+            // Check if contribution is paid (status is 'paid' or 'confirmed')
+            const hasPaid = contributionCheck.rows.length > 0 && 
+                           (contributionCheck.rows[0].status === 'paid' || 
+                            contributionCheck.rows[0].status === 'confirmed');
+
+            // If not paid and overdue by 3, 7, or 14 days, add to reminder list
+            if (!hasPaid && (daysOverdue === 3 || daysOverdue === 7 || daysOverdue === 14)) {
+              // Check if reminder was already sent today for this specific overdue period
+              const reminderCheck = await pool.query(
+                `SELECT id FROM notifications 
+                 WHERE user_id = $1 AND type = 'overdue_contribution' 
+                 AND created_at::date = CURRENT_DATE
+                 AND message LIKE $2
+                 AND group_id = $3`,
+                [user.id, `%${daysOverdue} days overdue%`, group.id]
+              );
+
+              if (reminderCheck.rows.length === 0) {
+                overdueByDays[daysOverdue].push({
+                  groupId: group.id,
+                  groupName: group.name,
+                  currency: group.currency || 'NGN',
+                  contributionAmount: parseFloat(group.contribution_amount),
+                  birthdayUserId: member.id,
+                  birthdayUserName: member.name,
+                  birthdayDate: thisYearBirthday.toISOString().split('T')[0],
+                  daysOverdue: daysOverdue
+                });
+              }
+            }
+          }
+        }
+      }
+
+      // Send reminders for each overdue period (3, 7, 14 days)
+      for (const [daysOverdue, overdueList] of Object.entries(overdueByDays)) {
+        const daysNum = parseInt(daysOverdue);
+        
+        if (overdueList.length === 0) {
+          continue;
+        }
+
+        // Check user preferences - use same_day preference for overdue reminders
+        if (!user.notify_same_day) {
+          continue; // Skip if user doesn't want same-day notifications
+        }
+
+        // Send notification for each overdue contribution
+        for (const overdue of overdueList) {
+          const title = daysNum === 3 
+            ? '⚠️ Overdue Contribution - 3 Days'
+            : daysNum === 7
+            ? '⚠️ Overdue Contribution - 7 Days'
+            : '⚠️ Overdue Contribution - 14 Days';
+          
+          const message = `${overdue.birthdayUserName}'s birthday was ${daysNum} days ago. Please send your contribution of ${overdue.contributionAmount} ${overdue.currency} in ${overdue.groupName}.`;
+
+          await createNotification(
+            user.id,
+            'overdue_contribution',
+            title,
+            message,
+            overdue.groupId,
+            overdue.birthdayUserId
+          );
+        }
+
+        // Send comprehensive email if user has email
+        if (user.email && overdueList.length > 0) {
+          try {
+            const { sendOverdueContributionEmail } = require('../utils/email');
+            await sendOverdueContributionEmail(
+              user.email,
+              user.name,
+              daysNum,
+              overdueList.map(o => ({
+                groupName: o.groupName,
+                currency: o.currency,
+                contributionAmount: o.contributionAmount,
+                birthdayUserName: o.birthdayUserName,
+                birthdayDate: o.birthdayDate
+              }))
+            );
+          } catch (err) {
+            console.error(`Error sending overdue contribution email to ${user.email}:`, err);
+          }
+        }
+      }
+    }
+
+    console.log('Overdue contributions check completed');
+  } catch (error) {
+    console.error('Error checking overdue contributions:', error);
+  }
+}
+
+module.exports = { checkBirthdayReminders, checkOverdueContributions };
