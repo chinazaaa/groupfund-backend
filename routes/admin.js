@@ -721,61 +721,18 @@ router.get('/birthdays/today', async (req, res) => {
   }
 });
 
-// Trigger birthday reminders job manually (for testing)
-router.post('/birthdays/trigger-reminders', async (req, res) => {
+// Trigger birthday wishes for celebrants (today's birthdays)
+router.post('/birthdays/trigger-birthday-wishes', async (req, res) => {
   try {
-    const { checkBirthdayReminders } = require('../jobs/birthdayReminders');
-    
-    // Run the job in the background (don't wait for it to complete)
-    checkBirthdayReminders()
-      .then(() => {
-        console.log('Birthday reminders job completed successfully');
-      })
-      .catch((error) => {
-        console.error('Birthday reminders job failed:', error);
-      });
-
-    res.json({ 
-      message: 'Birthday reminders job has been triggered. Check logs for results.',
-      note: 'This job runs in the background. Emails and notifications will be sent to users whose birthday is today.'
-    });
-  } catch (error) {
-    console.error('Error triggering birthday reminders:', error);
-    res.status(500).json({ error: 'Server error triggering birthday reminders' });
-  }
-});
-
-// Trigger birthday reminders with detailed results (respects user preferences)
-router.post('/birthdays/trigger-reminders-detailed', async (req, res) => {
-  try {
-    const { checkBirthdayReminders } = require('../jobs/birthdayReminders');
     const { createNotification } = require('../utils/notifications');
+    const { sendBirthdayEmail } = require('../utils/email');
     
     const results = {
-      today_birthdays: {
-        sent: 0,
-        skipped: 0,
-        details: []
-      },
-      reminders_7_days: {
-        sent: 0,
-        skipped: 0,
-        details: []
-      },
-      reminders_1_day: {
-        sent: 0,
-        skipped: 0,
-        details: []
-      },
-      reminders_same_day: {
-        sent: 0,
-        skipped: 0,
-        details: []
-      }
+      sent: 0,
+      skipped: 0,
+      details: []
     };
 
-    const today = new Date();
-    
     // Process today's birthdays
     const todayBirthdayUsers = await pool.query(
       `SELECT 
@@ -814,29 +771,81 @@ router.post('/birthdays/trigger-reminders-detailed', async (req, res) => {
           null,
           user.id
         );
-        results.today_birthdays.sent++;
-        results.today_birthdays.details.push({
+        results.sent++;
+        results.details.push({
           user_id: user.id,
           name: user.name,
           email: user.email,
-          notification_sent: true
+          notification_sent: true,
+          email_sent: false
         });
       } else {
-        results.today_birthdays.skipped++;
+        results.skipped++;
       }
 
       if (user.email && !user.email_sent) {
-        const { sendBirthdayEmail } = require('../utils/email');
-        await sendBirthdayEmail(user.email, user.name);
-        await pool.query(
-          `INSERT INTO birthday_email_log (user_id, email, sent_at)
-           VALUES ($1, $2, CURRENT_DATE)
-           ON CONFLICT (user_id, sent_at) DO NOTHING`,
-          [user.id, user.email]
-        );
+        try {
+          await sendBirthdayEmail(user.email, user.name);
+          await pool.query(
+            `INSERT INTO birthday_email_log (user_id, email, sent_at)
+             VALUES ($1, $2, CURRENT_DATE)
+             ON CONFLICT (user_id, sent_at) DO NOTHING`,
+            [user.id, user.email]
+          );
+          if (results.details.length > 0) {
+            const detail = results.details.find(d => d.user_id === user.id);
+            if (detail) {
+              detail.email_sent = true;
+            }
+          }
+        } catch (err) {
+          console.error(`Error sending birthday email to ${user.email}:`, err);
+        }
+      } else if (user.email && user.email_sent) {
+        results.skipped++;
       }
     }
 
+    res.json({
+      message: 'Birthday wishes processed successfully',
+      summary: {
+        total: results.sent + results.skipped,
+        sent: results.sent,
+        skipped: results.skipped
+      },
+      details: results.details
+    });
+  } catch (error) {
+    console.error('Error triggering birthday wishes:', error);
+    res.status(500).json({ error: 'Server error triggering birthday wishes', message: error.message });
+  }
+});
+
+// Trigger birthday reminders to contributors (7 days, 1 day, same day - respects user preferences)
+router.post('/birthdays/trigger-reminders', async (req, res) => {
+  try {
+    const { createNotification } = require('../utils/notifications');
+    
+    const results = {
+      reminders_7_days: {
+        sent: 0,
+        skipped: 0,
+        details: []
+      },
+      reminders_1_day: {
+        sent: 0,
+        skipped: 0,
+        details: []
+      },
+      reminders_same_day: {
+        sent: 0,
+        skipped: 0,
+        details: []
+      }
+    };
+
+    const today = new Date();
+    
     // Process reminders (7 days, 1 day, same day) - respects user preferences
     const usersResult = await pool.query(
       `SELECT id, name, email, birthday, 
@@ -1048,11 +1057,6 @@ router.post('/birthdays/trigger-reminders-detailed', async (req, res) => {
     res.json({
       message: 'Birthday reminders processed successfully',
       summary: {
-        today_birthdays: {
-          total: results.today_birthdays.sent + results.today_birthdays.skipped,
-          sent: results.today_birthdays.sent,
-          skipped: results.today_birthdays.skipped
-        },
         reminders_7_days: {
           total: results.reminders_7_days.sent + results.reminders_7_days.skipped,
           sent: results.reminders_7_days.sent,
