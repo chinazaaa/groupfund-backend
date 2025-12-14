@@ -184,7 +184,7 @@ const sendBirthdayEmail = async (email, name) => {
   try {
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <div style="background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); padding: 40px; border-radius: 10px 10px 0 0; text-align: center;">
+        <div style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 40px; border-radius: 10px 10px 0 0; text-align: center;">
           <h1 style="color: white; margin: 0; font-size: 36px;">🎉🎂🎉</h1>
           <h1 style="color: white; margin: 10px 0 0 0; font-size: 32px;">Happy Birthday!</h1>
         </div>
@@ -194,13 +194,13 @@ const sendBirthdayEmail = async (email, name) => {
             Wishing you a day filled with joy, laughter, and all the happiness in the world! 🎊
           </p>
           
-          <div style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); padding: 30px; border-radius: 12px; margin: 30px 0; text-align: center; border: 2px solid #fbbf24;">
-            <p style="color: #78350f; font-size: 20px; margin: 0; font-weight: 600;">
+          <div style="background: linear-gradient(135deg, #e0e7ff 0%, #ddd6fe 100%); padding: 30px; border-radius: 12px; margin: 30px 0; text-align: center; border: 2px solid #6366f1;">
+            <p style="color: #4338ca; font-size: 20px; margin: 0; font-weight: 600;">
               🎁 May your special day be as wonderful as you are! 🎁
             </p>
           </div>
 
-          <div style="background: white; padding: 25px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f59e0b;">
+          <div style="background: white; padding: 25px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
             <p style="color: #374151; font-size: 16px; margin: 0 0 15px 0; font-weight: 600;">✨ On this special day:</p>
             <ul style="color: #6b7280; font-size: 15px; line-height: 2; margin: 0; padding-left: 20px;">
               <li>Celebrate with your loved ones</li>
@@ -216,7 +216,7 @@ const sendBirthdayEmail = async (email, name) => {
           
           <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px; text-align: center;">
             With warmest wishes,<br/>
-            <strong style="color: #f59e0b;">The GroupFund Team</strong> 🎂
+            <strong style="color: #6366f1;">The GroupFund Team</strong> 🎂
           </p>
           
           <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb; text-align: center;">
