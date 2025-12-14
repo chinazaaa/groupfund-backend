@@ -109,6 +109,21 @@ Base URL: `http://localhost:3000`
   - Returns: `{ group }` (includes userRole and userStatus)
   - Must be a member of the group
 
+### Get Group Health/Score
+- **GET** `/api/groups/:groupId/health`
+  - **Requires authentication**
+  - Returns: `{ group: {...}, metrics: {...}, health: {...} }`
+  - Shows group compliance and health metrics:
+    - Total members
+    - Total expected contributions
+    - Total overdue contributions
+    - Number of members with overdue contributions
+    - Compliance rate
+    - Health score (0-100)
+    - Health summary text (e.g., "Healthy - All contributions up to date")
+  - **Accessible to everyone** (even non-members) - useful for viewing before joining
+  - Health ratings: `new`, `healthy`, `mostly_healthy`, `moderate`, `unhealthy`
+
 ### Update Group Settings
 - **PUT** `/api/groups/:groupId`
   - **Requires authentication** (Admin only)
