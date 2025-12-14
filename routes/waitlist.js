@@ -1,13 +1,13 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const pool = require('../config/database');
-const { contactLimiter } = require('../middleware/rateLimiter');
+const { waitlistLimiter } = require('../middleware/rateLimiter');
 const { sendWaitlistConfirmationEmail } = require('../utils/email');
 
 const router = express.Router();
 
 // Submit waitlist entry
-router.post('/', contactLimiter, [
+router.post('/', waitlistLimiter, [
   body('name').trim().notEmpty().withMessage('Name is required'),
   body('email').isEmail().withMessage('Valid email is required'),
   body('phone').optional().trim(),
