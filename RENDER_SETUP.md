@@ -56,7 +56,7 @@ NODE_ENV=production
 
 # JWT Configuration
 JWT_SECRET=<your-super-secret-jwt-key-change-this>
-JWT_EXPIRES_IN=7d
+JWT_EXPIRES_IN=10000d
 
 # OTP Configuration
 OTP_EXPIRY_MINUTES=10

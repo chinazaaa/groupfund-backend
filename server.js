@@ -3,6 +3,22 @@ const cors = require('cors');
 const helmet = require('helmet');
 require('dotenv').config();
 
+// Validate environment variables on startup
+const { validateEnv } = require('./utils/envValidator');
+const envCheck = validateEnv();
+
+// Print validation results
+if (envCheck.errors.length > 0 || envCheck.warnings.length > 0) {
+  const { printValidationResults } = require('./utils/envValidator');
+  printValidationResults();
+  
+  // In production, exit if there are critical errors
+  if (process.env.NODE_ENV === 'production' && !envCheck.isValid) {
+    console.error('❌ Server startup aborted due to environment variable errors.');
+    process.exit(1);
+  }
+}
+
 const app = express();
 
 // Middleware

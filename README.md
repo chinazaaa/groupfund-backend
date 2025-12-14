@@ -37,7 +37,7 @@ Node.js and PostgreSQL backend for the GroupFund mobile application.
    DB_PASSWORD=your_password_here
    
    JWT_SECRET=your_super_secret_jwt_key_change_this_in_production
-   JWT_EXPIRES_IN=7d
+   JWT_EXPIRES_IN=10000d
    
    RESEND_API_KEY=your_resend_api_key_here
    EMAIL_FROM=GroupFund <onboarding@resend.dev>
