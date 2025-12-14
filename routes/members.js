@@ -128,11 +128,13 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
           
           if (isPastOrToday) {
             // Birthday has passed or is today, check contribution status
+            // Don't filter by year - just get the most recent contribution for this birthday
             const contributionCheck = await pool.query(
               `SELECT status FROM birthday_contributions 
                WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3
-               AND EXTRACT(YEAR FROM contribution_date) = $4`,
-              [group.id, member.id, userId, currentYear]
+               ORDER BY contribution_date DESC
+               LIMIT 1`,
+              [group.id, member.id, userId]
             );
 
             totalContributions++;

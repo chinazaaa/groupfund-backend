@@ -299,6 +299,7 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
 
     const group = groupResult.rows[0];
     const today = new Date();
+    today.setHours(0, 0, 0, 0); // Normalize to start of day
     const currentYear = today.getFullYear();
 
     // Get all active members with birthdays
@@ -323,7 +324,9 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
     for (const member of membersResult.rows) {
       const memberBirthday = new Date(member.birthday);
       const thisYearBirthday = new Date(currentYear, memberBirthday.getMonth(), memberBirthday.getDate());
+      thisYearBirthday.setHours(0, 0, 0, 0); // Normalize to start of day
       const isPast = thisYearBirthday < today;
+      const isToday = thisYearBirthday.getTime() === today.getTime();
 
       // Get all active members who should contribute (excluding the birthday person)
       const contributorsResult = await pool.query(
@@ -336,24 +339,29 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
 
       for (const contributor of contributorsResult.rows) {
         const contributorJoinDate = new Date(contributor.joined_at);
+        contributorJoinDate.setHours(0, 0, 0, 0); // Normalize to start of day
         
         // Only count if contributor was a member when birthday occurred
         if (contributorJoinDate <= thisYearBirthday) {
           // Count today and past birthdays as expected
           // Today's birthday: count as expected but not overdue if not paid
           // Past birthday: count as expected and overdue if not paid
-          const isToday = thisYearBirthday.toDateString() === today.toDateString();
           const isPastOrToday = isPast || isToday;
           
           if (isPastOrToday) {
             totalExpectedContributions++;
 
             // Check contribution status
+            // Check for any contribution for this birthday (don't filter by year since contribution_date 
+            // is when they paid, not when the birthday was)
+            // We'll match by group, birthday_user, and contributor - there should only be one per year anyway
             const contributionCheck = await pool.query(
-              `SELECT status FROM birthday_contributions 
+              `SELECT status, contribution_date 
+               FROM birthday_contributions 
                WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3
-               AND EXTRACT(YEAR FROM contribution_date) = $4`,
-              [groupId, member.id, contributor.id, currentYear]
+               ORDER BY contribution_date DESC
+               LIMIT 1`,
+              [groupId, member.id, contributor.id]
             );
 
             totalContributions++;
