@@ -346,6 +346,117 @@ const sendBirthdayReminderEmail = async (email, userName, memberName, daysUntil,
   }
 };
 
+// Send consolidated birthday reminder email for multiple birthdays
+// birthdaysList: array of { name, hasPaid, contributionAmount, currency }
+const sendConsolidatedBirthdayReminderEmail = async (email, userName, groupName, daysUntil, birthdaysList, currency) => {
+  try {
+    const { formatAmount } = require('./currency');
+    
+    let subject = '';
+    let titleText = '';
+    let messageText = '';
+    let urgencyText = '';
+
+    const unpaidCount = birthdaysList.filter(b => !b.hasPaid).length;
+    const totalCount = birthdaysList.length;
+
+    if (daysUntil === 7) {
+      subject = `Birthday Reminder: ${unpaidCount} birthday${unpaidCount > 1 ? 's' : ''} in 7 days - GroupFund`;
+      titleText = 'Birthday Reminder - 7 Days';
+      messageText = `${unpaidCount} of ${totalCount} birthday${totalCount > 1 ? 's' : ''} ${totalCount > 1 ? 'are' : 'is'} in 7 days in ${groupName}.`;
+      urgencyText = 'You have 7 days to prepare your contributions.';
+    } else if (daysUntil === 1) {
+      subject = `Birthday Reminder: ${unpaidCount} birthday${unpaidCount > 1 ? 's' : ''} tomorrow! - GroupFund`;
+      titleText = 'Birthday Reminder - Tomorrow!';
+      messageText = `${unpaidCount} of ${totalCount} birthday${totalCount > 1 ? 's' : ''} ${totalCount > 1 ? 'are' : 'is'} tomorrow in ${groupName}!`;
+      urgencyText = 'Action needed: Please mark your contributions as paid today.';
+    } else if (daysUntil === 0) {
+      subject = `Action Required: ${unpaidCount} birthday${unpaidCount > 1 ? 's' : ''} today! - GroupFund`;
+      titleText = 'Birthday Reminder - Today!';
+      messageText = `${unpaidCount} of ${totalCount} birthday${totalCount > 1 ? 's' : ''} ${totalCount > 1 ? 'are' : 'is'} today in ${groupName}!`;
+      urgencyText = 'Action required: Please mark your contributions as paid now.';
+    }
+
+    // Build the list of birthdays with status
+    const birthdaysListHtml = birthdaysList.map(birthday => {
+      const statusText = birthday.hasPaid ? '✅ Paid' : '❌ Not Paid';
+      const statusColor = birthday.hasPaid ? '#10b981' : '#ef4444';
+      return `
+            <div style="background: ${birthday.hasPaid ? '#f0fdf4' : '#fef2f2'}; padding: 12px; border-radius: 8px; margin: 8px 0; border-left: 3px solid ${statusColor};">
+              <p style="color: #374151; font-size: 15px; margin: 0; font-weight: 600;">
+                ${birthday.name} - ${formatAmount(birthday.contributionAmount, birthday.currency || currency)}
+              </p>
+              <p style="color: ${statusColor}; font-size: 13px; margin: 4px 0 0 0; font-weight: 600;">
+                ${statusText}
+              </p>
+            </div>
+          `;
+    }).join('');
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">🎂 GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1a1a1a; font-size: 24px; margin-top: 0;">${titleText}</h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${userName},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            ${messageText}
+          </p>
+          
+          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
+            <p style="color: #374151; font-size: 16px; margin: 0 0 15px 0; font-weight: 600;">📋 Birthday Contributions:</p>
+            <p style="color: #6b7280; font-size: 14px; margin: 5px 0 15px 0;">
+              <strong>Group:</strong> ${groupName}
+            </p>
+            ${birthdaysListHtml}
+          </div>
+
+          <div style="background: #e0e7ff; padding: 20px; border-radius: 8px; margin: 20px 0; border: 2px solid #6366f1;">
+            <p style="color: #4338ca; font-size: 16px; margin: 0; font-weight: 600; text-align: center;">
+              ⚠️ ${urgencyText}
+            </p>
+          </div>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Log in to the GroupFund app to mark your contributions as paid and wish them a happy birthday! 🎉
+          </p>
+          
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Best regards,<br/>
+            <strong style="color: #6366f1;">The GroupFund Team</strong>
+          </p>
+          
+          <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            This is an automated reminder email from GroupFund. You can manage your notification preferences in the app settings.
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject,
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error sending consolidated birthday reminder email:', error);
+      return false;
+    }
+
+    console.log('Consolidated birthday reminder email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending consolidated birthday reminder email:', error);
+    return false;
+  }
+};
+
 module.exports = {
   sendOTPEmail,
   sendOTPSMS,
@@ -353,4 +464,5 @@ module.exports = {
   sendWelcomeEmail,
   sendBirthdayEmail,
   sendBirthdayReminderEmail,
+  sendConsolidatedBirthdayReminderEmail,
 };

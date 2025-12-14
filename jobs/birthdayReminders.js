@@ -146,6 +146,13 @@ async function checkBirthdayReminders() {
           [group.id, user.id]
         );
         
+        // Group members by days until birthday (7, 1, 0)
+        const birthdaysByDay = {
+          7: [],
+          1: [],
+          0: []
+        };
+        
         for (const member of membersResult.rows) {
           const memberBirthday = new Date(member.birthday);
           let memberNextBirthday = new Date(currentYear, memberBirthday.getMonth(), memberBirthday.getDate());
@@ -155,107 +162,122 @@ async function checkBirthdayReminders() {
           
           const daysUntilMemberBirthday = Math.floor((memberNextBirthday - today) / (1000 * 60 * 60 * 24));
           
-          // Check if user has already paid (for all reminder types)
-          // Skip reminders if status is 'paid', 'confirmed', or 'not_received'
-          const contributionCheck = await pool.query(
-            `SELECT id FROM birthday_contributions 
-             WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3 
-             AND status IN ('paid', 'confirmed', 'not_received')`,
-            [group.id, member.id, user.id]
-          );
+          if (daysUntilMemberBirthday === 7 || daysUntilMemberBirthday === 1 || daysUntilMemberBirthday === 0) {
+            // Check if user has already paid
+            const contributionCheck = await pool.query(
+              `SELECT id FROM birthday_contributions 
+               WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3 
+               AND status IN ('paid', 'confirmed', 'not_received')`,
+              [group.id, member.id, user.id]
+            );
+            
+            const hasPaid = contributionCheck.rows.length > 0;
+            
+            birthdaysByDay[daysUntilMemberBirthday].push({
+              id: member.id,
+              name: member.name,
+              hasPaid,
+              contributionAmount: parseFloat(group.contribution_amount),
+              currency: group.currency || 'NGN'
+            });
+          }
+        }
+        
+        // Process each day (7, 1, 0) - send consolidated notification if any unpaid
+        for (const [daysUntil, birthdays] of Object.entries(birthdaysByDay)) {
+          const daysNum = parseInt(daysUntil);
           
-          const hasPaid = contributionCheck.rows.length > 0;
+          // Filter out paid birthdays and check if any unpaid remain
+          const unpaidBirthdays = birthdays.filter(b => !b.hasPaid);
           
-          // Check if reminder was already sent today (to prevent duplicates)
+          if (unpaidBirthdays.length === 0) {
+            continue; // All paid, skip
+          }
+          
+          // Check user preferences
+          let shouldNotify = false;
+          if (daysNum === 7 && user.notify_7_days_before) {
+            shouldNotify = true;
+          } else if (daysNum === 1 && user.notify_1_day_before) {
+            shouldNotify = true;
+          } else if (daysNum === 0 && user.notify_same_day) {
+            shouldNotify = true;
+          }
+          
+          if (!shouldNotify) {
+            continue;
+          }
+          
+          // Check if reminder was already sent today for this group/day combination
           const reminderCheck = await pool.query(
             `SELECT id FROM notifications 
              WHERE user_id = $1 AND type = 'birthday_reminder' 
-             AND group_id = $2 AND related_user_id = $3 
-             AND created_at::date = CURRENT_DATE`,
-            [user.id, group.id, member.id]
+             AND group_id = $2 
+             AND created_at::date = CURRENT_DATE
+             AND message LIKE $3`,
+            [user.id, group.id, `%${daysNum === 0 ? 'today' : daysNum === 1 ? 'tomorrow' : '7 days'}%`]
           );
           
-          const reminderAlreadySent = reminderCheck.rows.length > 0;
+          if (reminderCheck.rows.length > 0) {
+            continue; // Already sent today
+          }
           
-          // Check if user wants to be notified for this reminder time
-          if (daysUntilMemberBirthday === 7 && user.notify_7_days_before && !hasPaid && !reminderAlreadySent) {
-            await createNotification(
-              user.id,
-              'birthday_reminder',
-              'Birthday Reminder',
-              `Reminder: ${member.name}'s birthday is in 7 days. Don't forget to pay ₦${parseFloat(group.contribution_amount).toLocaleString('en-NG')} in ${group.name}.`,
-              group.id,
-              member.id
-            );
-
-            // Send reminder email
-            if (user.email) {
-              try {
-                await sendBirthdayReminderEmail(
-                  user.email,
-                  user.name,
-                  member.name,
-                  7,
-                  `${group.currency || 'NGN'} ${parseFloat(group.contribution_amount).toLocaleString('en-NG')}`,
-                  group.currency || 'NGN',
-                  group.name
-                );
-              } catch (err) {
-                console.error(`Error sending 7-day reminder email to ${user.email}:`, err);
-              }
+          // Build consolidated message
+          const { formatAmount } = require('../utils/currency');
+          const allNames = birthdays.map(b => b.name).join(', ');
+          const paidCount = birthdays.filter(b => b.hasPaid).length;
+          const unpaidCount = unpaidBirthdays.length;
+          
+          let title = '';
+          let message = '';
+          
+          if (daysNum === 7) {
+            title = 'Birthday Reminder';
+            message = `Reminder: ${allNames} ${birthdays.length > 1 ? 'have' : 'has'} birthday${birthdays.length > 1 ? 's' : ''} in 7 days in ${group.name}.`;
+            if (paidCount > 0) {
+              message += ` You've paid for ${paidCount} of ${birthdays.length}.`;
             }
-          } else if (daysUntilMemberBirthday === 1 && user.notify_1_day_before && !hasPaid && !reminderAlreadySent) {
-            await createNotification(
-              user.id,
-              'birthday_reminder',
-              'Birthday Reminder',
-              `Reminder: ${member.name}'s birthday is tomorrow! Don't forget to pay ₦${parseFloat(group.contribution_amount).toLocaleString('en-NG')} in ${group.name}.`,
-              group.id,
-              member.id
-            );
-
-            // Send reminder email
-            if (user.email) {
-              try {
-                await sendBirthdayReminderEmail(
-                  user.email,
-                  user.name,
-                  member.name,
-                  1,
-                  `${group.currency || 'NGN'} ${parseFloat(group.contribution_amount).toLocaleString('en-NG')}`,
-                  group.currency || 'NGN',
-                  group.name
-                );
-              } catch (err) {
-                console.error(`Error sending 1-day reminder email to ${user.email}:`, err);
-              }
+            message += ` Don't forget to pay ${formatAmount(parseFloat(group.contribution_amount), group.currency || 'NGN')} for ${unpaidCount} remaining.`;
+          } else if (daysNum === 1) {
+            title = 'Birthday Reminder';
+            message = `Reminder: ${allNames} ${birthdays.length > 1 ? 'have' : 'has'} birthday${birthdays.length > 1 ? 's' : ''} tomorrow in ${group.name}!`;
+            if (paidCount > 0) {
+              message += ` You've paid for ${paidCount} of ${birthdays.length}.`;
             }
-          } else if (daysUntilMemberBirthday === 0 && user.notify_same_day && !hasPaid && !reminderAlreadySent) {
-            // User hasn't paid yet, send reminder
-            await createNotification(
-              user.id,
-              'birthday_reminder',
-              'Birthday Reminder - Action Required',
-              `Today is ${member.name}'s birthday! Please mark your contribution of ₦${parseFloat(group.contribution_amount).toLocaleString('en-NG')} as paid in ${group.name}.`,
-              group.id,
-              member.id
-            );
-
-            // Send reminder email
-            if (user.email) {
-              try {
-                await sendBirthdayReminderEmail(
-                  user.email,
-                  user.name,
-                  member.name,
-                  0,
-                  `${group.currency || 'NGN'} ${parseFloat(group.contribution_amount).toLocaleString('en-NG')}`,
-                  group.currency || 'NGN',
-                  group.name
-                );
-              } catch (err) {
-                console.error(`Error sending same-day reminder email to ${user.email}:`, err);
-              }
+            message += ` Don't forget to pay ${formatAmount(parseFloat(group.contribution_amount), group.currency || 'NGN')} for ${unpaidCount} remaining.`;
+          } else if (daysNum === 0) {
+            title = 'Birthday Reminder - Action Required';
+            message = `Today ${allNames} ${birthdays.length > 1 ? 'have' : 'has'} birthday${birthdays.length > 1 ? 's' : ''} in ${group.name}!`;
+            if (paidCount > 0) {
+              message += ` You've paid for ${paidCount} of ${birthdays.length}.`;
+            }
+            message += ` Please mark your contribution${unpaidCount > 1 ? 's' : ''} of ${formatAmount(parseFloat(group.contribution_amount), group.currency || 'NGN')} as paid for ${unpaidCount} remaining.`;
+          }
+          
+          // Send consolidated notification (use first unpaid member as related_user_id for compatibility)
+          await createNotification(
+            user.id,
+            'birthday_reminder',
+            title,
+            message,
+            group.id,
+            unpaidBirthdays[0].id
+          );
+          
+          // Send consolidated email
+          if (user.email) {
+            try {
+              const { sendConsolidatedBirthdayReminderEmail } = require('../utils/email');
+              await sendConsolidatedBirthdayReminderEmail(
+                user.email,
+                user.name,
+                group.name,
+                daysNum,
+                birthdays,
+                group.currency || 'NGN'
+              );
+            } catch (err) {
+              console.error(`Error sending consolidated reminder email to ${user.email}:`, err);
             }
           }
         }

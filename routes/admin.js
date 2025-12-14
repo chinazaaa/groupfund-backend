@@ -882,6 +882,13 @@ router.post('/birthdays/trigger-reminders', async (req, res) => {
           [group.id, user.id]
         );
         
+        // Group members by days until birthday (7, 1, 0)
+        const birthdaysByDay = {
+          7: [],
+          1: [],
+          0: []
+        };
+        
         for (const member of membersResult.rows) {
           const memberBirthday = new Date(member.birthday);
           let memberNextBirthday = new Date(currentYear, memberBirthday.getMonth(), memberBirthday.getDate());
@@ -891,164 +898,189 @@ router.post('/birthdays/trigger-reminders', async (req, res) => {
           
           const daysUntilMemberBirthday = Math.floor((memberNextBirthday - today) / (1000 * 60 * 60 * 24));
           
-          // Check if user has already paid (for all reminder types)
-          // Skip reminders if status is 'paid', 'confirmed', or 'not_received'
-          const contributionCheck = await pool.query(
-            `SELECT id FROM birthday_contributions 
-             WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3 
-             AND status IN ('paid', 'confirmed', 'not_received')`,
-            [group.id, member.id, user.id]
-          );
+          if (daysUntilMemberBirthday === 7 || daysUntilMemberBirthday === 1 || daysUntilMemberBirthday === 0) {
+            // Check if user has already paid
+            const contributionCheck = await pool.query(
+              `SELECT id FROM birthday_contributions 
+               WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3 
+               AND status IN ('paid', 'confirmed', 'not_received')`,
+              [group.id, member.id, user.id]
+            );
+            
+            const hasPaid = contributionCheck.rows.length > 0;
+            
+            birthdaysByDay[daysUntilMemberBirthday].push({
+              id: member.id,
+              name: member.name,
+              hasPaid,
+              contributionAmount: parseFloat(group.contribution_amount),
+              currency: group.currency || 'NGN'
+            });
+          }
+        }
+        
+        // Process each day (7, 1, 0) - send consolidated notification if any unpaid
+        for (const [daysUntil, birthdays] of Object.entries(birthdaysByDay)) {
+          const daysNum = parseInt(daysUntil);
           
-          const hasPaid = contributionCheck.rows.length > 0;
+          // Filter out paid birthdays and check if any unpaid remain
+          const unpaidBirthdays = birthdays.filter(b => !b.hasPaid);
           
-          // Check if reminder was already sent today (to prevent duplicates)
+          if (unpaidBirthdays.length === 0) {
+            // All paid - count as skipped
+            if (daysNum === 7) {
+              results.reminders_7_days.skipped += birthdays.length;
+            } else if (daysNum === 1) {
+              results.reminders_1_day.skipped += birthdays.length;
+            } else if (daysNum === 0) {
+              results.reminders_same_day.skipped += birthdays.length;
+            }
+            continue; // All paid, skip
+          }
+          
+          // Check user preferences
+          let shouldNotify = false;
+          if (daysNum === 7 && user.notify_7_days_before) {
+            shouldNotify = true;
+          } else if (daysNum === 1 && user.notify_1_day_before) {
+            shouldNotify = true;
+          } else if (daysNum === 0 && user.notify_same_day) {
+            shouldNotify = true;
+          }
+          
+          if (!shouldNotify) {
+            // Preference disabled - count as skipped
+            if (daysNum === 7) {
+              results.reminders_7_days.skipped += birthdays.length;
+            } else if (daysNum === 1) {
+              results.reminders_1_day.skipped += birthdays.length;
+            } else if (daysNum === 0) {
+              results.reminders_same_day.skipped += birthdays.length;
+            }
+            continue;
+          }
+          
+          // Check if reminder was already sent today for this group/day combination
           const reminderCheck = await pool.query(
             `SELECT id FROM notifications 
              WHERE user_id = $1 AND type = 'birthday_reminder' 
-             AND group_id = $2 AND related_user_id = $3 
-             AND created_at::date = CURRENT_DATE`,
-            [user.id, group.id, member.id]
+             AND group_id = $2 
+             AND created_at::date = CURRENT_DATE
+             AND message LIKE $3`,
+            [user.id, group.id, `%${daysNum === 0 ? 'today' : daysNum === 1 ? 'tomorrow' : '7 days'}%`]
           );
           
-          const reminderAlreadySent = reminderCheck.rows.length > 0;
-          
-          // 7 days before reminder
-          if (daysUntilMemberBirthday === 7 && user.notify_7_days_before && !hasPaid && !reminderAlreadySent) {
-            await createNotification(
-              user.id,
-              'birthday_reminder',
-              'Birthday Reminder',
-              `Reminder: ${member.name}'s birthday is in 7 days. Don't forget to pay ₦${parseFloat(group.contribution_amount).toLocaleString('en-NG')} in ${group.name}.`,
-              group.id,
-              member.id
-            );
-            
-            // Send reminder email
-            if (user.email) {
-              try {
-                const { sendBirthdayReminderEmail } = require('../utils/email');
-                await sendBirthdayReminderEmail(
-                  user.email,
-                  user.name,
-                  member.name,
-                  7,
-                  `${group.currency || 'NGN'} ${parseFloat(group.contribution_amount).toLocaleString('en-NG')}`,
-                  group.currency || 'NGN',
-                  group.name
-                );
-              } catch (err) {
-                console.error(`Error sending 7-day reminder email to ${user.email}:`, err);
-              }
+          if (reminderCheck.rows.length > 0) {
+            // Already sent - count as skipped
+            if (daysNum === 7) {
+              results.reminders_7_days.skipped += birthdays.length;
+            } else if (daysNum === 1) {
+              results.reminders_1_day.skipped += birthdays.length;
+            } else if (daysNum === 0) {
+              results.reminders_same_day.skipped += birthdays.length;
             }
-            
+            continue; // Already sent today
+          }
+          
+          // Build consolidated message
+          const { formatAmount } = require('../utils/currency');
+          const allNames = birthdays.map(b => b.name).join(', ');
+          const paidCount = birthdays.filter(b => b.hasPaid).length;
+          const unpaidCount = unpaidBirthdays.length;
+          
+          let title = '';
+          let message = '';
+          
+          if (daysNum === 7) {
+            title = 'Birthday Reminder';
+            message = `Reminder: ${allNames} ${birthdays.length > 1 ? 'have' : 'has'} birthday${birthdays.length > 1 ? 's' : ''} in 7 days in ${group.name}.`;
+            if (paidCount > 0) {
+              message += ` You've paid for ${paidCount} of ${birthdays.length}.`;
+            }
+            message += ` Don't forget to pay ${formatAmount(parseFloat(group.contribution_amount), group.currency || 'NGN')} for ${unpaidCount} remaining.`;
+          } else if (daysNum === 1) {
+            title = 'Birthday Reminder';
+            message = `Reminder: ${allNames} ${birthdays.length > 1 ? 'have' : 'has'} birthday${birthdays.length > 1 ? 's' : ''} tomorrow in ${group.name}!`;
+            if (paidCount > 0) {
+              message += ` You've paid for ${paidCount} of ${birthdays.length}.`;
+            }
+            message += ` Don't forget to pay ${formatAmount(parseFloat(group.contribution_amount), group.currency || 'NGN')} for ${unpaidCount} remaining.`;
+          } else if (daysNum === 0) {
+            title = 'Birthday Reminder - Action Required';
+            message = `Today ${allNames} ${birthdays.length > 1 ? 'have' : 'has'} birthday${birthdays.length > 1 ? 's' : ''} in ${group.name}!`;
+            if (paidCount > 0) {
+              message += ` You've paid for ${paidCount} of ${birthdays.length}.`;
+            }
+            message += ` Please mark your contribution${unpaidCount > 1 ? 's' : ''} of ${formatAmount(parseFloat(group.contribution_amount), group.currency || 'NGN')} as paid for ${unpaidCount} remaining.`;
+          }
+          
+          // Send consolidated notification (use first unpaid member as related_user_id for compatibility)
+          await createNotification(
+            user.id,
+            'birthday_reminder',
+            title,
+            message,
+            group.id,
+            unpaidBirthdays[0].id
+          );
+          
+          // Send consolidated email
+          if (user.email) {
+            try {
+              const { sendConsolidatedBirthdayReminderEmail } = require('../utils/email');
+              await sendConsolidatedBirthdayReminderEmail(
+                user.email,
+                user.name,
+                group.name,
+                daysNum,
+                birthdays,
+                group.currency || 'NGN'
+              );
+            } catch (err) {
+              console.error(`Error sending consolidated reminder email to ${user.email}:`, err);
+            }
+          }
+          
+          // Update results
+          if (daysNum === 7) {
             results.reminders_7_days.sent++;
             results.reminders_7_days.details.push({
               user_id: user.id,
               user_name: user.name,
-              member_id: member.id,
-              member_name: member.name,
               group_id: group.id,
-              group_name: group.name
+              group_name: group.name,
+              birthdays: birthdays.map(b => ({
+                member_id: b.id,
+                member_name: b.name,
+                has_paid: b.hasPaid
+              }))
             });
-          } else if (daysUntilMemberBirthday === 7) {
-            if (!user.notify_7_days_before) {
-              results.reminders_7_days.skipped++;
-            } else if (hasPaid) {
-              results.reminders_7_days.skipped++;
-            }
-          }
-          
-          // 1 day before reminder
-          if (daysUntilMemberBirthday === 1 && user.notify_1_day_before && !hasPaid && !reminderAlreadySent) {
-            await createNotification(
-              user.id,
-              'birthday_reminder',
-              'Birthday Reminder',
-              `Reminder: ${member.name}'s birthday is tomorrow! Don't forget to pay ₦${parseFloat(group.contribution_amount).toLocaleString('en-NG')} in ${group.name}.`,
-              group.id,
-              member.id
-            );
-            
-            // Send reminder email
-            if (user.email) {
-              try {
-                const { sendBirthdayReminderEmail } = require('../utils/email');
-                await sendBirthdayReminderEmail(
-                  user.email,
-                  user.name,
-                  member.name,
-                  1,
-                  `${group.currency || 'NGN'} ${parseFloat(group.contribution_amount).toLocaleString('en-NG')}`,
-                  group.currency || 'NGN',
-                  group.name
-                );
-              } catch (err) {
-                console.error(`Error sending 1-day reminder email to ${user.email}:`, err);
-              }
-            }
-            
+          } else if (daysNum === 1) {
             results.reminders_1_day.sent++;
             results.reminders_1_day.details.push({
               user_id: user.id,
               user_name: user.name,
-              member_id: member.id,
-              member_name: member.name,
               group_id: group.id,
-              group_name: group.name
+              group_name: group.name,
+              birthdays: birthdays.map(b => ({
+                member_id: b.id,
+                member_name: b.name,
+                has_paid: b.hasPaid
+              }))
             });
-          } else if (daysUntilMemberBirthday === 1) {
-            if (!user.notify_1_day_before) {
-              results.reminders_1_day.skipped++;
-            } else if (hasPaid) {
-              results.reminders_1_day.skipped++;
-            }
-          }
-          
-          // Same day reminder
-          if (daysUntilMemberBirthday === 0 && user.notify_same_day && !hasPaid && !reminderAlreadySent) {
-            await createNotification(
-              user.id,
-              'birthday_reminder',
-              'Birthday Reminder - Action Required',
-              `Today is ${member.name}'s birthday! Please mark your contribution of ₦${parseFloat(group.contribution_amount).toLocaleString('en-NG')} as paid in ${group.name}.`,
-              group.id,
-              member.id
-            );
-            
-            // Send reminder email
-            if (user.email) {
-              try {
-                const { sendBirthdayReminderEmail } = require('../utils/email');
-                await sendBirthdayReminderEmail(
-                  user.email,
-                  user.name,
-                  member.name,
-                  0,
-                  `${group.currency || 'NGN'} ${parseFloat(group.contribution_amount).toLocaleString('en-NG')}`,
-                  group.currency || 'NGN',
-                  group.name
-                );
-              } catch (err) {
-                console.error(`Error sending same-day reminder email to ${user.email}:`, err);
-              }
-            }
-            
+          } else if (daysNum === 0) {
             results.reminders_same_day.sent++;
             results.reminders_same_day.details.push({
               user_id: user.id,
               user_name: user.name,
-              member_id: member.id,
-              member_name: member.name,
               group_id: group.id,
-              group_name: group.name
+              group_name: group.name,
+              birthdays: birthdays.map(b => ({
+                member_id: b.id,
+                member_name: b.name,
+                has_paid: b.hasPaid
+              }))
             });
-          } else if (daysUntilMemberBirthday === 0) {
-            if (!user.notify_same_day) {
-              results.reminders_same_day.skipped++;
-            } else if (hasPaid) {
-              results.reminders_same_day.skipped++;
-            }
           }
         }
       }
