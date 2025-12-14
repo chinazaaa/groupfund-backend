@@ -51,6 +51,8 @@ const otpLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
+  // Use IP address as the key (properly handles IPv6)
+  keyGenerator: ipKeyGenerator,
 });
 
 /**
@@ -79,13 +81,11 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
   // Skip successful requests to only count errors/abuse
   skipSuccessfulRequests: true,
-  // Use user ID if authenticated, otherwise use IP
-  keyGenerator: (req) => {
-    // If user is authenticated, use their user ID (prevents shared IP issues)
+  // Use user ID if authenticated, otherwise use IP (properly handles IPv6)
+  keyGenerator: function(req) {
     if (req.user && req.user.id) {
       return `user:${req.user.id}`;
     }
-    // Otherwise, use IP address (properly handles IPv6)
     return ipKeyGenerator(req);
   },
 });
@@ -113,13 +113,11 @@ const contributionLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  // Use user ID if authenticated, otherwise use IP
-  keyGenerator: (req) => {
-    // If user is authenticated, use their user ID (prevents shared IP issues)
+  // Use user ID if authenticated, otherwise use IP (properly handles IPv6)
+  keyGenerator: function(req) {
     if (req.user && req.user.id) {
       return `user:${req.user.id}`;
     }
-    // Otherwise, use IP address (properly handles IPv6)
     return ipKeyGenerator(req);
   },
 });
@@ -147,13 +145,11 @@ const adminLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  // Use user ID (admin endpoints are always authenticated)
-  keyGenerator: (req) => {
+  // Use user ID (admin endpoints are always authenticated, properly handles IPv6)
+  keyGenerator: function(req) {
     if (req.user && req.user.id) {
       return `admin:${req.user.id}`;
     }
-    // Fallback to IP (shouldn't happen for admin routes, but safety first)
-    // Properly handles IPv6
     return ipKeyGenerator(req);
   },
 });
@@ -186,11 +182,10 @@ const waitlistLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   // Use email + IP combination to allow many different people from same location
-  // but prevent individual spam
-  keyGenerator: (req) => {
+  // but prevent individual spam (properly handles IPv6)
+  keyGenerator: function(req) {
     const email = req.body?.email || req.query?.email || 'unknown';
-    const ip = ipKeyGenerator(req); // Properly handles IPv6
-    return `waitlist:${email}:${ip}`;
+    return `waitlist:${email}:${ipKeyGenerator(req)}`;
   },
 });
 
@@ -222,11 +217,10 @@ const contactLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   // Use email + IP combination to allow many different people from same location
-  // but prevent individual spam
-  keyGenerator: (req) => {
+  // but prevent individual spam (properly handles IPv6)
+  keyGenerator: function(req) {
     const email = req.body?.email || req.query?.email || 'unknown';
-    const ip = req.ip || req.connection.remoteAddress || 'unknown';
-    return `contact:${email}:${ip}`;
+    return `contact:${email}:${ipKeyGenerator(req)}`;
   },
 });
 
