@@ -1,6 +1,7 @@
 const express = require('express');
 const pool = require('../config/database');
 const { authenticate } = require('../middleware/auth');
+const { contributionLimiter } = require('../middleware/rateLimiter');
 
 const router = express.Router();
 
@@ -197,7 +198,7 @@ router.get('/received', authenticate, async (req, res) => {
 });
 
 // Add money to wallet (simulate bank transfer)
-router.post('/add-money', authenticate, async (req, res) => {
+router.post('/add-money', authenticate, contributionLimiter, async (req, res) => {
   try {
     const { amount, reference } = req.body;
     const userId = req.user.id;
@@ -248,7 +249,7 @@ router.post('/add-money', authenticate, async (req, res) => {
 });
 
 // Transfer out (withdraw from wallet)
-router.post('/transfer-out', authenticate, async (req, res) => {
+router.post('/transfer-out', authenticate, contributionLimiter, async (req, res) => {
   try {
     const { amount, bankAccount, bankName, accountName } = req.body;
     const userId = req.user.id;

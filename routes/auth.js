@@ -5,11 +5,12 @@ const { body, validationResult } = require('express-validator');
 const pool = require('../config/database');
 const { generateOTP } = require('../utils/helpers');
 const { sendOTPEmail, sendOTPSMS } = require('../utils/email');
+const { authLimiter, otpLimiter } = require('../middleware/rateLimiter');
 
 const router = express.Router();
 
 // Signup
-router.post('/signup', [
+router.post('/signup', authLimiter, [
   body('name').trim().notEmpty().withMessage('Name is required'),
   body('email').isEmail().withMessage('Valid email is required'),
   body('phone').trim().notEmpty().withMessage('Phone number is required'),
@@ -69,7 +70,7 @@ router.post('/signup', [
 });
 
 // Verify OTP
-router.post('/verify-otp', [
+router.post('/verify-otp', otpLimiter, [
   body('userId').notEmpty().withMessage('User ID is required'),
   body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
   body('type').optional().isIn(['signup', 'forgot-password', 'login']),
@@ -123,7 +124,7 @@ router.post('/verify-otp', [
 });
 
 // Resend OTP
-router.post('/resend-otp', [
+router.post('/resend-otp', otpLimiter, [
   body('userId').notEmpty().withMessage('User ID is required'),
   body('type').optional().isIn(['signup', 'forgot-password', 'login']),
 ], async (req, res) => {
@@ -157,7 +158,7 @@ router.post('/resend-otp', [
 });
 
 // Login
-router.post('/login', [
+router.post('/login', authLimiter, [
   body('email').isEmail().withMessage('Valid email is required'),
   body('password').notEmpty().withMessage('Password is required'),
 ], async (req, res) => {
@@ -223,7 +224,7 @@ router.post('/login', [
 });
 
 // Forgot Password
-router.post('/forgot-password', [
+router.post('/forgot-password', authLimiter, [
   body('email').isEmail().withMessage('Valid email is required'),
 ], async (req, res) => {
   try {
@@ -257,7 +258,7 @@ router.post('/forgot-password', [
 });
 
 // Reset Password
-router.post('/reset-password', [
+router.post('/reset-password', authLimiter, [
   body('userId').notEmpty().withMessage('User ID is required'),
   body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
   body('newPassword').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
@@ -297,7 +298,7 @@ router.post('/reset-password', [
 });
 
 // Change Password (authenticated)
-router.post('/change-password', [
+router.post('/change-password', authLimiter, [
   body('currentPassword').notEmpty().withMessage('Current password is required'),
   body('newPassword').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
 ], require('../middleware/auth').authenticate, async (req, res) => {

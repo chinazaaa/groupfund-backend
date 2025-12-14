@@ -2,11 +2,12 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const pool = require('../config/database');
 const { sendContactConfirmationEmail } = require('../utils/email');
+const { contactLimiter } = require('../middleware/rateLimiter');
 
 const router = express.Router();
 
 // Submit contact form
-router.post('/submit', [
+router.post('/submit', contactLimiter, [
   body('name').trim().notEmpty().withMessage('Name is required'),
   body('email').isEmail().withMessage('Valid email is required'),
   body('subject').trim().notEmpty().withMessage('Subject is required'),

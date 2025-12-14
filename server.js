@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 require('dotenv').config();
 
 const app = express();
@@ -39,6 +40,30 @@ const corsOptions = {
   },
   credentials: true,
 };
+
+// Security headers with Helmet
+// Configure Helmet for API usage (less restrictive for API endpoints)
+app.use(helmet({
+  // Disable contentSecurityPolicy for API (not serving HTML)
+  contentSecurityPolicy: false,
+  // Allow cross-origin requests for API
+  crossOriginEmbedderPolicy: false,
+  // Keep other security headers enabled
+  hsts: {
+    maxAge: 31536000, // 1 year
+    includeSubDomains: true,
+    preload: true
+  },
+  // Disable X-Download-Options for API
+  noSniff: true,
+  // Keep XSS protection
+  xssFilter: true,
+  // Frameguard - allow embedding if needed (adjust based on requirements)
+  frameguard: { action: 'deny' },
+  // Hide powered-by header
+  hidePoweredBy: true,
+}));
+
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));

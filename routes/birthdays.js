@@ -344,7 +344,7 @@ router.get('/calendar/:year/:month', authenticate, async (req, res) => {
 });
 
 // Contribute to birthday (Mark as Paid)
-router.post('/contribute', authenticate, async (req, res) => {
+router.post('/contribute', authenticate, require('../middleware/rateLimiter').contributionLimiter, async (req, res) => {
   try {
     const { groupId, birthdayUserId, amount, note } = req.body;
     const contributorId = req.user.id;

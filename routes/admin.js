@@ -2,10 +2,12 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const pool = require('../config/database');
 const { requireAdmin } = require('../middleware/admin');
+const { adminLimiter } = require('../middleware/rateLimiter');
 
 const router = express.Router();
 
-// All routes require admin authentication
+// All routes require admin authentication and rate limiting
+router.use(adminLimiter);
 router.use(requireAdmin);
 
 // Get all users
