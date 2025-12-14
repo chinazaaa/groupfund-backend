@@ -5,11 +5,37 @@ require('dotenv').config();
 const app = express();
 
 // Middleware
-// Allow all origins in development for React Native
+// CORS configuration - allow multiple origins for development and production
+const allowedOrigins = [
+  'https://groupfund.app',
+  'https://www.groupfund.app',
+  'http://localhost:5173',
+  'http://localhost:19006',
+  'http://localhost:3000',
+];
+
+// Add FRONTEND_URL from environment if it exists and isn't already in the list
+if (process.env.FRONTEND_URL && !allowedOrigins.includes(process.env.FRONTEND_URL)) {
+  allowedOrigins.push(process.env.FRONTEND_URL);
+}
+
 const corsOptions = {
-  origin: process.env.NODE_ENV === 'production' 
-    ? process.env.FRONTEND_URL || 'http://localhost:19006'
-    : true, // Allow all origins in development
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+    
+    // In development, allow all origins
+    if (process.env.NODE_ENV !== 'production') {
+      return callback(null, true);
+    }
+    
+    // In production, check against allowed origins
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
 };
 app.use(cors(corsOptions));
