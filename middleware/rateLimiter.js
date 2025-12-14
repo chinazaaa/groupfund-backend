@@ -1,4 +1,5 @@
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = require('express-rate-limit');
 
 /**
  * Rate limiter for authentication endpoints (login, signup, password reset)
@@ -24,10 +25,8 @@ const authLimiter = rateLimit({
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers
   // Skip rate limiting for successful requests (only count failures)
   skipSuccessfulRequests: false,
-  // Use IP address as the key
-  keyGenerator: (req) => {
-    return req.ip || req.connection.remoteAddress;
-  },
+  // Use IP address as the key (properly handles IPv6)
+  keyGenerator: ipKeyGenerator,
 });
 
 /**
@@ -86,8 +85,8 @@ const apiLimiter = rateLimit({
     if (req.user && req.user.id) {
       return `user:${req.user.id}`;
     }
-    // Otherwise, use IP address
-    return req.ip || req.connection.remoteAddress || 'unknown';
+    // Otherwise, use IP address (properly handles IPv6)
+    return ipKeyGenerator(req);
   },
 });
 
@@ -120,8 +119,8 @@ const contributionLimiter = rateLimit({
     if (req.user && req.user.id) {
       return `user:${req.user.id}`;
     }
-    // Otherwise, use IP address
-    return req.ip || req.connection.remoteAddress || 'unknown';
+    // Otherwise, use IP address (properly handles IPv6)
+    return ipKeyGenerator(req);
   },
 });
 
@@ -154,7 +153,8 @@ const adminLimiter = rateLimit({
       return `admin:${req.user.id}`;
     }
     // Fallback to IP (shouldn't happen for admin routes, but safety first)
-    return req.ip || req.connection.remoteAddress || 'unknown';
+    // Properly handles IPv6
+    return ipKeyGenerator(req);
   },
 });
 
@@ -189,7 +189,7 @@ const waitlistLimiter = rateLimit({
   // but prevent individual spam
   keyGenerator: (req) => {
     const email = req.body?.email || req.query?.email || 'unknown';
-    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    const ip = ipKeyGenerator(req); // Properly handles IPv6
     return `waitlist:${email}:${ip}`;
   },
 });

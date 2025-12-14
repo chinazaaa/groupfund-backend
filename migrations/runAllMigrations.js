@@ -16,7 +16,8 @@ const migrations = [
   'update_contribution_status.sql',
   'update_rejected_to_not_received.sql',
   'add_birthday_email_log.sql',
-  'add_group_status.sql'
+  'add_group_status.sql',
+  'add_accepting_requests.sql'
 ];
 
 async function runAllMigrations() {
