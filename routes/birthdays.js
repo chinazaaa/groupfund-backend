@@ -33,6 +33,20 @@ router.get('/upcoming', authenticate, async (req, res) => {
             u.id, u.name, u.email, u.phone, u.birthday,
             g.id as group_id, g.name as group_name, g.currency,
             (
+              SELECT MAKE_DATE(
+                EXTRACT(YEAR FROM CURRENT_DATE)::integer + 
+                CASE 
+                  WHEN (DATE_PART('month', u.birthday) < DATE_PART('month', CURRENT_DATE))
+                       OR (DATE_PART('month', u.birthday) = DATE_PART('month', CURRENT_DATE) 
+                           AND DATE_PART('day', u.birthday) < DATE_PART('day', CURRENT_DATE))
+                  THEN 1
+                  ELSE 0
+                END,
+                DATE_PART('month', u.birthday)::integer,
+                DATE_PART('day', u.birthday)::integer
+              )
+            ) as next_birthday_date,
+            (
               SELECT (MAKE_DATE(
                 EXTRACT(YEAR FROM CURRENT_DATE)::integer + 
                 CASE 
@@ -64,6 +78,20 @@ router.get('/upcoming', authenticate, async (req, res) => {
           SELECT DISTINCT
             u.id, u.name, u.email, u.phone, u.birthday,
             g.id as group_id, g.name as group_name, g.currency,
+            (
+              SELECT MAKE_DATE(
+                EXTRACT(YEAR FROM CURRENT_DATE)::integer + 
+                CASE 
+                  WHEN (DATE_PART('month', u.birthday) < DATE_PART('month', CURRENT_DATE))
+                       OR (DATE_PART('month', u.birthday) = DATE_PART('month', CURRENT_DATE) 
+                           AND DATE_PART('day', u.birthday) < DATE_PART('day', CURRENT_DATE))
+                  THEN 1
+                  ELSE 0
+                END,
+                DATE_PART('month', u.birthday)::integer,
+                DATE_PART('day', u.birthday)::integer
+              )
+            ) as next_birthday_date,
             (
               SELECT (MAKE_DATE(
                 EXTRACT(YEAR FROM CURRENT_DATE)::integer + 
@@ -128,6 +156,20 @@ router.get('/past', authenticate, async (req, res) => {
         SELECT 
           u.id, u.name, u.email, u.phone, u.birthday,
           g.id as group_id, g.name as group_name, g.currency,
+          (
+            SELECT MAKE_DATE(
+              EXTRACT(YEAR FROM CURRENT_DATE)::integer + 
+              CASE 
+                WHEN (DATE_PART('month', u.birthday) < DATE_PART('month', CURRENT_DATE))
+                     OR (DATE_PART('month', u.birthday) = DATE_PART('month', CURRENT_DATE) 
+                         AND DATE_PART('day', u.birthday) < DATE_PART('day', CURRENT_DATE))
+                THEN 0
+                ELSE -1
+              END,
+              DATE_PART('month', u.birthday)::integer,
+              DATE_PART('day', u.birthday)::integer
+            )
+          ) as last_birthday_date,
           (
             SELECT (CURRENT_DATE - MAKE_DATE(
               EXTRACT(YEAR FROM CURRENT_DATE)::integer + 
