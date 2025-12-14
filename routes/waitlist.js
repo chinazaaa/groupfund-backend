@@ -2,6 +2,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const pool = require('../config/database');
 const { contactLimiter } = require('../middleware/rateLimiter');
+const { sendWaitlistConfirmationEmail } = require('../utils/email');
 
 const router = express.Router();
 
@@ -42,6 +43,11 @@ router.post('/', contactLimiter, [
        RETURNING id, name, email, phone, group_type, created_at`,
       [name, email, phone || null, groupType || null]
     );
+
+    // Send confirmation email (don't await to avoid blocking the response)
+    sendWaitlistConfirmationEmail(email, name).catch(err => {
+      console.error('Failed to send waitlist confirmation email:', err);
+    });
 
     res.status(201).json({
       message: 'Successfully joined the waitlist!',

@@ -588,6 +588,75 @@ const sendMonthlyBirthdayNewsletter = async (email, userName, userId, monthName,
   }
 };
 
+// Send waitlist confirmation email
+const sendWaitlistConfirmationEmail = async (email, name) => {
+  try {
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">🎂 GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1a1a1a; font-size: 24px; margin-top: 0;">You're on the Waitlist! 🎉</h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${name},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Thank you for joining the GroupFund waitlist! We're excited to have you on board and can't wait to share what we're building.
+          </p>
+          
+          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
+            <p style="color: #374151; font-size: 16px; margin: 0 0 15px 0; font-weight: 600;">What happens next?</p>
+            <ul style="color: #6b7280; font-size: 14px; line-height: 1.8; margin: 0; padding-left: 20px;">
+              <li>We'll notify you as soon as GroupFund is available in your area</li>
+              <li>You'll be among the first to access new features and updates</li>
+              <li>We'll keep you informed about our launch progress</li>
+            </ul>
+          </div>
+
+          <div style="background: #f0f9ff; padding: 20px; border-radius: 8px; margin: 20px 0; border: 1px solid #bae6fd;">
+            <p style="color: #0369a1; font-size: 14px; margin: 0; font-weight: 600; margin-bottom: 8px;">💡 About GroupFund:</p>
+            <p style="color: #0c4a6e; font-size: 14px; margin: 0; line-height: 1.6;">
+              GroupFund makes it easy to organize and manage birthday contributions with your groups. Create groups, track contributions, and never miss a birthday celebration!
+            </p>
+          </div>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            We appreciate your interest and patience. Stay tuned for updates!
+          </p>
+          
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Best regards,<br/>
+            <strong>The GroupFund Team</strong>
+          </p>
+          
+          <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            This is an automated confirmation email. Please do not reply to this message.
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject: 'Welcome to the GroupFund Waitlist! 🎉',
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error sending waitlist confirmation email:', error);
+      return false;
+    }
+
+    console.log('Waitlist confirmation email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending waitlist confirmation email:', error);
+    return false;
+  }
+};
+
 module.exports = {
   sendOTPEmail,
   sendOTPSMS,
@@ -597,4 +666,5 @@ module.exports = {
   sendBirthdayReminderEmail,
   sendComprehensiveBirthdayReminderEmail,
   sendMonthlyBirthdayNewsletter,
+  sendWaitlistConfirmationEmail,
 };
