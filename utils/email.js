@@ -346,9 +346,9 @@ const sendBirthdayReminderEmail = async (email, userName, memberName, daysUntil,
   }
 };
 
-// Send consolidated birthday reminder email for multiple birthdays
-// birthdaysList: array of { name, hasPaid, contributionAmount, currency }
-const sendConsolidatedBirthdayReminderEmail = async (email, userName, groupName, daysUntil, birthdaysList, currency) => {
+// Send comprehensive birthday reminder email for all groups
+// groupsWithBirthdays: array of { groupName, currency, birthdays: [{ name, hasPaid, contributionAmount, currency }] }
+const sendComprehensiveBirthdayReminderEmail = async (email, userName, daysUntil, groupsWithBirthdays) => {
   try {
     const { formatAmount } = require('./currency');
     
@@ -357,38 +357,60 @@ const sendConsolidatedBirthdayReminderEmail = async (email, userName, groupName,
     let messageText = '';
     let urgencyText = '';
 
-    const unpaidCount = birthdaysList.filter(b => !b.hasPaid).length;
-    const totalCount = birthdaysList.length;
+    // Calculate totals across all groups
+    let totalUnpaid = 0;
+    let totalBirthdays = 0;
+    groupsWithBirthdays.forEach(group => {
+      totalBirthdays += group.birthdays.length;
+      totalUnpaid += group.birthdays.filter(b => !b.hasPaid).length;
+    });
 
     if (daysUntil === 7) {
-      subject = `Birthday Reminder: ${unpaidCount} birthday${unpaidCount > 1 ? 's' : ''} in 7 days - GroupFund`;
+      subject = `Birthday Reminder: ${totalUnpaid} birthday${totalUnpaid > 1 ? 's' : ''} in 7 days - GroupFund`;
       titleText = 'Birthday Reminder - 7 Days';
-      messageText = `${unpaidCount} of ${totalCount} birthday${totalCount > 1 ? 's' : ''} ${totalCount > 1 ? 'are' : 'is'} in 7 days in ${groupName}.`;
+      messageText = `You have ${totalUnpaid} unpaid birthday${totalUnpaid > 1 ? 's' : ''} in ${totalBirthdays} total birthday${totalBirthdays > 1 ? 's' : ''} coming up in 7 days across your groups.`;
       urgencyText = 'You have 7 days to prepare your contributions.';
     } else if (daysUntil === 1) {
-      subject = `Birthday Reminder: ${unpaidCount} birthday${unpaidCount > 1 ? 's' : ''} tomorrow! - GroupFund`;
+      subject = `Birthday Reminder: ${totalUnpaid} birthday${totalUnpaid > 1 ? 's' : ''} tomorrow! - GroupFund`;
       titleText = 'Birthday Reminder - Tomorrow!';
-      messageText = `${unpaidCount} of ${totalCount} birthday${totalCount > 1 ? 's' : ''} ${totalCount > 1 ? 'are' : 'is'} tomorrow in ${groupName}!`;
+      messageText = `You have ${totalUnpaid} unpaid birthday${totalUnpaid > 1 ? 's' : ''} in ${totalBirthdays} total birthday${totalBirthdays > 1 ? 's' : ''} tomorrow across your groups!`;
       urgencyText = 'Action needed: Please mark your contributions as paid today.';
     } else if (daysUntil === 0) {
-      subject = `Action Required: ${unpaidCount} birthday${unpaidCount > 1 ? 's' : ''} today! - GroupFund`;
+      subject = `Action Required: ${totalUnpaid} birthday${totalUnpaid > 1 ? 's' : ''} today! - GroupFund`;
       titleText = 'Birthday Reminder - Today!';
-      messageText = `${unpaidCount} of ${totalCount} birthday${totalCount > 1 ? 's' : ''} ${totalCount > 1 ? 'are' : 'is'} today in ${groupName}!`;
+      messageText = `You have ${totalUnpaid} unpaid birthday${totalUnpaid > 1 ? 's' : ''} in ${totalBirthdays} total birthday${totalBirthdays > 1 ? 's' : ''} today across your groups!`;
       urgencyText = 'Action required: Please mark your contributions as paid now.';
     }
 
-    // Build the list of birthdays with status
-    const birthdaysListHtml = birthdaysList.map(birthday => {
-      const statusText = birthday.hasPaid ? '✅ Paid' : '❌ Not Paid';
-      const statusColor = birthday.hasPaid ? '#10b981' : '#ef4444';
+    // Build groups sections with their birthdays
+    const groupsHtml = groupsWithBirthdays.map(group => {
+      const groupUnpaid = group.birthdays.filter(b => !b.hasPaid).length;
+      const groupTotal = group.birthdays.length;
+      
+      const birthdaysListHtml = group.birthdays.map(birthday => {
+        const statusText = birthday.hasPaid ? '✅ Paid' : '❌ Not Paid';
+        const statusColor = birthday.hasPaid ? '#10b981' : '#ef4444';
+        return `
+              <div style="background: ${birthday.hasPaid ? '#f0fdf4' : '#fef2f2'}; padding: 12px; border-radius: 8px; margin: 8px 0; border-left: 3px solid ${statusColor};">
+                <p style="color: #374151; font-size: 15px; margin: 0; font-weight: 600;">
+                  ${birthday.name} - ${formatAmount(birthday.contributionAmount, birthday.currency || group.currency)}
+                </p>
+                <p style="color: ${statusColor}; font-size: 13px; margin: 4px 0 0 0; font-weight: 600;">
+                  ${statusText}
+                </p>
+              </div>
+            `;
+      }).join('');
+
       return `
-            <div style="background: ${birthday.hasPaid ? '#f0fdf4' : '#fef2f2'}; padding: 12px; border-radius: 8px; margin: 8px 0; border-left: 3px solid ${statusColor};">
-              <p style="color: #374151; font-size: 15px; margin: 0; font-weight: 600;">
-                ${birthday.name} - ${formatAmount(birthday.contributionAmount, birthday.currency || currency)}
+            <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
+              <p style="color: #374151; font-size: 18px; margin: 0 0 10px 0; font-weight: 700;">
+                📋 ${group.groupName}
               </p>
-              <p style="color: ${statusColor}; font-size: 13px; margin: 4px 0 0 0; font-weight: 600;">
-                ${statusText}
+              <p style="color: #6b7280; font-size: 14px; margin: 0 0 15px 0;">
+                ${groupUnpaid} of ${groupTotal} unpaid
               </p>
+              ${birthdaysListHtml}
             </div>
           `;
     }).join('');
@@ -407,13 +429,7 @@ const sendConsolidatedBirthdayReminderEmail = async (email, userName, groupName,
             ${messageText}
           </p>
           
-          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
-            <p style="color: #374151; font-size: 16px; margin: 0 0 15px 0; font-weight: 600;">📋 Birthday Contributions:</p>
-            <p style="color: #6b7280; font-size: 14px; margin: 5px 0 15px 0;">
-              <strong>Group:</strong> ${groupName}
-            </p>
-            ${birthdaysListHtml}
-          </div>
+          ${groupsHtml}
 
           <div style="background: #e0e7ff; padding: 20px; border-radius: 8px; margin: 20px 0; border: 2px solid #6366f1;">
             <p style="color: #4338ca; font-size: 16px; margin: 0; font-weight: 600; text-align: center;">
@@ -445,14 +461,14 @@ const sendConsolidatedBirthdayReminderEmail = async (email, userName, groupName,
     });
 
     if (error) {
-      console.error('Resend error sending consolidated birthday reminder email:', error);
+      console.error('Resend error sending comprehensive birthday reminder email:', error);
       return false;
     }
 
-    console.log('Consolidated birthday reminder email sent successfully:', data);
+    console.log('Comprehensive birthday reminder email sent successfully:', data);
     return true;
   } catch (error) {
-    console.error('Error sending consolidated birthday reminder email:', error);
+    console.error('Error sending comprehensive birthday reminder email:', error);
     return false;
   }
 };
@@ -464,5 +480,5 @@ module.exports = {
   sendWelcomeEmail,
   sendBirthdayEmail,
   sendBirthdayReminderEmail,
-  sendConsolidatedBirthdayReminderEmail,
+  sendComprehensiveBirthdayReminderEmail,
 };
