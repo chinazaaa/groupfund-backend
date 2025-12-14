@@ -30,6 +30,7 @@ app.use('/api/birthdays', require('./routes/birthdays'));
 app.use('/api/contributions', require('./routes/contributions'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/contact', require('./routes/contact'));
+app.use('/api/waitlist', require('./routes/waitlist'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/migrations', require('./routes/migrations'));
 
