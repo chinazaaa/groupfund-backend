@@ -8,7 +8,10 @@ const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 10, // Limit each IP to 10 requests per windowMs
   message: (req, res) => {
-    const retryAfter = Math.ceil((req.rateLimit.resetTime - Date.now()) / 1000 / 60);
+    let retryAfter = 15; // Default to 15 minutes
+    if (req.rateLimit && req.rateLimit.resetTime) {
+      retryAfter = Math.max(1, Math.ceil((req.rateLimit.resetTime - Date.now()) / 1000 / 60));
+    }
     return {
       error: 'Too many authentication attempts. Please wait a few minutes before trying again.',
       message: `You've exceeded the limit of 10 authentication attempts. Please try again in ${retryAfter} minute(s).`,
@@ -35,7 +38,10 @@ const otpLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 5, // Limit each IP to 5 OTP requests per windowMs
   message: (req, res) => {
-    const retryAfter = Math.ceil((req.rateLimit.resetTime - Date.now()) / 1000 / 60);
+    let retryAfter = 15; // Default to 15 minutes
+    if (req.rateLimit && req.rateLimit.resetTime) {
+      retryAfter = Math.max(1, Math.ceil((req.rateLimit.resetTime - Date.now()) / 1000 / 60));
+    }
     return {
       error: 'Too many OTP requests. Please wait before requesting a new code.',
       message: `You've exceeded the limit of 5 OTP requests. Please try again in ${retryAfter} minute(s).`,
@@ -57,7 +63,10 @@ const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 200, // Limit each IP to 200 requests per windowMs (generous for mobile apps)
   message: (req, res) => {
-    const retryAfter = Math.ceil((req.rateLimit.resetTime - Date.now()) / 1000 / 60);
+    let retryAfter = 15; // Default to 15 minutes
+    if (req.rateLimit && req.rateLimit.resetTime) {
+      retryAfter = Math.max(1, Math.ceil((req.rateLimit.resetTime - Date.now()) / 1000 / 60));
+    }
     return {
       error: 'Too many requests. Please slow down and try again in a few minutes.',
       message: `You've exceeded the API rate limit. Please try again in ${retryAfter} minute(s).`,
@@ -80,7 +89,10 @@ const contributionLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 50, // Limit each IP to 50 contribution requests per windowMs
   message: (req, res) => {
-    const retryAfter = Math.ceil((req.rateLimit.resetTime - Date.now()) / 1000 / 60);
+    let retryAfter = 15; // Default to 15 minutes
+    if (req.rateLimit && req.rateLimit.resetTime) {
+      retryAfter = Math.max(1, Math.ceil((req.rateLimit.resetTime - Date.now()) / 1000 / 60));
+    }
     return {
       error: 'Too many contribution requests. Please wait before making another transaction.',
       message: `You've exceeded the limit of 50 contribution requests. Please try again in ${retryAfter} minute(s).`,
@@ -101,7 +113,10 @@ const adminLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100, // Limit each IP to 100 admin requests per windowMs
   message: (req, res) => {
-    const retryAfter = Math.ceil((req.rateLimit.resetTime - Date.now()) / 1000 / 60);
+    let retryAfter = 15; // Default to 15 minutes
+    if (req.rateLimit && req.rateLimit.resetTime) {
+      retryAfter = Math.max(1, Math.ceil((req.rateLimit.resetTime - Date.now()) / 1000 / 60));
+    }
     return {
       error: 'Too many admin requests. Please slow down your requests.',
       message: `You've exceeded the admin API rate limit. Please try again in ${retryAfter} minute(s).`,
@@ -122,7 +137,10 @@ const contactLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
   max: 5, // Limit each IP to 5 submissions per hour
   message: (req, res) => {
-    const retryAfter = Math.ceil((req.rateLimit.resetTime - Date.now()) / 1000 / 60);
+    let retryAfter = 60; // Default to 60 minutes (1 hour)
+    if (req.rateLimit && req.rateLimit.resetTime) {
+      retryAfter = Math.max(1, Math.ceil((req.rateLimit.resetTime - Date.now()) / 1000 / 60));
+    }
     const hours = Math.floor(retryAfter / 60);
     const minutes = retryAfter % 60;
     const timeText = hours > 0 ? `${hours} hour(s) and ${minutes} minute(s)` : `${minutes} minute(s)`;
