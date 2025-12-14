@@ -157,9 +157,12 @@ router.delete('/:memberId', authenticate, async (req, res) => {
       return res.status(403).json({ error: 'Only admins can remove members' });
     }
 
-    // Don't allow removing admin
+    // Get member info and group name before removing
     const memberCheck = await pool.query(
-      'SELECT role FROM group_members WHERE id = $1 AND group_id = $2',
+      `SELECT gm.role, gm.user_id, g.name as group_name
+       FROM group_members gm
+       JOIN groups g ON gm.group_id = g.id
+       WHERE gm.id = $1 AND gm.group_id = $2`,
       [memberId, groupId]
     );
 
@@ -171,7 +174,20 @@ router.delete('/:memberId', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Cannot remove admin member' });
     }
 
+    const removedUserId = memberCheck.rows[0].user_id;
+    const groupName = memberCheck.rows[0].group_name;
+
+    // Remove member
     await pool.query('DELETE FROM group_members WHERE id = $1', [memberId]);
+
+    // Notify the removed member
+    await createNotification(
+      removedUserId,
+      'group_removed',
+      'Removed from Group',
+      `You've been removed from ${groupName}`,
+      groupId
+    );
 
     res.json({ message: 'Member removed successfully' });
   } catch (error) {
