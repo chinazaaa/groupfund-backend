@@ -235,7 +235,7 @@ router.get('/groups', async (req, res) => {
     let query = `
       SELECT 
         g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, 
-        g.currency, g.created_at, g.updated_at,
+        g.currency, g.status, g.created_at, g.updated_at,
         u.name as admin_name, u.email as admin_email,
         COUNT(gm.id) FILTER (WHERE gm.status = 'active') as active_members,
         COUNT(gm.id) FILTER (WHERE gm.status = 'pending') as pending_members
@@ -272,7 +272,7 @@ router.get('/groups', async (req, res) => {
     const countResult = await pool.query(countQuery, countParams);
     const total = parseInt(countResult.rows[0].total);
 
-    query += ` GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.created_at, g.updated_at, u.name, u.email
+    query += ` GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.created_at, g.updated_at, u.name, u.email
                ORDER BY g.created_at DESC LIMIT $${paramCount++} OFFSET $${paramCount++}`;
     params.push(parseInt(limit), offset);
 

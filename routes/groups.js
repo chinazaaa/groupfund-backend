@@ -68,14 +68,14 @@ router.get('/preview/:inviteCode', authenticate, async (req, res) => {
 
     const groupResult = await pool.query(
       `SELECT 
-        g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.created_at,
+        g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.created_at,
         COUNT(gm.id) FILTER (WHERE gm.status = 'active') as current_members,
         u.name as admin_name
        FROM groups g
        LEFT JOIN group_members gm ON g.id = gm.group_id
        LEFT JOIN users u ON g.admin_id = u.id
        WHERE g.invite_code = $1
-       GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.created_at, u.name`,
+       GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.created_at, u.name`,
       [inviteCode]
     );
 
@@ -93,6 +93,7 @@ router.get('/preview/:inviteCode', authenticate, async (req, res) => {
         contribution_amount: parseFloat(group.contribution_amount),
         max_members: parseInt(group.max_members),
         currency: group.currency || 'NGN',
+        status: group.status || 'active',
         current_members: parseInt(group.current_members || 0),
         admin_name: group.admin_name,
         created_at: group.created_at,
@@ -132,6 +133,11 @@ router.post('/join', authenticate, [
     }
 
     const group = groupResult.rows[0];
+
+    // Check if group is closed
+    if (group.status === 'closed') {
+      return res.status(400).json({ error: 'This group is closed and no longer accepting new members' });
+    }
 
     // Check if already a member (active or pending)
     const memberCheck = await pool.query(
@@ -247,8 +253,8 @@ router.get('/my-groups', authenticate, async (req, res) => {
 
     const result = await pool.query(
       `SELECT
-        g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.created_at,
-        gm.role, gm.status,
+        g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.created_at,
+        gm.role, gm.status as member_status,
         COUNT(DISTINCT gm2.id) FILTER (WHERE gm2.status = 'active') as active_members,
         u.name as admin_name
        FROM group_members gm
@@ -257,7 +263,7 @@ router.get('/my-groups', authenticate, async (req, res) => {
        LEFT JOIN users u ON g.admin_id = u.id
        WHERE gm.user_id = $1
          AND gm.status != 'inactive'
-       GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.created_at, gm.role, gm.status, u.name
+       GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.created_at, gm.role, gm.status, u.name
        ORDER BY g.created_at DESC`,
       [userId]
     );
@@ -384,6 +390,51 @@ router.put('/:groupId', authenticate, [
   } catch (error) {
     console.error('Update group error:', error);
     res.status(500).json({ error: 'Server error updating group' });
+  }
+});
+
+// Close group (creator or admin only)
+router.put('/:groupId/close', authenticate, async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const userId = req.user.id;
+    const isSystemAdmin = req.user.is_admin;
+
+    // Get group details
+    const groupResult = await pool.query(
+      'SELECT id, admin_id, status FROM groups WHERE id = $1',
+      [groupId]
+    );
+
+    if (groupResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const group = groupResult.rows[0];
+
+    // Check if user is the creator or a system admin
+    if (group.admin_id !== userId && !isSystemAdmin) {
+      return res.status(403).json({ error: 'Only the group creator or an admin can close this group' });
+    }
+
+    // Check if group is already closed
+    if (group.status === 'closed') {
+      return res.status(400).json({ error: 'Group is already closed' });
+    }
+
+    // Close the group
+    const result = await pool.query(
+      'UPDATE groups SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING id, name, status',
+      ['closed', groupId]
+    );
+
+    res.json({
+      message: 'Group closed successfully',
+      group: result.rows[0],
+    });
+  } catch (error) {
+    console.error('Close group error:', error);
+    res.status(500).json({ error: 'Server error closing group' });
   }
 });
 
