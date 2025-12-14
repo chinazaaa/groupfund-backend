@@ -223,6 +223,99 @@ router.get('/past', authenticate, async (req, res) => {
   }
 });
 
+// Get overdue contributions (contributions that are not_paid after birthday has passed)
+router.get('/overdue', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { groupId } = req.query;
+
+    // Get all groups the user is in
+    let groupsQuery = `
+      SELECT DISTINCT g.id, g.name, g.currency, g.contribution_amount
+      FROM group_members gm
+      JOIN groups g ON gm.group_id = g.id
+      WHERE gm.user_id = $1 AND gm.status = 'active'
+    `;
+    const groupsParams = [userId];
+    
+    if (groupId) {
+      groupsQuery += ` AND g.id = $2`;
+      groupsParams.push(groupId);
+    }
+
+    const groupsResult = await pool.query(groupsQuery, groupsParams);
+    const groups = groupsResult.rows;
+
+    const overdueContributions = [];
+
+    for (const group of groups) {
+      // Get all active members in this group
+      const membersResult = await pool.query(
+        `SELECT u.id, u.name, u.birthday
+         FROM users u
+         JOIN group_members gm ON u.id = gm.user_id
+         WHERE gm.group_id = $1 AND gm.status = 'active' AND u.birthday IS NOT NULL`,
+        [group.id]
+      );
+
+      for (const member of membersResult.rows) {
+        // Calculate if birthday has passed this year
+        const memberBirthday = new Date(member.birthday);
+        const today = new Date();
+        const currentYear = today.getFullYear();
+        
+        // Get this year's birthday date
+        const thisYearBirthday = new Date(currentYear, memberBirthday.getMonth(), memberBirthday.getDate());
+        
+        // Check if birthday has passed
+        if (thisYearBirthday < today) {
+          // Birthday has passed, check if user has paid
+          const contributionCheck = await pool.query(
+            `SELECT id, status, contribution_date, amount
+             FROM birthday_contributions 
+             WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3
+             AND EXTRACT(YEAR FROM contribution_date) = $4`,
+            [group.id, member.id, userId, currentYear]
+          );
+
+          // If no contribution or status is 'not_paid' or 'not_received', it's overdue
+          // 'not_received' means they marked as paid but celebrant rejected it, so still overdue
+          const isOverdue = contributionCheck.rows.length === 0 || 
+                           contributionCheck.rows[0].status === 'not_paid' || 
+                           contributionCheck.rows[0].status === 'not_received';
+          
+          if (isOverdue) {
+            const daysOverdue = Math.floor((today - thisYearBirthday) / (1000 * 60 * 60 * 24));
+            
+            overdueContributions.push({
+              group_id: group.id,
+              group_name: group.name,
+              currency: group.currency || 'NGN',
+              birthday_user_id: member.id,
+              birthday_user_name: member.name,
+              birthday_date: thisYearBirthday.toISOString().split('T')[0],
+              days_overdue: daysOverdue,
+              contribution_amount: parseFloat(group.contribution_amount || 0),
+              status: contributionCheck.rows.length > 0 ? contributionCheck.rows[0].status : 'not_paid'
+            });
+          }
+        }
+      }
+    }
+
+    // Sort by days overdue (most overdue first)
+    overdueContributions.sort((a, b) => b.days_overdue - a.days_overdue);
+
+    res.json({ 
+      overdue_contributions: overdueContributions,
+      total: overdueContributions.length
+    });
+  } catch (error) {
+    console.error('Get overdue contributions error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Get birthday details
 router.get('/:userId', authenticate, async (req, res) => {
   try {
@@ -700,99 +793,6 @@ router.post('/contribute/:contributionId/reject', authenticate, async (req, res)
   } catch (error) {
     console.error('Reject contribution error:', error);
     res.status(500).json({ error: 'Server error rejecting contribution' });
-  }
-});
-
-// Get overdue contributions (contributions that are not_paid after birthday has passed)
-router.get('/overdue', authenticate, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const { groupId } = req.query;
-
-    // Get all groups the user is in
-    let groupsQuery = `
-      SELECT DISTINCT g.id, g.name, g.currency, g.contribution_amount
-      FROM group_members gm
-      JOIN groups g ON gm.group_id = g.id
-      WHERE gm.user_id = $1 AND gm.status = 'active'
-    `;
-    const groupsParams = [userId];
-    
-    if (groupId) {
-      groupsQuery += ` AND g.id = $2`;
-      groupsParams.push(groupId);
-    }
-
-    const groupsResult = await pool.query(groupsQuery, groupsParams);
-    const groups = groupsResult.rows;
-
-    const overdueContributions = [];
-
-    for (const group of groups) {
-      // Get all active members in this group
-      const membersResult = await pool.query(
-        `SELECT u.id, u.name, u.birthday
-         FROM users u
-         JOIN group_members gm ON u.id = gm.user_id
-         WHERE gm.group_id = $1 AND gm.status = 'active' AND u.birthday IS NOT NULL`,
-        [group.id]
-      );
-
-      for (const member of membersResult.rows) {
-        // Calculate if birthday has passed this year
-        const memberBirthday = new Date(member.birthday);
-        const today = new Date();
-        const currentYear = today.getFullYear();
-        
-        // Get this year's birthday date
-        const thisYearBirthday = new Date(currentYear, memberBirthday.getMonth(), memberBirthday.getDate());
-        
-        // Check if birthday has passed
-        if (thisYearBirthday < today) {
-          // Birthday has passed, check if user has paid
-          const contributionCheck = await pool.query(
-            `SELECT id, status, contribution_date, amount
-             FROM birthday_contributions 
-             WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3
-             AND EXTRACT(YEAR FROM contribution_date) = $4`,
-            [group.id, member.id, userId, currentYear]
-          );
-
-          // If no contribution or status is 'not_paid' or 'not_received', it's overdue
-          // 'not_received' means they marked as paid but celebrant rejected it, so still overdue
-          const isOverdue = contributionCheck.rows.length === 0 || 
-                           contributionCheck.rows[0].status === 'not_paid' || 
-                           contributionCheck.rows[0].status === 'not_received';
-          
-          if (isOverdue) {
-            const daysOverdue = Math.floor((today - thisYearBirthday) / (1000 * 60 * 60 * 24));
-            
-            overdueContributions.push({
-              group_id: group.id,
-              group_name: group.name,
-              currency: group.currency || 'NGN',
-              birthday_user_id: member.id,
-              birthday_user_name: member.name,
-              birthday_date: thisYearBirthday.toISOString().split('T')[0],
-              days_overdue: daysOverdue,
-              contribution_amount: parseFloat(group.contribution_amount || 0),
-              status: contributionCheck.rows.length > 0 ? contributionCheck.rows[0].status : 'not_paid'
-            });
-          }
-        }
-      }
-    }
-
-    // Sort by days overdue (most overdue first)
-    overdueContributions.sort((a, b) => b.days_overdue - a.days_overdue);
-
-    res.json({ 
-      overdue_contributions: overdueContributions,
-      total: overdueContributions.length
-    });
-  } catch (error) {
-    console.error('Get overdue contributions error:', error);
-    res.status(500).json({ error: 'Server error' });
   }
 });
 
