@@ -379,7 +379,7 @@ const sendComprehensiveBirthdayReminderEmail = async (email, userName, daysUntil
       subject = `Action Required: ${totalUnpaid} birthday${totalUnpaid > 1 ? 's' : ''} today! - GroupFund`;
       titleText = 'Birthday Reminder - Today!';
       messageText = `You have ${totalUnpaid} unpaid birthday${totalUnpaid > 1 ? 's' : ''} in ${totalBirthdays} total birthday${totalBirthdays > 1 ? 's' : ''} today across your groups!`;
-      urgencyText = 'Action required: Please mark your contributions as paid now.';
+      urgencyText = 'Action required: Please pay and mark your contributions as paid now.';
     }
 
     // Build groups sections with their birthdays
@@ -474,19 +474,22 @@ const sendComprehensiveBirthdayReminderEmail = async (email, userName, daysUntil
 };
 
 // Send monthly birthday newsletter email
-// groupsWithBirthdays: array of { groupName, currency, contributionAmount, birthdays: [{ name, birthday }] }
-const sendMonthlyBirthdayNewsletter = async (email, userName, monthName, groupsWithBirthdays) => {
+// groupsWithBirthdays: array of { groupName, currency, contributionAmount, birthdays: [{ id, name, birthday }] }
+const sendMonthlyBirthdayNewsletter = async (email, userName, userId, monthName, groupsWithBirthdays) => {
   try {
     const { formatAmount } = require('./currency');
     
     const subject = `Monthly Birthday Newsletter - ${monthName} - GroupFund`;
     const titleText = `Monthly Birthday Newsletter - ${monthName}`;
     
-    // Calculate totals
-    let totalBirthdays = 0;
+    // Calculate unique birthdays (deduplicate across groups)
+    const uniqueBirthdayIds = new Set();
     groupsWithBirthdays.forEach(group => {
-      totalBirthdays += group.birthdays.length;
+      group.birthdays.forEach(birthday => {
+        uniqueBirthdayIds.add(birthday.id);
+      });
     });
+    const totalUniqueBirthdays = uniqueBirthdayIds.size;
 
     // Build groups sections with their birthdays
     const groupsHtml = groupsWithBirthdays.map(group => {
@@ -498,10 +501,14 @@ const sendMonthlyBirthdayNewsletter = async (email, userName, monthName, groupsW
         const monthName = monthNames[birthdayDate.getMonth()];
         const formattedDate = `${monthName} ${day}`;
         
+        // Check if this birthday is the current user
+        const isCurrentUser = birthday.id === userId;
+        const displayName = isCurrentUser ? `${birthday.name} (you)` : birthday.name;
+        
         return `
               <div style="background: #f9fafb; padding: 12px; border-radius: 8px; margin: 8px 0; border-left: 3px solid #6366f1;">
                 <p style="color: #374151; font-size: 15px; margin: 0; font-weight: 600;">
-                  ${birthday.name} - ${formattedDate}
+                  ${displayName} - ${formattedDate}
                 </p>
               </div>
             `;
@@ -534,7 +541,7 @@ const sendMonthlyBirthdayNewsletter = async (email, userName, monthName, groupsW
             Hi ${userName},
           </p>
           <p style="color: #374151; font-size: 16px; line-height: 1.7;">
-            Here's your monthly birthday newsletter! You have ${totalBirthdays} birthday${totalBirthdays > 1 ? 's' : ''} coming up in ${monthName} across your groups.
+            Here's your monthly birthday newsletter! You have ${totalUniqueBirthdays} birthday${totalUniqueBirthdays > 1 ? 's' : ''} coming up in ${monthName} across your groups.
           </p>
           
           ${groupsHtml}

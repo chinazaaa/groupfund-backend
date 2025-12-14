@@ -1360,6 +1360,7 @@ router.post('/birthdays/send-monthly-newsletter', async (req, res) => {
               await sendMonthlyBirthdayNewsletter(
                 user.email,
                 user.name,
+                user.id,
                 monthName,
                 groupsWithBirthdays.map(g => ({
                   groupName: g.groupName,
