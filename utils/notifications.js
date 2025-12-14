@@ -109,7 +109,7 @@ async function createNotification(userId, type, title, message, groupId = null, 
         }
       }
 
-      if (type === 'birthday_reminder' || type === 'birthday_wish') {
+      if (type === 'birthday_reminder' || type === 'birthday_wish' || type === 'monthly_newsletter') {
         screen = 'Home';
         params = {};
       }

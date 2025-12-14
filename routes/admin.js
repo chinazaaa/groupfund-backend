@@ -1259,6 +1259,186 @@ router.post('/birthdays/:userId/send-notifications', async (req, res) => {
   }
 });
 
+// Send monthly birthday newsletter to all users
+router.post('/birthdays/send-monthly-newsletter', async (req, res) => {
+  try {
+    const pool = require('../config/database');
+    const { createNotification } = require('../utils/notifications');
+    const { sendMonthlyBirthdayNewsletter } = require('../utils/email');
+    const { formatAmount } = require('../utils/currency');
+    
+    const results = {
+      sent: 0,
+      skipped: 0,
+      errors: 0,
+      details: []
+    };
+    
+    // Get current month name
+    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
+                       'July', 'August', 'September', 'October', 'November', 'December'];
+    const currentDate = new Date();
+    const currentMonth = currentDate.getMonth();
+    const currentYear = currentDate.getFullYear();
+    const monthName = monthNames[currentMonth];
+    
+    // Get all active users
+    const usersResult = await pool.query(
+      `SELECT id, name, email, expo_push_token
+       FROM users 
+       WHERE is_verified = TRUE AND email IS NOT NULL AND email != ''`
+    );
+    
+    for (const user of usersResult.rows) {
+      try {
+        // Check if monthly newsletter was already sent this month
+        const newsletterCheck = await pool.query(
+          `SELECT id FROM notifications 
+           WHERE user_id = $1 AND type = 'monthly_newsletter' 
+           AND DATE_PART('year', created_at) = $2 
+           AND DATE_PART('month', created_at) = $3`,
+          [user.id, currentYear, currentMonth + 1] // PostgreSQL months are 1-12
+        );
+        
+        if (newsletterCheck.rows.length > 0) {
+          results.skipped++;
+          results.details.push({
+            user_id: user.id,
+            user_name: user.name,
+            email: user.email,
+            status: 'skipped',
+            reason: 'Already sent this month'
+          });
+          continue;
+        }
+        
+        // Get all groups the user is in
+        const groupsResult = await pool.query(
+          `SELECT g.id, g.name, g.contribution_amount, g.currency
+           FROM groups g
+           JOIN group_members gm ON g.id = gm.group_id
+           WHERE gm.user_id = $1 AND gm.status = 'active'`,
+          [user.id]
+        );
+        
+        // Collect all groups with birthdays in current month
+        const groupsWithBirthdays = [];
+        
+        for (const group of groupsResult.rows) {
+          // Get all active members in this group with birthdays in current month
+          const membersResult = await pool.query(
+            `SELECT u.id, u.name, u.birthday
+             FROM users u
+             JOIN group_members gm ON u.id = gm.user_id
+             WHERE gm.group_id = $1 AND gm.status = 'active' 
+             AND u.birthday IS NOT NULL
+             AND DATE_PART('month', u.birthday) = $2`,
+            [group.id, currentMonth + 1] // PostgreSQL months are 1-12
+          );
+          
+          if (membersResult.rows.length > 0) {
+            groupsWithBirthdays.push({
+              groupId: group.id,
+              groupName: group.name,
+              currency: group.currency || 'NGN',
+              contributionAmount: parseFloat(group.contribution_amount),
+              birthdays: membersResult.rows.map(m => ({
+                id: m.id,
+                name: m.name,
+                birthday: m.birthday
+              }))
+            });
+          }
+        }
+        
+        // Only send if user has at least one group with birthdays this month
+        if (groupsWithBirthdays.length > 0) {
+          // Send email
+          let emailSent = false;
+          if (user.email) {
+            try {
+              await sendMonthlyBirthdayNewsletter(
+                user.email,
+                user.name,
+                monthName,
+                groupsWithBirthdays.map(g => ({
+                  groupName: g.groupName,
+                  currency: g.currency,
+                  contributionAmount: g.contributionAmount,
+                  birthdays: g.birthdays
+                }))
+              );
+              emailSent = true;
+            } catch (err) {
+              console.error(`Error sending monthly newsletter email to ${user.email}:`, err);
+            }
+          }
+          
+          // Send simple notification
+          try {
+            await createNotification(
+              user.id,
+              'monthly_newsletter',
+              'Monthly Birthday Newsletter',
+              `Your monthly list of birthdays for ${monthName} is in your email. Check it out!`,
+              null,
+              null
+            );
+          } catch (err) {
+            console.error(`Error sending monthly newsletter notification to user ${user.id}:`, err);
+          }
+          
+          results.sent++;
+          results.details.push({
+            user_id: user.id,
+            user_name: user.name,
+            email: user.email,
+            status: 'sent',
+            email_sent: emailSent,
+            groups_count: groupsWithBirthdays.length,
+            total_birthdays: groupsWithBirthdays.reduce((sum, g) => sum + g.birthdays.length, 0)
+          });
+        } else {
+          results.skipped++;
+          results.details.push({
+            user_id: user.id,
+            user_name: user.name,
+            email: user.email,
+            status: 'skipped',
+            reason: 'No birthdays in current month'
+          });
+        }
+      } catch (error) {
+        console.error(`Error processing monthly newsletter for user ${user.id}:`, error);
+        results.errors++;
+        results.details.push({
+          user_id: user.id,
+          user_name: user.name,
+          email: user.email,
+          status: 'error',
+          error: error.message
+        });
+      }
+    }
+    
+    res.json({
+      message: 'Monthly birthday newsletter processed successfully',
+      month: monthName,
+      year: currentYear,
+      summary: {
+        total: results.sent + results.skipped + results.errors,
+        sent: results.sent,
+        skipped: results.skipped,
+        errors: results.errors
+      },
+      details: results.details
+    });
+  } catch (error) {
+    console.error('Error sending monthly birthday newsletter:', error);
+    res.status(500).json({ error: 'Server error sending monthly newsletter', message: error.message });
+  }
+});
+
 // Get all notifications
 router.get('/notifications', async (req, res) => {
   try {

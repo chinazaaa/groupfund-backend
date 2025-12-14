@@ -473,6 +473,114 @@ const sendComprehensiveBirthdayReminderEmail = async (email, userName, daysUntil
   }
 };
 
+// Send monthly birthday newsletter email
+// groupsWithBirthdays: array of { groupName, currency, contributionAmount, birthdays: [{ name, birthday }] }
+const sendMonthlyBirthdayNewsletter = async (email, userName, monthName, groupsWithBirthdays) => {
+  try {
+    const { formatAmount } = require('./currency');
+    
+    const subject = `Monthly Birthday Newsletter - ${monthName} - GroupFund`;
+    const titleText = `Monthly Birthday Newsletter - ${monthName}`;
+    
+    // Calculate totals
+    let totalBirthdays = 0;
+    groupsWithBirthdays.forEach(group => {
+      totalBirthdays += group.birthdays.length;
+    });
+
+    // Build groups sections with their birthdays
+    const groupsHtml = groupsWithBirthdays.map(group => {
+      const birthdaysListHtml = group.birthdays.map(birthday => {
+        // Format birthday date (just day and month)
+        const birthdayDate = new Date(birthday.birthday);
+        const day = birthdayDate.getDate();
+        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const monthName = monthNames[birthdayDate.getMonth()];
+        const formattedDate = `${monthName} ${day}`;
+        
+        return `
+              <div style="background: #f9fafb; padding: 12px; border-radius: 8px; margin: 8px 0; border-left: 3px solid #6366f1;">
+                <p style="color: #374151; font-size: 15px; margin: 0; font-weight: 600;">
+                  ${birthday.name} - ${formattedDate}
+                </p>
+              </div>
+            `;
+      }).join('');
+
+      return `
+            <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
+              <p style="color: #374151; font-size: 18px; margin: 0 0 10px 0; font-weight: 700;">
+                📋 ${group.groupName}
+              </p>
+              <p style="color: #6b7280; font-size: 14px; margin: 0 0 15px 0;">
+                <strong>Contribution:</strong> ${formatAmount(group.contributionAmount, group.currency)}
+              </p>
+              <p style="color: #6b7280; font-size: 14px; margin: 0 0 15px 0; font-weight: 600;">
+                ${group.birthdays.length} birthday${group.birthdays.length > 1 ? 's' : ''} this month:
+              </p>
+              ${birthdaysListHtml}
+            </div>
+          `;
+    }).join('');
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">🎂 GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1a1a1a; font-size: 24px; margin-top: 0;">${titleText}</h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${userName},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Here's your monthly birthday newsletter! You have ${totalBirthdays} birthday${totalBirthdays > 1 ? 's' : ''} coming up in ${monthName} across your groups.
+          </p>
+          
+          ${groupsHtml}
+
+          <div style="background: #e0e7ff; padding: 20px; border-radius: 8px; margin: 20px 0; border: 2px solid #6366f1;">
+            <p style="color: #4338ca; font-size: 16px; margin: 0; font-weight: 600; text-align: center;">
+              💡 Tip: Mark your contributions as paid in the app to stay organized!
+            </p>
+          </div>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Log in to the GroupFund app to view all upcoming birthdays and manage your contributions! 🎉
+          </p>
+          
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Best regards,<br/>
+            <strong style="color: #6366f1;">The GroupFund Team</strong>
+          </p>
+          
+          <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            This is a monthly newsletter from GroupFund. You can manage your notification preferences in the app settings.
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject,
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error sending monthly birthday newsletter:', error);
+      return false;
+    }
+
+    console.log('Monthly birthday newsletter sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending monthly birthday newsletter:', error);
+    return false;
+  }
+};
+
 module.exports = {
   sendOTPEmail,
   sendOTPSMS,
@@ -481,4 +589,5 @@ module.exports = {
   sendBirthdayEmail,
   sendBirthdayReminderEmail,
   sendComprehensiveBirthdayReminderEmail,
+  sendMonthlyBirthdayNewsletter,
 };
