@@ -622,6 +622,59 @@ router.get('/stats', async (req, res) => {
   }
 });
 
+// Get today's birthdays
+router.get('/birthdays/today', async (req, res) => {
+  try {
+    const { page = 1, limit = 50 } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    // Query users whose birthday month and day match today
+    const query = `
+      SELECT 
+        u.id, u.name, u.email, u.phone, u.birthday,
+        u.is_verified, u.is_active, u.created_at,
+        (SELECT COUNT(*) FROM group_members gm WHERE gm.user_id = u.id) as group_count
+      FROM users u
+      WHERE u.birthday IS NOT NULL
+        AND DATE_PART('month', u.birthday) = DATE_PART('month', CURRENT_DATE)
+        AND DATE_PART('day', u.birthday) = DATE_PART('day', CURRENT_DATE)
+      ORDER BY u.name ASC
+      LIMIT $1 OFFSET $2
+    `;
+
+    // Get total count
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM users u
+      WHERE u.birthday IS NOT NULL
+        AND DATE_PART('month', u.birthday) = DATE_PART('month', CURRENT_DATE)
+        AND DATE_PART('day', u.birthday) = DATE_PART('day', CURRENT_DATE)
+    `;
+
+    const countResult = await pool.query(countQuery);
+    const total = parseInt(countResult.rows[0].total);
+
+    const result = await pool.query(query, [parseInt(limit), offset]);
+
+    res.json({
+      birthdays: result.rows.map(user => ({
+        ...user,
+        is_active: user.is_active !== undefined ? user.is_active : true,
+        group_count: parseInt(user.group_count || 0),
+      })),
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / parseInt(limit)),
+      },
+    });
+  } catch (error) {
+    console.error('Get today\'s birthdays error:', error);
+    res.status(500).json({ error: 'Server error fetching today\'s birthdays' });
+  }
+});
+
 // Get all notifications
 router.get('/notifications', async (req, res) => {
   try {
