@@ -119,9 +119,15 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
         
         // Only count if user was a member when birthday occurred
         if (userJoinDate <= thisYearBirthday) {
-          // Check if birthday has passed
-          if (thisYearBirthday < today) {
-            // Birthday has passed, check contribution status
+          // Count today and past birthdays as expected
+          // Today's birthday: count as expected but not overdue if not paid
+          // Past birthday: count as expected and overdue if not paid
+          const isToday = thisYearBirthday.toDateString() === today.toDateString();
+          const isPast = thisYearBirthday < today;
+          const isPastOrToday = isPast || isToday;
+          
+          if (isPastOrToday) {
+            // Birthday has passed or is today, check contribution status
             const contributionCheck = await pool.query(
               `SELECT status FROM birthday_contributions 
                WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3
@@ -136,11 +142,19 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
               if (status === 'paid' || status === 'confirmed') {
                 totalOnTime++;
               } else if (status === 'not_paid' || status === 'not_received') {
-                totalOverdue++;
+                // Only count as overdue if birthday has passed (not today)
+                if (isPast) {
+                  totalOverdue++;
+                }
+                // If it's today and not paid, it's expected but not overdue yet
               }
             } else {
-              // No contribution record = not paid
-              totalOverdue++;
+              // No contribution record
+              // Only count as overdue if birthday has passed (not today)
+              if (isPast) {
+                totalOverdue++;
+              }
+              // If it's today and no record, it's expected but not overdue yet
             }
           }
         }

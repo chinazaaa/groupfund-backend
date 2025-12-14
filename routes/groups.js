@@ -339,8 +339,13 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
         
         // Only count if contributor was a member when birthday occurred
         if (contributorJoinDate <= thisYearBirthday) {
-          // Only count past birthdays (current/future don't count as overdue)
-          if (isPast) {
+          // Count today and past birthdays as expected
+          // Today's birthday: count as expected but not overdue if not paid
+          // Past birthday: count as expected and overdue if not paid
+          const isToday = thisYearBirthday.toDateString() === today.toDateString();
+          const isPastOrToday = isPast || isToday;
+          
+          if (isPastOrToday) {
             totalExpectedContributions++;
 
             // Check contribution status
@@ -358,13 +363,21 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
               if (status === 'paid' || status === 'confirmed') {
                 totalOnTime++;
               } else if (status === 'not_paid' || status === 'not_received') {
+                // Only count as overdue if birthday has passed (not today)
+                if (isPast) {
+                  totalOverdueContributions++;
+                  membersWithOverdue.add(contributor.id);
+                }
+                // If it's today and not paid, it's expected but not overdue yet
+              }
+            } else {
+              // No contribution record
+              // Only count as overdue if birthday has passed (not today)
+              if (isPast) {
                 totalOverdueContributions++;
                 membersWithOverdue.add(contributor.id);
               }
-            } else {
-              // No contribution record = overdue
-              totalOverdueContributions++;
-              membersWithOverdue.add(contributor.id);
+              // If it's today and no record, it's expected but not overdue yet
             }
           }
         }
