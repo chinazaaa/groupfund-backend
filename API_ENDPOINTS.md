@@ -164,6 +164,19 @@ Base URL: `http://localhost:3000`
   - Returns: `{ message }`
   - Admin cannot leave if they're the only admin
 
+### Get Member Summary
+- **GET** `/api/members/summary/:userId`
+  - **Requires authentication**
+  - Returns: `{ user: {...}, metrics: {...}, summary: {...} }`
+  - Shows member reliability metrics including:
+    - Total groups joined
+    - Total contributions made
+    - Total overdue contributions
+    - On-time payment rate
+    - Reliability score (0-100)
+    - Summary text (e.g., "Excellent - No overdue contributions")
+  - Useful for viewing before accepting join requests
+
 ---
 
 ## Birthday Endpoints (`/api/birthdays`)

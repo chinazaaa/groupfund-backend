@@ -64,6 +64,155 @@ router.get('/group/:groupId', authenticate, async (req, res) => {
   }
 });
 
+// Get member summary/reliability score (for viewing before accepting join requests)
+// NOTE: This route must come before /:memberId routes to avoid conflicts
+router.get('/summary/:userId', authenticate, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const currentUserId = req.user.id;
+
+    // Get user basic info
+    const userResult = await pool.query(
+      'SELECT id, name, email, created_at FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userResult.rows[0];
+    const today = new Date();
+    const currentYear = today.getFullYear();
+
+    // Get all groups the user is/was a member of (active or past)
+    const groupsResult = await pool.query(
+      `SELECT g.id, g.name, gm.joined_at, gm.status
+       FROM group_members gm
+       JOIN groups g ON gm.group_id = g.id
+       WHERE gm.user_id = $1 AND gm.status IN ('active', 'inactive')
+       ORDER BY gm.joined_at DESC`,
+      [userId]
+    );
+
+    let totalContributions = 0;
+    let totalOverdue = 0;
+    let totalOnTime = 0;
+    let totalGroups = groupsResult.rows.length;
+
+    // Calculate metrics for each group
+    for (const group of groupsResult.rows) {
+      const userJoinDate = new Date(group.joined_at);
+
+      // Get all members in this group with birthdays
+      const membersResult = await pool.query(
+        `SELECT u.id, u.name, u.birthday
+         FROM users u
+         JOIN group_members gm ON u.id = gm.user_id
+         WHERE gm.group_id = $1 AND gm.status = 'active' AND u.birthday IS NOT NULL AND u.id != $2`,
+        [group.id, userId]
+      );
+
+      for (const member of membersResult.rows) {
+        const memberBirthday = new Date(member.birthday);
+        const thisYearBirthday = new Date(currentYear, memberBirthday.getMonth(), memberBirthday.getDate());
+        
+        // Only count if user was a member when birthday occurred
+        if (userJoinDate <= thisYearBirthday) {
+          // Check if birthday has passed
+          if (thisYearBirthday < today) {
+            // Birthday has passed, check contribution status
+            const contributionCheck = await pool.query(
+              `SELECT status FROM birthday_contributions 
+               WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3
+               AND EXTRACT(YEAR FROM contribution_date) = $4`,
+              [group.id, member.id, userId, currentYear]
+            );
+
+            totalContributions++;
+
+            if (contributionCheck.rows.length > 0) {
+              const status = contributionCheck.rows[0].status;
+              if (status === 'paid' || status === 'confirmed') {
+                totalOnTime++;
+              } else if (status === 'not_paid' || status === 'not_received') {
+                totalOverdue++;
+              }
+            } else {
+              // No contribution record = not paid
+              totalOverdue++;
+            }
+          }
+        }
+      }
+    }
+
+    // Calculate reliability score (0-100)
+    // Formula: (on-time payments / total contributions) * 100
+    // If no contributions yet, give neutral score of 50
+    let reliabilityScore = 50; // Default neutral score
+    let onTimeRate = 0;
+
+    if (totalContributions > 0) {
+      onTimeRate = (totalOnTime / totalContributions) * 100;
+      reliabilityScore = Math.round(onTimeRate);
+    }
+
+    // Generate summary text
+    let summaryText = '';
+    let rating = 'neutral';
+
+    if (totalContributions === 0) {
+      summaryText = 'New member - No contribution history yet';
+      rating = 'new';
+    } else if (totalOverdue === 0) {
+      summaryText = 'Excellent - No overdue contributions';
+      rating = 'excellent';
+    } else if (reliabilityScore >= 90) {
+      summaryText = 'Very reliable - Excellent payment record';
+      rating = 'excellent';
+    } else if (reliabilityScore >= 75) {
+      summaryText = 'Reliable - Good payment record';
+      rating = 'good';
+    } else if (reliabilityScore >= 50) {
+      summaryText = 'Moderate - Some overdue contributions';
+      rating = 'moderate';
+    } else {
+      summaryText = 'Poor - Multiple overdue contributions';
+      rating = 'poor';
+    }
+
+    // Add specific details
+    if (totalOverdue > 0) {
+      summaryText += ` (${totalOverdue} overdue)`;
+    }
+
+    res.json({
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        member_since: user.created_at
+      },
+      metrics: {
+        total_groups: totalGroups,
+        total_contributions: totalContributions,
+        total_on_time: totalOnTime,
+        total_overdue: totalOverdue,
+        on_time_rate: Math.round(onTimeRate * 10) / 10, // Round to 1 decimal
+        reliability_score: reliabilityScore
+      },
+      summary: {
+        text: summaryText,
+        rating: rating // 'new', 'excellent', 'good', 'moderate', 'poor'
+      }
+    });
+  } catch (error) {
+    console.error('Get member summary error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Approve/Reject member (admin only)
 router.post('/:memberId/approve', authenticate, async (req, res) => {
   try {
