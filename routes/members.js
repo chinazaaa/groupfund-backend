@@ -130,28 +130,57 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
             // Birthday has passed or is today, check contribution status
             // Don't filter by year - just get the most recent contribution for this birthday
             const contributionCheck = await pool.query(
-              `SELECT status FROM birthday_contributions 
+              `SELECT status, contribution_date FROM birthday_contributions 
                WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3
                ORDER BY contribution_date DESC
                LIMIT 1`,
               [group.id, member.id, userId]
             );
 
-            totalContributions++;
+            let isFullyPaid = false; // Only 'confirmed' is fully paid
+            let status = null;
+            let contributionDate = null;
+            let paidOnTime = false;
 
             if (contributionCheck.rows.length > 0) {
-              const status = contributionCheck.rows[0].status;
-              if (status === 'paid' || status === 'confirmed') {
-                totalOnTime++;
-              } else if (status === 'not_paid' || status === 'not_received') {
-                // Only count as overdue if birthday has passed (not today)
-                if (isPast) {
-                  totalOverdue++;
-                }
-                // If it's today and not paid, it's expected but not overdue yet
+              status = contributionCheck.rows[0].status;
+              contributionDate = contributionCheck.rows[0].contribution_date ? new Date(contributionCheck.rows[0].contribution_date) : null;
+              isFullyPaid = (status === 'confirmed');
+              
+              // On-time = confirmed AND paid on or before birthday
+              if (isFullyPaid && contributionDate) {
+                contributionDate.setHours(0, 0, 0, 0);
+                paidOnTime = contributionDate <= thisYearBirthday;
               }
-            } else {
-              // No contribution record
+            }
+
+            // "Expected" = contributions that are still needed
+            // Expected includes: not_paid, paid (awaiting confirmation), not_received (rejected)
+            // NOT expected: confirmed (regardless of when paid - it's fully done)
+            if (!isFullyPaid) {
+              totalContributions++; // Only count non-confirmed as "expected"
+            }
+
+            // On-time = confirmed AND paid on or before birthday
+            if (paidOnTime) {
+              totalOnTime++;
+            } else if (status === 'not_paid' || status === 'not_received') {
+              // Not paid or rejected - overdue if birthday has passed
+              if (isPast) {
+                totalOverdue++;
+              }
+              // If it's today and not paid/not_received, it's expected but not overdue yet
+            } else if (status === 'paid') {
+              // Paid but awaiting confirmation - overdue if birthday has passed
+              if (isPast) {
+                totalOverdue++;
+              }
+              // If it's today and paid, it's expected but not overdue yet
+            } else if (status === 'confirmed' && !paidOnTime) {
+              // Confirmed but paid AFTER birthday - this is overdue (late payment)
+              totalOverdue++;
+            } else if (!contributionCheck.rows.length) {
+              // No contribution record = not_paid
               // Only count as overdue if birthday has passed (not today)
               if (isPast) {
                 totalOverdue++;
