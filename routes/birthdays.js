@@ -279,8 +279,11 @@ router.get('/overdue', authenticate, async (req, res) => {
         
         // Check if birthday has passed AND user was a member when the birthday occurred
         // Only consider overdue if user joined before or on the birthday date
-        if (thisYearBirthday < today && userJoinDate <= thisYearBirthday) {
-          // Birthday has passed, check if user has paid
+        // Overdue starts from 1 day after birthday (same day is not overdue yet)
+        const daysSinceBirthday = Math.floor((today - thisYearBirthday) / (1000 * 60 * 60 * 24));
+        
+        if (daysSinceBirthday >= 1 && userJoinDate <= thisYearBirthday) {
+          // Birthday has passed (at least 1 day ago), check if user has paid
           const contributionCheck = await pool.query(
             `SELECT id, status, contribution_date, amount
              FROM birthday_contributions 
@@ -296,8 +299,6 @@ router.get('/overdue', authenticate, async (req, res) => {
                            contributionCheck.rows[0].status === 'not_received';
           
           if (isOverdue) {
-            const daysOverdue = Math.floor((today - thisYearBirthday) / (1000 * 60 * 60 * 24));
-            
             overdueContributions.push({
               group_id: group.id,
               group_name: group.name,
@@ -305,7 +306,7 @@ router.get('/overdue', authenticate, async (req, res) => {
               birthday_user_id: member.id,
               birthday_user_name: member.name,
               birthday_date: thisYearBirthday.toISOString().split('T')[0],
-              days_overdue: daysOverdue,
+              days_overdue: daysSinceBirthday,
               contribution_amount: parseFloat(group.contribution_amount || 0),
               status: contributionCheck.rows.length > 0 ? contributionCheck.rows[0].status : 'not_paid'
             });

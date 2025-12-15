@@ -218,8 +218,100 @@ After setting up your database:
 4. ✅ Set up monitoring and logging
 5. ✅ Configure backups (Render provides automatic backups on paid plans)
 
+## Step 7: Prevent Service from Sleeping (Free Tier)
+
+Render's free tier services spin down after 15 minutes of inactivity. To keep your service awake, set up a cron job to ping your health endpoint periodically.
+
+### Option A: Using Render Cron Jobs (Recommended)
+
+1. **Go to your Render Dashboard** and click **"New +"** → **"Cron Job"**
+
+2. **Configure the Cron Job:**
+   - **Name**: `keep-alive` (or any name you prefer)
+   - **Schedule**: `*/14 * * * *` (runs every 14 minutes - just before the 15-minute timeout)
+   - **Command**: `node scripts/keepAlive.js`
+   - **Service**: Select your backend service
+   - **Region**: Same region as your backend service
+
+3. **Add Environment Variable:**
+   - In your **backend service** (not the cron job), add:
+     ```env
+     RENDER_SERVICE_URL=https://your-app-name.onrender.com
+     ```
+   - Replace `your-app-name` with your actual Render service name
+
+4. **Save and Deploy** - The cron job will now ping your service every 14 minutes
+
+### Option B: Using External Cron Service
+
+If you prefer an external service (like cron-job.org, EasyCron, etc.):
+
+1. **Set up the service URL** in your backend environment variables:
+   ```env
+   RENDER_SERVICE_URL=https://your-app-name.onrender.com
+   ```
+
+2. **Create a cron job** on the external service that calls:
+   ```
+   https://your-app-name.onrender.com/health
+   ```
+
+3. **Set the schedule** to run every 10-14 minutes
+
+### Option C: Using Uptime Monitoring Services
+
+Services like UptimeRobot (free tier available) can monitor your health endpoint:
+- URL: `https://your-app-name.onrender.com/health`
+- Interval: 5 minutes (free tier)
+- This serves dual purpose: monitoring + keeping service awake
+
+### Testing the Keep-Alive Script
+
+You can test the script locally:
+
+```bash
+# Set the service URL
+export RENDER_SERVICE_URL=https://your-app-name.onrender.com
+
+# Run the script
+node scripts/keepAlive.js
+```
+
+You should see:
+```
+🔄 Pinging https://your-app-name.onrender.com/health...
+✅ Success! Server responded in XXXms
+📊 Response: {"status":"OK","message":"GroupFund API is running"}
+```
+
+### Resource Usage & Optimization
+
+**Good news**: The keep-alive script is extremely lightweight:
+- **Script execution**: ~100-200ms, uses minimal CPU/memory
+- **Health endpoint**: No database queries, just returns a simple JSON response
+- **Network**: Single HTTP GET request (~1KB total)
+- **Cron job runs separately**: Doesn't consume resources from your main web service
+
+**Alternative schedules** (if you want to reduce frequency):
+- **Every 10 minutes**: `*/10 * * * *` (more frequent, safer)
+- **Every 12 minutes**: `*/12 * * * *` (good balance)
+- **Every 14 minutes**: `*/14 * * * *` (recommended - just before timeout)
+- **Every 13 minutes**: `*/13 * * * *` (alternative safe option)
+
+**Recommendation**: Every 14 minutes is optimal - it prevents sleep while minimizing requests. The resource impact is negligible (about 3-4 requests per hour, each taking <1 second).
+
+### Important Notes
+
+- **Free Tier Limitation**: Render free tier services sleep after 15 minutes of inactivity
+- **First Request Delay**: The first request after sleep can take 30-60 seconds (cold start)
+- **Cron Job Timing**: Set cron to run every 14 minutes to stay ahead of the timeout
+- **Health Endpoint**: Your app already has a `/health` endpoint that returns `{"status":"OK"}` - no database queries or heavy processing
+- **Cost**: Render Cron Jobs on free tier have limitations - check Render's pricing for details
+- **External Alternative**: Consider using free external services (UptimeRobot, cron-job.org) if you want to avoid Render Cron Job limits
+
 ## Need Help?
 
 - Check Render's [PostgreSQL documentation](https://render.com/docs/databases)
+- Check Render's [Cron Jobs documentation](https://render.com/docs/cron-jobs)
 - Review your application logs in Render dashboard
 - Verify all environment variables are set correctly
