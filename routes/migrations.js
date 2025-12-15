@@ -10,6 +10,7 @@ const migrations = [
   'add_admin_field.sql',
   'add_contact_submissions.sql',
   'add_waitlist.sql',
+  'add_beta_email_sent_to_waitlist.sql',
   'add_currency_to_groups.sql',
   'add_expo_push_token.sql',
   'add_international_payment_fields.sql',

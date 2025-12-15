@@ -1749,6 +1749,69 @@ router.delete('/waitlist/:id', async (req, res) => {
   }
 });
 
+// Trigger beta invitation emails to waitlist members
+router.post('/waitlist/send-beta-invitations', async (req, res) => {
+  try {
+    const { sendBetaInvitationEmail } = require('../utils/email');
+    
+    // Get all waitlist entries that haven't received the beta email
+    const waitlistEntries = await pool.query(
+      'SELECT id, name, email FROM waitlist WHERE beta_email_sent = FALSE ORDER BY created_at ASC'
+    );
+
+    if (waitlistEntries.rows.length === 0) {
+      return res.json({
+        message: 'No waitlist entries found that need beta invitation emails',
+        sent: 0,
+        failed: 0,
+        total: 0
+      });
+    }
+
+    let sentCount = 0;
+    let failedCount = 0;
+    const failedEmails = [];
+
+    // Send emails to each waitlist member
+    for (const entry of waitlistEntries.rows) {
+      try {
+        const emailSent = await sendBetaInvitationEmail(entry.email, entry.name);
+        
+        if (emailSent) {
+          // Update the beta_email_sent flag
+          await pool.query(
+            'UPDATE waitlist SET beta_email_sent = TRUE WHERE id = $1',
+            [entry.id]
+          );
+          sentCount++;
+        } else {
+          failedCount++;
+          failedEmails.push(entry.email);
+          console.error(`Failed to send beta invitation email to ${entry.email}`);
+        }
+      } catch (error) {
+        failedCount++;
+        failedEmails.push(entry.email);
+        console.error(`Error sending beta invitation email to ${entry.email}:`, error);
+      }
+    }
+
+    res.json({
+      message: `Beta invitation emails processed`,
+      sent: sentCount,
+      failed: failedCount,
+      total: waitlistEntries.rows.length,
+      ...(failedEmails.length > 0 && { failed_emails: failedEmails })
+    });
+  } catch (error) {
+    console.error('Error triggering beta invitation emails:', error);
+    res.status(500).json({ 
+      error: 'Server error triggering beta invitation emails', 
+      message: error.message 
+    });
+  }
+});
+
 // Trigger overdue contribution reminders (3, 7, 14 days after birthday)
 router.post('/birthdays/trigger-overdue-reminders', async (req, res) => {
   try {

@@ -657,6 +657,118 @@ const sendWaitlistConfirmationEmail = async (email, name) => {
   }
 };
 
+// Send beta invitation email to waitlist members
+const sendBetaInvitationEmail = async (email, firstName) => {
+  try {
+    // Extract first name from full name
+    const name = firstName.split(' ')[0];
+    
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">🎂 GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1a1a1a; font-size: 24px; margin-top: 0;">You're invited to beta test GroupFund 🎉</h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${name},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Thanks for joining the GroupFund waitlist — you're one of the first people getting access.
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            GroupFund helps you organise birthday contributions with friends, family, church, and office groups without chasing people or losing track of who has paid. Now we're opening our early beta and would love you to test it.
+          </p>
+          
+          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
+            <p style="color: #374151; font-size: 16px; margin: 0 0 15px 0; font-weight: 600;">How to join the beta</p>
+            
+            <div style="margin: 20px 0;">
+              <p style="color: #374151; font-size: 15px; margin: 0 0 10px 0; font-weight: 600;">If you use Android</p>
+              <p style="color: #6b7280; font-size: 14px; line-height: 1.6; margin: 5px 0;">
+                Open this link on your Android phone:<br/>
+                <a href="https://play.google.com/store/apps/details?id=com.groupfund.app" style="color: #6366f1; text-decoration: none; font-weight: 600;">👉 https://play.google.com/store/apps/details?id=com.groupfund.app</a>
+              </p>
+              <p style="color: #6b7280; font-size: 14px; line-height: 1.6; margin: 10px 0 0 0;">
+                Install the beta version of GroupFund from Google Play.
+              </p>
+            </div>
+            
+            <div style="margin: 20px 0; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+              <p style="color: #374151; font-size: 15px; margin: 0 0 10px 0; font-weight: 600;">If you use iPhone (iOS)</p>
+              <p style="color: #6b7280; font-size: 14px; line-height: 1.6; margin: 5px 0;">
+                Open this link on your iPhone:<br/>
+                <a href="https://testflight.apple.com/join/9Wa3Qr9m" style="color: #6366f1; text-decoration: none; font-weight: 600;">👉 https://testflight.apple.com/join/9Wa3Qr9m</a>
+              </p>
+              <p style="color: #6b7280; font-size: 14px; line-height: 1.6; margin: 10px 0 0 0;">
+                Install the TestFlight app if asked, then tap Start Testing to install GroupFund.
+              </p>
+            </div>
+          </div>
+
+          <div style="background: #f0f9ff; padding: 20px; border-radius: 8px; margin: 20px 0; border: 1px solid #bae6fd;">
+            <p style="color: #374151; font-size: 15px; margin: 0 0 10px 0; font-weight: 600;">Once you're in</p>
+            <p style="color: #6b7280; font-size: 14px; line-height: 1.6; margin: 0;">
+              Please create a test birthday group (or your real one) and try inviting a few friends or family members so you can see how it works in a real scenario.
+            </p>
+          </div>
+
+          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
+            <p style="color: #374151; font-size: 16px; margin: 0 0 15px 0; font-weight: 600;">Join the Discord community</p>
+            <p style="color: #6b7280; font-size: 14px; line-height: 1.6; margin: 5px 0;">
+              We've set up a Discord for quick updates, feedback, and bug reports:<br/>
+              <a href="https://discord.gg/8sANRQTyT" style="color: #6366f1; text-decoration: none; font-weight: 600;">👉 https://discord.gg/8sANRQTyT</a>
+            </p>
+            <p style="color: #6b7280; font-size: 14px; line-height: 1.6; margin: 15px 0 0 0;">
+              Inside the server you'll see:
+            </p>
+            <ul style="color: #6b7280; font-size: 14px; line-height: 1.8; margin: 10px 0; padding-left: 20px;">
+              <li><strong>#product-updates</strong> – what's new in the app</li>
+              <li><strong>#bug-reports</strong> – anything that's broken or confusing</li>
+              <li><strong>#feature-requests</strong> – ideas you'd love to see in GroupFund</li>
+            </ul>
+            <p style="color: #6b7280; font-size: 14px; line-height: 1.6; margin: 15px 0 0 0;">
+              Your feedback now will shape how GroupFund works for thousands of groups later, so nothing is "too small" to share.
+            </p>
+          </div>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Thank you again for being early.
+          </p>
+          
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 20px;">
+            Best regards,<br/>
+            <strong>Chinaza Obiekwe</strong><br/>
+            Founder, GroupFund
+          </p>
+          
+          <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            This is an automated email. Please do not reply to this message.
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject: 'You\'re invited to beta test GroupFund 🎉',
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error sending beta invitation email:', error);
+      return false;
+    }
+
+    console.log('Beta invitation email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending beta invitation email:', error);
+    return false;
+  }
+};
+
 // Send overdue contribution reminder email
 // overdueContributions: array of { groupName, currency, contributionAmount, birthdayUserName, birthdayDate }
 const sendOverdueContributionEmail = async (email, userName, daysOverdue, overdueContributions) => {
@@ -778,5 +890,6 @@ module.exports = {
   sendComprehensiveBirthdayReminderEmail,
   sendMonthlyBirthdayNewsletter,
   sendWaitlistConfirmationEmail,
+  sendBetaInvitationEmail,
   sendOverdueContributionEmail,
 };
