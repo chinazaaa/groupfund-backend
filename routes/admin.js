@@ -1749,6 +1749,41 @@ router.delete('/waitlist/:id', async (req, res) => {
   }
 });
 
+// Test beta invitation email to a specific email address
+router.post('/waitlist/test-beta-invitation', async (req, res) => {
+  try {
+    const { sendBetaInvitationEmail } = require('../utils/email');
+    const { email, name } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const testName = name || 'Test User';
+    const emailSent = await sendBetaInvitationEmail(email, testName);
+
+    if (emailSent) {
+      res.json({
+        message: 'Test beta invitation email sent successfully',
+        email: email,
+        name: testName,
+        note: 'This was a test email - the waitlist database was not updated'
+      });
+    } else {
+      res.status(500).json({
+        error: 'Failed to send test beta invitation email',
+        email: email
+      });
+    }
+  } catch (error) {
+    console.error('Error sending test beta invitation email:', error);
+    res.status(500).json({
+      error: 'Server error sending test beta invitation email',
+      message: error.message
+    });
+  }
+});
+
 // Trigger beta invitation emails to waitlist members
 router.post('/waitlist/send-beta-invitations', async (req, res) => {
   try {
