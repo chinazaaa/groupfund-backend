@@ -258,6 +258,7 @@ router.get('/overdue', authenticate, async (req, res) => {
       
       if (userJoinDateResult.rows.length === 0) continue;
       const userJoinDate = new Date(userJoinDateResult.rows[0].joined_at);
+      userJoinDate.setHours(0, 0, 0, 0); // Normalize to start of day
 
       // Get all active members in this group
       const membersResult = await pool.query(
@@ -268,20 +269,24 @@ router.get('/overdue', authenticate, async (req, res) => {
         [group.id]
       );
 
+      const today = new Date();
+      today.setHours(0, 0, 0, 0); // Normalize to start of day
+      const currentYear = today.getFullYear();
+
       for (const member of membersResult.rows) {
         // Calculate if birthday has passed this year
         const memberBirthday = new Date(member.birthday);
-        const today = new Date();
-        const currentYear = today.getFullYear();
-        
-        // Get this year's birthday date
         const thisYearBirthday = new Date(currentYear, memberBirthday.getMonth(), memberBirthday.getDate());
+        thisYearBirthday.setHours(0, 0, 0, 0); // Normalize to start of day
         
         // Check if birthday has passed AND user was a member when the birthday occurred
         // Only consider overdue if user joined before or on the birthday date
         // Overdue starts from 1 day after birthday (same day is not overdue yet)
         const daysSinceBirthday = Math.floor((today - thisYearBirthday) / (1000 * 60 * 60 * 24));
         
+        // Only mark as overdue if:
+        // 1. Birthday was at least 1 day ago (not today)
+        // 2. User joined before or on the birthday date (they were expected to contribute)
         if (daysSinceBirthday >= 1 && userJoinDate <= thisYearBirthday) {
           // Birthday has passed (at least 1 day ago), check if user has paid
           const contributionCheck = await pool.query(
