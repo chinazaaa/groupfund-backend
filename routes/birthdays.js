@@ -260,13 +260,13 @@ router.get('/overdue', authenticate, async (req, res) => {
       const userJoinDate = new Date(userJoinDateResult.rows[0].joined_at);
       userJoinDate.setHours(0, 0, 0, 0); // Normalize to start of day
 
-      // Get all active members in this group
+      // Get all active members in this group (exclude the user themselves - they don't pay for their own birthday)
       const membersResult = await pool.query(
         `SELECT u.id, u.name, u.birthday
          FROM users u
          JOIN group_members gm ON u.id = gm.user_id
-         WHERE gm.group_id = $1 AND gm.status = 'active' AND u.birthday IS NOT NULL`,
-        [group.id]
+         WHERE gm.group_id = $1 AND gm.status = 'active' AND u.birthday IS NOT NULL AND u.id != $2`,
+        [group.id, userId]
       );
 
       const today = new Date();
