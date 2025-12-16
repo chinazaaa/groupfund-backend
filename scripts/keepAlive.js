@@ -26,8 +26,10 @@ if (!SERVICE_URL) {
   process.exit(1);
 }
 
-// Ensure URL has protocol
-const url = SERVICE_URL.startsWith('http') ? SERVICE_URL : `https://${SERVICE_URL}`;
+// Ensure URL has protocol and normalize (remove trailing slash)
+let url = SERVICE_URL.startsWith('http') ? SERVICE_URL : `https://${SERVICE_URL}`;
+// Remove trailing slash if present
+url = url.replace(/\/+$/, '');
 const healthEndpoint = `${url}/health`;
 
 console.log(`🔄 Pinging ${healthEndpoint}...`);

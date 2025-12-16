@@ -238,7 +238,7 @@ Render's free tier services spin down after 15 minutes of inactivity. To keep yo
      ```env
      RENDER_SERVICE_URL=https://your-app-name.onrender.com
      ```
-   - Replace `your-app-name` with your actual Render service name
+   - Or use your actual Render service URL (with or without trailing slash)
 
 4. **Save and Deploy** - The cron job will now ping your service every 14 minutes
 
@@ -299,6 +299,11 @@ You should see:
 - **Every 13 minutes**: `*/13 * * * *` (alternative safe option)
 
 **Recommendation**: Every 14 minutes is optimal - it prevents sleep while minimizing requests. The resource impact is negligible (about 3-4 requests per hour, each taking <1 second).
+
+**Cost Estimate** (at $0.00016/minute):
+- Executions per month: ~3,086 (every 14 minutes)
+- Execution time: ~1 second per run = ~51.5 minutes total
+- **Monthly cost: ~$0.008 (less than 1 cent/month)** 💰
 
 ### Important Notes
 
