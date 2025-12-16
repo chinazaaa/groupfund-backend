@@ -733,6 +733,13 @@ const sendBetaInvitationEmail = async (email, firstName) => {
             </p>
           </div>
 
+          <div style="background: #f0fdf4; padding: 20px; border-radius: 8px; margin: 20px 0; border: 1px solid #86efac;">
+            <p style="color: #374151; font-size: 15px; margin: 0 0 10px 0; font-weight: 600;">Know someone who'd love GroupFund?</p>
+            <p style="color: #6b7280; font-size: 14px; line-height: 1.6; margin: 0;">
+              If you know anyone that's interested, tell them to join the waitlist via <a href="https://www.groupfund.app/waitlist" style="color: #6366f1; text-decoration: none; font-weight: 600;">https://www.groupfund.app/waitlist</a>
+            </p>
+          </div>
+
           <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
             Thank you again for being early.
           </p>
