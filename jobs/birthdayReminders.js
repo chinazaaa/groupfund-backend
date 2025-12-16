@@ -318,7 +318,7 @@ async function checkBirthdayReminders() {
 
 /**
  * Check for overdue contributions and send escalating reminders
- * Sends reminders 3, 7, and 14 days after a birthday has passed if contribution is still unpaid
+ * Sends reminders 1, 3, 7, and 14 days after a birthday has passed if contribution is still unpaid
  */
 async function checkOverdueContributions() {
   try {
@@ -343,8 +343,9 @@ async function checkOverdueContributions() {
         [user.id]
       );
 
-      // Track overdue contributions by days overdue (3, 7, 14)
+      // Track overdue contributions by days overdue (1, 3, 7, 14)
       const overdueByDays = {
+        1: [],
         3: [],
         7: [],
         14: []
@@ -393,8 +394,8 @@ async function checkOverdueContributions() {
                            (contributionCheck.rows[0].status === 'paid' || 
                             contributionCheck.rows[0].status === 'confirmed');
 
-            // If not paid and overdue by 3, 7, or 14 days, add to reminder list
-            if (!hasPaid && (daysOverdue === 3 || daysOverdue === 7 || daysOverdue === 14)) {
+            // If not paid and overdue by 1, 3, 7, or 14 days, add to reminder list
+            if (!hasPaid && (daysOverdue === 1 || daysOverdue === 3 || daysOverdue === 7 || daysOverdue === 14)) {
               // Check if reminder was already sent today for this specific overdue period
               const reminderCheck = await pool.query(
                 `SELECT id FROM notifications 
@@ -422,7 +423,7 @@ async function checkOverdueContributions() {
         }
       }
 
-      // Send reminders for each overdue period (3, 7, 14 days)
+      // Send reminders for each overdue period (1, 3, 7, 14 days)
       for (const [daysOverdue, overdueList] of Object.entries(overdueByDays)) {
         const daysNum = parseInt(daysOverdue);
         
@@ -437,13 +438,15 @@ async function checkOverdueContributions() {
 
         // Send notification for each overdue contribution
         for (const overdue of overdueList) {
-          const title = daysNum === 3 
+          const title = daysNum === 1
+            ? 'Reminder: Overdue Contribution - 1 Day'
+            : daysNum === 3 
             ? '⚠️ Overdue Contribution - 3 Days'
             : daysNum === 7
             ? '⚠️ Overdue Contribution - 7 Days'
             : '⚠️ Overdue Contribution - 14 Days';
           
-          const message = `${overdue.birthdayUserName}'s birthday was ${daysNum} days ago. Please send your contribution of ${overdue.contributionAmount} ${overdue.currency} in ${overdue.groupName}.`;
+          const message = `${overdue.birthdayUserName}'s birthday was ${daysNum} ${daysNum === 1 ? 'day' : 'days'} ago. Please send your contribution of ${overdue.contributionAmount} ${overdue.currency} in ${overdue.groupName}.`;
 
           await createNotification(
             user.id,

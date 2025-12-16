@@ -1847,7 +1847,7 @@ router.post('/waitlist/send-beta-invitations', async (req, res) => {
   }
 });
 
-// Trigger overdue contribution reminders (3, 7, 14 days after birthday)
+// Trigger overdue contribution reminders (1, 3, 7, 14 days after birthday)
 router.post('/birthdays/trigger-overdue-reminders', async (req, res) => {
   try {
     const { checkOverdueContributions } = require('../jobs/birthdayReminders');
@@ -1856,7 +1856,7 @@ router.post('/birthdays/trigger-overdue-reminders', async (req, res) => {
     
     res.json({ 
       message: 'Overdue contribution reminders triggered successfully',
-      note: 'Reminders are sent for contributions that are 3, 7, or 14 days overdue'
+      note: 'Reminders are sent for contributions that are 1, 3, 7, or 14 days overdue'
     });
   } catch (error) {
     console.error('Error triggering overdue contribution reminders:', error);

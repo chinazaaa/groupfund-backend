@@ -790,7 +790,12 @@ const sendOverdueContributionEmail = async (email, userName, daysOverdue, overdu
 
     const totalOverdue = overdueContributions.length;
 
-    if (daysOverdue === 3) {
+    if (daysOverdue === 1) {
+      subject = `Reminder: ${totalOverdue} contribution${totalOverdue > 1 ? 's' : ''} 1 day overdue - GroupFund`;
+      titleText = 'Reminder: Overdue Contribution - 1 Day';
+      messageText = `You have ${totalOverdue} contribution${totalOverdue > 1 ? 's' : ''} that ${totalOverdue > 1 ? 'are' : 'is'} 1 day overdue.`;
+      urgencyText = 'This is a friendly reminder to send your contribution.';
+    } else if (daysOverdue === 3) {
       subject = `⚠️ Overdue Contribution: ${totalOverdue} payment${totalOverdue > 1 ? 's' : ''} 3 days overdue - GroupFund`;
       titleText = '⚠️ Overdue Contribution - 3 Days';
       messageText = `You have ${totalOverdue} contribution${totalOverdue > 1 ? 's' : ''} that ${totalOverdue > 1 ? 'are' : 'is'} 3 days overdue.`;
