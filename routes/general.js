@@ -337,6 +337,99 @@ router.post('/contribute/:contributionId/reject', authenticate, async (req, res)
   }
 });
 
+// Get upcoming general groups (groups with deadlines coming up)
+router.get('/upcoming', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { groupId, days = 30 } = req.query;
+
+    let query;
+    let params;
+
+    if (groupId) {
+      const memberCheck = await pool.query(
+        'SELECT status FROM group_members WHERE group_id = $1 AND user_id = $2',
+        [groupId, userId]
+      );
+
+      if (memberCheck.rows.length === 0 || memberCheck.rows[0].status !== 'active') {
+        return res.json({ groups: [] });
+      }
+
+      query = `
+        SELECT 
+          g.id as group_id, g.name as group_name, g.currency, g.contribution_amount, g.deadline,
+          g.admin_id, u.name as admin_name, w.account_number, w.bank_name, w.account_name
+        FROM groups g
+        JOIN group_members gm ON g.id = gm.group_id
+        LEFT JOIN users u ON g.admin_id = u.id
+        LEFT JOIN wallets w ON g.admin_id = w.user_id
+        WHERE g.id = $1 AND g.group_type = 'general' AND gm.user_id = $2 AND gm.status = 'active'
+          AND g.deadline IS NOT NULL
+      `;
+      params = [groupId, userId];
+    } else {
+      query = `
+        SELECT DISTINCT
+          g.id as group_id, g.name as group_name, g.currency, g.contribution_amount, g.deadline,
+          g.admin_id, u.name as admin_name, w.account_number, w.bank_name, w.account_name
+        FROM groups g
+        JOIN group_members gm ON g.id = gm.group_id
+        LEFT JOIN users u ON g.admin_id = u.id
+        LEFT JOIN wallets w ON g.admin_id = w.user_id
+        WHERE gm.user_id = $1 AND g.group_type = 'general' AND gm.status = 'active'
+          AND g.deadline IS NOT NULL
+      `;
+      params = [userId];
+    }
+
+    const result = await pool.query(query, params);
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const upcomingGroups = result.rows.map(group => {
+      if (!group.deadline) {
+        return null;
+      }
+
+      const deadline = new Date(group.deadline);
+      deadline.setHours(0, 0, 0, 0);
+      const daysUntilDeadline = Math.ceil((deadline - today) / (1000 * 60 * 60 * 24));
+
+      return {
+        ...group,
+        days_until_deadline: daysUntilDeadline,
+        has_paid: false, // Will be updated below
+      };
+    }).filter(group => 
+      group !== null && 
+      group.days_until_deadline >= 0 && 
+      group.days_until_deadline <= parseInt(days)
+    );
+
+    // Check payment status for each group
+    for (const group of upcomingGroups) {
+      const paymentCheck = await pool.query(
+        `SELECT status FROM general_contributions 
+         WHERE group_id = $1 AND contributor_id = $2`,
+        [group.group_id, userId]
+      );
+
+      group.has_paid = paymentCheck.rows.length > 0 && 
+                       (paymentCheck.rows[0].status === 'paid' || paymentCheck.rows[0].status === 'confirmed');
+    }
+
+    // Sort by days until deadline (soonest first)
+    upcomingGroups.sort((a, b) => a.days_until_deadline - b.days_until_deadline);
+
+    res.json({ groups: upcomingGroups });
+  } catch (error) {
+    console.error('Get upcoming general groups error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Get overdue general contributions
 router.get('/overdue', authenticate, async (req, res) => {
   try {
