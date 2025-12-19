@@ -123,16 +123,18 @@ const sendWelcomeEmail = async (email, name) => {
         <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
           <h2 style="color: #1a1a1a; font-size: 24px; margin-top: 0;">Welcome to GroupFund, ${name}! 🎉</h2>
           <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-bottom: 20px;">
-            We're thrilled to have you join our community! Your account has been successfully verified and you're all set to start managing birthday contributions with your groups.
+            We're thrilled to have you join our community! Your account has been successfully verified and you're all set to start managing contributions with your groups.
           </p>
           
           <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
             <p style="color: #374151; font-size: 16px; margin: 0 0 15px 0; font-weight: 600;">Here's what you can do:</p>
             <ul style="color: #6b7280; font-size: 14px; line-height: 1.8; margin: 0; padding-left: 20px;">
-              <li>Create or join birthday groups</li>
-              <li>Manage contributions and track payments</li>
-              <li>Receive birthday reminders</li>
-              <li>Send and receive birthday wishes</li>
+              <li><strong>Birthday Groups:</strong> Create or join groups to celebrate birthdays and manage contributions</li>
+              <li><strong>Subscription Groups:</strong> Set up monthly or annual subscription groups (like Netflix, Spotify, etc.)</li>
+              <li><strong>General Groups:</strong> Create groups for any occasion (weddings, baby showers, events, etc.)</li>
+              <li>Manage contributions and track payments across all group types</li>
+              <li>Receive reminders for upcoming deadlines</li>
+              <li>Send and receive birthday wishes (for birthday groups)</li>
             </ul>
           </div>
 
@@ -733,26 +735,49 @@ const sendComprehensiveReminderEmail = async (email, userName, daysUntil, groups
   }
 };
 
-// Send monthly birthday newsletter email
+// Send monthly newsletter email for all group types
 // groupsWithBirthdays: array of { groupName, currency, contributionAmount, birthdays: [{ id, name, birthday }] }
-const sendMonthlyBirthdayNewsletter = async (email, userName, userId, monthName, groupsWithBirthdays) => {
+// subscriptionGroups: array of { groupName, currency, contributionAmount, subscriptionPlatform, subscriptionFrequency, deadlineDay }
+// generalGroups: array of { groupName, currency, contributionAmount, deadline }
+const sendMonthlyNewsletter = async (email, userName, userId, monthName, groupsWithBirthdays = [], subscriptionGroups = [], generalGroups = []) => {
   try {
     const { formatAmount } = require('./currency');
     
-    const subject = `Monthly Birthday Newsletter - ${monthName} - GroupFund`;
-    const titleText = `Monthly Birthday Newsletter - ${monthName}`;
+    // Determine newsletter type and build subject/title
+    const hasBirthdays = groupsWithBirthdays.length > 0;
+    const hasSubscriptions = subscriptionGroups.length > 0;
+    const hasGeneral = generalGroups.length > 0;
+    const totalItems = groupsWithBirthdays.reduce((sum, g) => sum + g.birthdays.length, 0) + 
+                      subscriptionGroups.length + generalGroups.length;
     
-    // Calculate unique birthdays (deduplicate across groups)
-    const uniqueBirthdayIds = new Set();
-    groupsWithBirthdays.forEach(group => {
-      group.birthdays.forEach(birthday => {
-        uniqueBirthdayIds.add(birthday.id);
+    let subject = '';
+    let titleText = '';
+    let introText = '';
+    
+    if (hasBirthdays && !hasSubscriptions && !hasGeneral) {
+      // Only birthdays
+      const uniqueBirthdayIds = new Set();
+      groupsWithBirthdays.forEach(group => {
+        group.birthdays.forEach(birthday => {
+          uniqueBirthdayIds.add(birthday.id);
+        });
       });
-    });
-    const totalUniqueBirthdays = uniqueBirthdayIds.size;
+      const totalUniqueBirthdays = uniqueBirthdayIds.size;
+      subject = `Monthly Birthday Newsletter - ${monthName} - GroupFund`;
+      titleText = `Monthly Birthday Newsletter - ${monthName}`;
+      introText = `Here's your monthly birthday newsletter! You have ${totalUniqueBirthdays} birthday${totalUniqueBirthdays > 1 ? 's' : ''} coming up in ${monthName} across your groups.`;
+    } else {
+      // Mixed or other types
+      subject = `Monthly Newsletter - ${monthName} - GroupFund`;
+      titleText = `Monthly Newsletter - ${monthName}`;
+      introText = `Here's your monthly summary for ${monthName}! You have ${totalItems} upcoming item${totalItems > 1 ? 's' : ''} this month across your groups.`;
+    }
 
-    // Build groups sections with their birthdays
-    const groupsHtml = groupsWithBirthdays.map(group => {
+    // Build groups sections
+    const groupsHtml = [];
+    
+    // Birthday groups
+    groupsWithBirthdays.forEach(group => {
       const birthdaysListHtml = group.birthdays.map(birthday => {
         // Format birthday date (just day and month)
         const birthdayDate = new Date(birthday.birthday);
@@ -774,7 +799,7 @@ const sendMonthlyBirthdayNewsletter = async (email, userName, userId, monthName,
             `;
       }).join('');
 
-      return `
+      const birthdayGroupHtml = `
             <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
               <p style="color: #374151; font-size: 18px; margin: 0 0 10px 0; font-weight: 700;">
                 📋 ${group.groupName}
@@ -788,7 +813,52 @@ const sendMonthlyBirthdayNewsletter = async (email, userName, userId, monthName,
               ${birthdaysListHtml}
             </div>
           `;
-    }).join('');
+      groupsHtml.push(birthdayGroupHtml);
+    });
+    
+    // Subscription groups
+    subscriptionGroups.forEach(group => {
+      const deadlineText = `${monthName} ${group.deadlineDay}`;
+      const subscriptionGroupHtml = `
+            <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #8b5cf6;">
+              <p style="color: #374151; font-size: 18px; margin: 0 0 10px 0; font-weight: 700;">
+                📺 ${group.groupName} - ${group.subscriptionPlatform}
+              </p>
+              <p style="color: #6b7280; font-size: 14px; margin: 0 0 10px 0;">
+                <strong>Contribution:</strong> ${formatAmount(group.contributionAmount, group.currency)}
+              </p>
+              <p style="color: #6b7280; font-size: 14px; margin: 0 0 10px 0;">
+                <strong>Frequency:</strong> ${group.subscriptionFrequency === 'monthly' ? 'Monthly' : 'Annual'}
+              </p>
+              <p style="color: #6b7280; font-size: 14px; margin: 0;">
+                <strong>Deadline:</strong> ${deadlineText}
+              </p>
+            </div>
+          `;
+      groupsHtml.push(subscriptionGroupHtml);
+    });
+    
+    // General groups
+    generalGroups.forEach(group => {
+      const deadlineDate = new Date(group.deadline);
+      const deadlineText = deadlineDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+      const generalGroupHtml = `
+            <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
+              <p style="color: #374151; font-size: 18px; margin: 0 0 10px 0; font-weight: 700;">
+                📋 ${group.groupName}
+              </p>
+              <p style="color: #6b7280; font-size: 14px; margin: 0 0 10px 0;">
+                <strong>Contribution:</strong> ${formatAmount(group.contributionAmount, group.currency)}
+              </p>
+              <p style="color: #6b7280; font-size: 14px; margin: 0;">
+                <strong>Deadline:</strong> ${deadlineText}
+              </p>
+            </div>
+          `;
+      groupsHtml.push(generalGroupHtml);
+    });
+    
+    const groupsHtmlContent = groupsHtml.join('');
 
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -801,10 +871,10 @@ const sendMonthlyBirthdayNewsletter = async (email, userName, userId, monthName,
             Hi ${userName},
           </p>
           <p style="color: #374151; font-size: 16px; line-height: 1.7;">
-            Here's your monthly birthday newsletter! You have ${totalUniqueBirthdays} birthday${totalUniqueBirthdays > 1 ? 's' : ''} coming up in ${monthName} across your groups.
+            ${introText}
           </p>
           
-          ${groupsHtml}
+          ${groupsHtmlContent}
 
           <div style="background: #e0e7ff; padding: 20px; border-radius: 8px; margin: 20px 0; border: 2px solid #6366f1;">
             <p style="color: #4338ca; font-size: 16px; margin: 0; font-weight: 600; text-align: center;">
@@ -813,7 +883,7 @@ const sendMonthlyBirthdayNewsletter = async (email, userName, userId, monthName,
           </div>
 
           <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
-            Log in to the GroupFund app to view all upcoming birthdays and manage your contributions! 🎉
+            Log in to the GroupFund app to view all upcoming deadlines and manage your contributions! 🎉
           </p>
           
           <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
@@ -836,14 +906,14 @@ const sendMonthlyBirthdayNewsletter = async (email, userName, userId, monthName,
     });
 
     if (error) {
-      console.error('Resend error sending monthly birthday newsletter:', error);
+      console.error('Resend error sending monthly newsletter:', error);
       return false;
     }
 
-    console.log('Monthly birthday newsletter sent successfully:', data);
+    console.log('Monthly newsletter sent successfully:', data);
     return true;
   } catch (error) {
-    console.error('Error sending monthly birthday newsletter:', error);
+    console.error('Error sending monthly newsletter:', error);
     return false;
   }
 };
@@ -1162,7 +1232,8 @@ module.exports = {
   sendBirthdayReminderEmail,
   sendComprehensiveBirthdayReminderEmail,
   sendComprehensiveReminderEmail,
-  sendMonthlyBirthdayNewsletter,
+  sendMonthlyBirthdayNewsletter, // Keep for backward compatibility
+  sendMonthlyNewsletter,
   sendWaitlistConfirmationEmail,
   sendBetaInvitationEmail,
   sendOverdueContributionEmail,

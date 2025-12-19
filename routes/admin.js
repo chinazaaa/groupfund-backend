@@ -1263,12 +1263,12 @@ router.post('/birthdays/:userId/send-notifications', async (req, res) => {
   }
 });
 
-// Send monthly birthday newsletter to all users
-router.post('/birthdays/send-monthly-newsletter', async (req, res) => {
+// Send monthly newsletter to all users (includes birthdays, subscriptions, and general groups)
+router.post('/contributions/send-monthly-newsletter', async (req, res) => {
   try {
     const pool = require('../config/database');
     const { createNotification } = require('../utils/notifications');
-    const { sendMonthlyBirthdayNewsletter } = require('../utils/email');
+    const { sendMonthlyNewsletter } = require('../utils/email');
     const { formatAmount } = require('../utils/currency');
     
     const results = {
@@ -1318,50 +1318,98 @@ router.post('/birthdays/send-monthly-newsletter', async (req, res) => {
         
         // Get all groups the user is in
         const groupsResult = await pool.query(
-          `SELECT g.id, g.name, g.contribution_amount, g.currency
+          `SELECT g.id, g.name, g.contribution_amount, g.currency, g.group_type,
+                  g.subscription_frequency, g.subscription_platform, 
+                  g.subscription_deadline_day, g.subscription_deadline_month, g.deadline
            FROM groups g
            JOIN group_members gm ON g.id = gm.group_id
-           WHERE gm.user_id = $1 AND gm.status = 'active'`,
+           WHERE gm.user_id = $1 AND gm.status = 'active' AND g.status = 'active'`,
           [user.id]
         );
         
         // Collect all groups with birthdays in current month
         const groupsWithBirthdays = [];
+        // Collect subscription groups with deadlines this month
+        const subscriptionGroups = [];
+        // Collect general groups with deadlines this month
+        const generalGroups = [];
         
         for (const group of groupsResult.rows) {
-          // Get all active members in this group with birthdays in current month
-          const membersResult = await pool.query(
-            `SELECT u.id, u.name, u.birthday
-             FROM users u
-             JOIN group_members gm ON u.id = gm.user_id
-             WHERE gm.group_id = $1 AND gm.status = 'active' 
-             AND u.birthday IS NOT NULL
-             AND DATE_PART('month', u.birthday) = $2`,
-            [group.id, currentMonth + 1] // PostgreSQL months are 1-12
-          );
-          
-          if (membersResult.rows.length > 0) {
-            groupsWithBirthdays.push({
-              groupId: group.id,
-              groupName: group.name,
-              currency: group.currency || 'NGN',
-              contributionAmount: parseFloat(group.contribution_amount),
-              birthdays: membersResult.rows.map(m => ({
-                id: m.id,
-                name: m.name,
-                birthday: m.birthday
-              }))
-            });
+          if (group.group_type === 'birthday') {
+            // Get all active members in this group with birthdays in current month
+            const membersResult = await pool.query(
+              `SELECT u.id, u.name, u.birthday
+               FROM users u
+               JOIN group_members gm ON u.id = gm.user_id
+               WHERE gm.group_id = $1 AND gm.status = 'active' 
+               AND u.birthday IS NOT NULL
+               AND DATE_PART('month', u.birthday) = $2`,
+              [group.id, currentMonth + 1] // PostgreSQL months are 1-12
+            );
+            
+            if (membersResult.rows.length > 0) {
+              groupsWithBirthdays.push({
+                groupId: group.id,
+                groupName: group.name,
+                currency: group.currency || 'NGN',
+                contributionAmount: parseFloat(group.contribution_amount),
+                birthdays: membersResult.rows.map(m => ({
+                  id: m.id,
+                  name: m.name,
+                  birthday: m.birthday
+                }))
+              });
+            }
+          } else if (group.group_type === 'subscription') {
+            // Check if subscription deadline is in current month
+            if (group.subscription_frequency === 'monthly') {
+              // Monthly subscriptions always have a deadline this month
+              subscriptionGroups.push({
+                groupId: group.id,
+                groupName: group.name,
+                currency: group.currency || 'NGN',
+                contributionAmount: parseFloat(group.contribution_amount),
+                subscriptionPlatform: group.subscription_platform,
+                subscriptionFrequency: group.subscription_frequency,
+                deadlineDay: group.subscription_deadline_day
+              });
+            } else if (group.subscription_frequency === 'annual') {
+              // Annual subscriptions - check if deadline month matches current month
+              if (group.subscription_deadline_month === currentMonth + 1) {
+                subscriptionGroups.push({
+                  groupId: group.id,
+                  groupName: group.name,
+                  currency: group.currency || 'NGN',
+                  contributionAmount: parseFloat(group.contribution_amount),
+                  subscriptionPlatform: group.subscription_platform,
+                  subscriptionFrequency: group.subscription_frequency,
+                  deadlineDay: group.subscription_deadline_day
+                });
+              }
+            }
+          } else if (group.group_type === 'general' && group.deadline) {
+            // Check if general group deadline is in current month
+            const deadlineDate = new Date(group.deadline);
+            if (deadlineDate.getMonth() === currentMonth && deadlineDate.getFullYear() === currentYear) {
+              generalGroups.push({
+                groupId: group.id,
+                groupName: group.name,
+                currency: group.currency || 'NGN',
+                contributionAmount: parseFloat(group.contribution_amount),
+                deadline: group.deadline
+              });
+            }
           }
         }
         
-        // Only send if user has at least one group with birthdays this month
-        if (groupsWithBirthdays.length > 0) {
+        // Only send if user has at least one group with upcoming items this month
+        if (groupsWithBirthdays.length > 0 || subscriptionGroups.length > 0 || generalGroups.length > 0) {
           // Send email
           let emailSent = false;
           if (user.email) {
             try {
-              await sendMonthlyBirthdayNewsletter(
+              const { sendMonthlyNewsletter } = require('../utils/email');
+              await sendMonthlyNewsletter(
                 user.email,
                 user.name,
                 user.id,
@@ -1371,7 +1419,9 @@ router.post('/birthdays/send-monthly-newsletter', async (req, res) => {
                   currency: g.currency,
                   contributionAmount: g.contributionAmount,
                   birthdays: g.birthdays
-                }))
+                })),
+                subscriptionGroups,
+                generalGroups
               );
               emailSent = true;
             } catch (err) {
@@ -1380,12 +1430,18 @@ router.post('/birthdays/send-monthly-newsletter', async (req, res) => {
           }
           
           // Send simple notification
+          const totalItems = groupsWithBirthdays.reduce((sum, g) => sum + g.birthdays.length, 0) + 
+                            subscriptionGroups.length + generalGroups.length;
+          const notificationText = totalItems > 0 
+            ? `Your monthly summary for ${monthName} (${totalItems} item${totalItems > 1 ? 's' : ''}) is in your email. Check it out!`
+            : `Your monthly summary for ${monthName} is in your email. Check it out!`;
+          
           try {
             await createNotification(
               user.id,
               'monthly_newsletter',
-              'Monthly Birthday Newsletter',
-              `Your monthly list of birthdays for ${monthName} is in your email. Check it out!`,
+              'Monthly Newsletter',
+              notificationText,
               null,
               null
             );
@@ -1400,8 +1456,11 @@ router.post('/birthdays/send-monthly-newsletter', async (req, res) => {
             email: user.email,
             status: 'sent',
             email_sent: emailSent,
-            groups_count: groupsWithBirthdays.length,
-            total_birthdays: groupsWithBirthdays.reduce((sum, g) => sum + g.birthdays.length, 0)
+            birthday_groups_count: groupsWithBirthdays.length,
+            subscription_groups_count: subscriptionGroups.length,
+            general_groups_count: generalGroups.length,
+            total_birthdays: groupsWithBirthdays.reduce((sum, g) => sum + g.birthdays.length, 0),
+            total_items: totalItems
           });
         } else {
           results.skipped++;
@@ -1410,7 +1469,7 @@ router.post('/birthdays/send-monthly-newsletter', async (req, res) => {
             user_name: user.name,
             email: user.email,
             status: 'skipped',
-            reason: 'No birthdays in current month'
+            reason: 'No upcoming items in current month'
           });
         }
       } catch (error) {
@@ -1427,7 +1486,7 @@ router.post('/birthdays/send-monthly-newsletter', async (req, res) => {
     }
     
     res.json({
-      message: 'Monthly birthday newsletter processed successfully',
+      message: 'Monthly newsletter processed successfully',
       month: monthName,
       year: currentYear,
       summary: {
@@ -1439,7 +1498,7 @@ router.post('/birthdays/send-monthly-newsletter', async (req, res) => {
       details: results.details
     });
   } catch (error) {
-    console.error('Error sending monthly birthday newsletter:', error);
+    console.error('Error sending monthly newsletter:', error);
     res.status(500).json({ error: 'Server error sending monthly newsletter', message: error.message });
   }
 });
