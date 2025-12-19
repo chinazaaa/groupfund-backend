@@ -507,5 +507,202 @@ router.get('/overdue', authenticate, async (req, res) => {
   }
 });
 
+// Get general group compliance (who has paid, who hasn't)
+router.get('/:groupId/compliance', authenticate, async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const userId = req.user.id;
+
+    // Check if user is active member of the group
+    const memberCheck = await pool.query(
+      'SELECT role, status FROM group_members WHERE group_id = $1 AND user_id = $2',
+      [groupId, userId]
+    );
+
+    if (memberCheck.rows.length === 0 || memberCheck.rows[0].status !== 'active') {
+      return res.status(403).json({ error: 'You are not an active member of this group' });
+    }
+
+    // Get group details
+    const groupResult = await pool.query(
+      `SELECT id, name, contribution_amount, currency, deadline
+       FROM groups WHERE id = $1 AND group_type = 'general'`,
+      [groupId]
+    );
+
+    if (groupResult.rows.length === 0) {
+      return res.status(404).json({ error: 'General group not found' });
+    }
+
+    const group = groupResult.rows[0];
+
+    // Get all active members
+    const membersResult = await pool.query(
+      `SELECT u.id, u.name, u.email, gm.joined_at
+       FROM users u
+       JOIN group_members gm ON u.id = gm.user_id
+       WHERE gm.group_id = $1 AND gm.status = 'active'
+       ORDER BY u.name`,
+      [groupId]
+    );
+
+    const complianceData = [];
+    let paidCount = 0;
+    let unpaidCount = 0;
+    let pendingCount = 0;
+
+    for (const member of membersResult.rows) {
+      // Check contribution status
+      const contributionCheck = await pool.query(
+        `SELECT id, status, contribution_date, amount, note, created_at
+         FROM general_contributions 
+         WHERE group_id = $1 AND contributor_id = $2`,
+        [groupId, member.id]
+      );
+
+      let status = 'not_paid';
+      let contributionDate = null;
+      let amount = null;
+      let note = null;
+      let contributionId = null;
+      let createdAt = null;
+
+      if (contributionCheck.rows.length > 0) {
+        const contribution = contributionCheck.rows[0];
+        status = contribution.status;
+        contributionDate = contribution.contribution_date;
+        amount = parseFloat(contribution.amount);
+        note = contribution.note;
+        contributionId = contribution.id;
+        createdAt = contribution.created_at;
+      }
+
+      const isPaid = status === 'paid' || status === 'confirmed';
+      const isPending = status === 'paid'; // Awaiting confirmation
+      const isUnpaid = status === 'not_paid' || status === 'not_received';
+
+      if (isPaid && status === 'confirmed') paidCount++;
+      else if (isPending) pendingCount++;
+      else unpaidCount++;
+
+      complianceData.push({
+        member_id: member.id,
+        member_name: member.name,
+        member_email: member.email,
+        joined_at: member.joined_at,
+        status: status,
+        contribution_date: contributionDate,
+        amount: amount,
+        note: note,
+        contribution_id: contributionId,
+        created_at: createdAt,
+        is_paid: isPaid,
+        is_pending: isPending,
+        is_unpaid: isUnpaid
+      });
+    }
+
+    res.json({
+      group_id: group.id,
+      group_name: group.name,
+      currency: group.currency || 'NGN',
+      contribution_amount: parseFloat(group.contribution_amount),
+      deadline: group.deadline,
+      summary: {
+        total_members: complianceData.length,
+        paid_count: paidCount,
+        pending_count: pendingCount,
+        unpaid_count: unpaidCount
+      },
+      members: complianceData
+    });
+  } catch (error) {
+    console.error('Get general group compliance error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get general group payment history
+router.get('/:groupId/history', authenticate, async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const { limit = 50 } = req.query;
+    const userId = req.user.id;
+
+    // Check if user is active member of the group
+    const memberCheck = await pool.query(
+      'SELECT role, status FROM group_members WHERE group_id = $1 AND user_id = $2',
+      [groupId, userId]
+    );
+
+    if (memberCheck.rows.length === 0 || memberCheck.rows[0].status !== 'active') {
+      return res.status(403).json({ error: 'You are not an active member of this group' });
+    }
+
+    // Get group details
+    const groupResult = await pool.query(
+      `SELECT id, name, contribution_amount, currency, deadline
+       FROM groups WHERE id = $1 AND group_type = 'general'`,
+      [groupId]
+    );
+
+    if (groupResult.rows.length === 0) {
+      return res.status(404).json({ error: 'General group not found' });
+    }
+
+    const group = groupResult.rows[0];
+
+    // Get all contributions ordered by date
+    const contributionsResult = await pool.query(
+      `SELECT gc.*, u.name as contributor_name, u.email as contributor_email
+       FROM general_contributions gc
+       JOIN users u ON gc.contributor_id = u.id
+       WHERE gc.group_id = $1
+       ORDER BY gc.created_at DESC
+       LIMIT $2`,
+      [groupId, parseInt(limit)]
+    );
+
+    const paid = contributionsResult.rows.filter(c => c.status === 'confirmed').length;
+    const pending = contributionsResult.rows.filter(c => c.status === 'paid').length;
+    const unpaid = contributionsResult.rows.filter(c => c.status === 'not_paid' || c.status === 'not_received').length;
+
+    // Get total active members
+    const membersCountResult = await pool.query(
+      `SELECT COUNT(*) as count
+       FROM group_members
+       WHERE group_id = $1 AND status = 'active'`,
+      [groupId]
+    );
+    const totalMembers = parseInt(membersCountResult.rows[0]?.count || 0);
+
+    res.json({
+      group_id: group.id,
+      group_name: group.name,
+      deadline: group.deadline,
+      summary: {
+        total_members: totalMembers,
+        paid_count: paid,
+        pending_count: pending,
+        unpaid_count: unpaid
+      },
+      contributions: contributionsResult.rows.map(c => ({
+        id: c.id,
+        contributor_id: c.contributor_id,
+        contributor_name: c.contributor_name,
+        contributor_email: c.contributor_email,
+        amount: parseFloat(c.amount),
+        status: c.status,
+        contribution_date: c.contribution_date,
+        note: c.note,
+        created_at: c.created_at
+      }))
+    });
+  } catch (error) {
+    console.error('Get general group history error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 module.exports = router;
 

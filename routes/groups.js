@@ -649,22 +649,57 @@ router.put('/:groupId', authenticate, [
   body('contributionAmount').optional().isFloat({ min: 0 }),
   body('maxMembers').optional().isInt({ min: 2 }),
   body('acceptingRequests').optional().isBoolean(),
+  body('deadline').optional().isISO8601().withMessage('Deadline must be a valid date'),
+  body('subscriptionDeadlineDay').optional().isInt({ min: 1, max: 31 }).withMessage('Subscription deadline day must be between 1 and 31'),
+  body('subscriptionDeadlineMonth').optional().isInt({ min: 1, max: 12 }).withMessage('Subscription deadline month must be between 1 and 12'),
 ], async (req, res) => {
   try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
     const { groupId } = req.params;
     const userId = req.user.id;
 
-    // Check if user is admin
-    const memberCheck = await pool.query(
-      'SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2',
+    // Check if user is admin and get group type
+    const groupCheck = await pool.query(
+      `SELECT g.group_type, gm.role 
+       FROM groups g
+       JOIN group_members gm ON g.id = gm.group_id
+       WHERE g.id = $1 AND gm.user_id = $2`,
       [groupId, userId]
     );
 
-    if (memberCheck.rows.length === 0 || memberCheck.rows[0].role !== 'admin') {
+    if (groupCheck.rows.length === 0 || groupCheck.rows[0].role !== 'admin') {
       return res.status(403).json({ error: 'Only admins can update group settings' });
     }
 
-    const { name, contributionAmount, maxMembers, acceptingRequests } = req.body;
+    const groupType = groupCheck.rows[0].group_type;
+    const { 
+      name, 
+      contributionAmount, 
+      maxMembers, 
+      acceptingRequests,
+      deadline,
+      subscriptionDeadlineDay,
+      subscriptionDeadlineMonth
+    } = req.body;
+
+    // Validate deadline fields based on group type
+    if (groupType === 'general' && deadline) {
+      const deadlineDate = new Date(deadline);
+      if (deadlineDate < new Date()) {
+        return res.status(400).json({ error: 'Deadline cannot be in the past' });
+      }
+    }
+
+    if (groupType === 'subscription') {
+      if (subscriptionDeadlineDay !== undefined && (subscriptionDeadlineDay < 1 || subscriptionDeadlineDay > 31)) {
+        return res.status(400).json({ error: 'Subscription deadline day must be between 1 and 31' });
+      }
+    }
+
     const updates = [];
     const values = [];
     let paramCount = 1;
@@ -687,6 +722,24 @@ router.put('/:groupId', authenticate, [
     if (acceptingRequests !== undefined) {
       updates.push(`accepting_requests = $${paramCount++}`);
       values.push(acceptingRequests);
+    }
+
+    // Update deadline for general groups
+    if (groupType === 'general' && deadline !== undefined) {
+      updates.push(`deadline = $${paramCount++}`);
+      values.push(deadline);
+    }
+
+    // Update subscription deadline for subscription groups
+    if (groupType === 'subscription') {
+      if (subscriptionDeadlineDay !== undefined) {
+        updates.push(`subscription_deadline_day = $${paramCount++}`);
+        values.push(subscriptionDeadlineDay);
+      }
+      if (subscriptionDeadlineMonth !== undefined) {
+        updates.push(`subscription_deadline_month = $${paramCount++}`);
+        values.push(subscriptionDeadlineMonth);
+      }
     }
 
     if (updates.length === 0) {
