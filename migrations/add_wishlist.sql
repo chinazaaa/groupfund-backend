@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS wishlist_items (
   quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
   picture TEXT, -- URL or path to image (optional)
   price DECIMAL(10, 2), -- Optional price
+  currency VARCHAR(3) DEFAULT 'NGN', -- Currency code for the price
   is_done BOOLEAN DEFAULT FALSE, -- Celebrant can mark items as done
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

@@ -2,8 +2,22 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const pool = require('../config/database');
 const { authenticate } = require('../middleware/auth');
+const { CURRENCIES } = require('../utils/currency');
 
 const router = express.Router();
+
+// Get available currencies (for dropdown)
+router.get('/currencies', authenticate, async (req, res) => {
+  try {
+    res.json({
+      currencies: CURRENCIES,
+      default: 'NGN',
+    });
+  } catch (error) {
+    console.error('Get currencies error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
 
 // Get wishlist for a user (visible to group members)
 router.get('/:userId', authenticate, async (req, res) => {
@@ -31,7 +45,7 @@ router.get('/:userId', authenticate, async (req, res) => {
     // Get wishlist items for the user
     const itemsResult = await pool.query(
       `SELECT 
-        id, name, quantity, picture, price, is_done, created_at, updated_at
+        id, name, quantity, picture, price, currency, is_done, created_at, updated_at
        FROM wishlist_items
        WHERE user_id = $1
        ORDER BY created_at DESC`,
@@ -91,6 +105,7 @@ router.post('/', authenticate, [
     return urlPattern.test(value) || 'Picture must be a valid URL';
   }),
   body('price').optional().isFloat({ min: 0 }).withMessage('Price must be a positive number'),
+  body('currency').optional().isLength({ min: 3, max: 3 }).withMessage('Currency must be a 3-letter code'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -99,13 +114,13 @@ router.post('/', authenticate, [
     }
 
     const userId = req.user.id;
-    const { name, quantity = 1, picture, price } = req.body;
+    const { name, quantity = 1, picture, price, currency = 'NGN' } = req.body;
 
     const result = await pool.query(
-      `INSERT INTO wishlist_items (user_id, name, quantity, picture, price)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, name, quantity, picture, price, is_done, created_at, updated_at`,
-      [userId, name, quantity, picture || null, price || null]
+      `INSERT INTO wishlist_items (user_id, name, quantity, picture, price, currency)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, name, quantity, picture, price, currency, is_done, created_at, updated_at`,
+      [userId, name, quantity, picture || null, price || null, currency]
     );
 
     res.status(201).json({
@@ -129,6 +144,7 @@ router.put('/:itemId', authenticate, [
     return urlPattern.test(value) || 'Picture must be a valid URL';
   }),
   body('price').optional().isFloat({ min: 0 }),
+  body('currency').optional().isLength({ min: 3, max: 3 }).withMessage('Currency must be a 3-letter code'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -138,7 +154,7 @@ router.put('/:itemId', authenticate, [
 
     const { itemId } = req.params;
     const userId = req.user.id;
-    const { name, quantity, picture, price } = req.body;
+    const { name, quantity, picture, price, currency } = req.body;
 
     // Check if item belongs to user
     const itemCheck = await pool.query(
@@ -171,6 +187,10 @@ router.put('/:itemId', authenticate, [
       updates.push(`price = $${paramCount++}`);
       values.push(price || null);
     }
+    if (currency !== undefined) {
+      updates.push(`currency = $${paramCount++}`);
+      values.push(currency);
+    }
 
     if (updates.length === 0) {
       return res.status(400).json({ error: 'No fields to update' });
@@ -180,7 +200,7 @@ router.put('/:itemId', authenticate, [
     const query = `UPDATE wishlist_items 
                   SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP 
                   WHERE id = $${paramCount} AND user_id = $${paramCount + 1}
-                  RETURNING id, name, quantity, picture, price, is_done, created_at, updated_at`;
+                  RETURNING id, name, quantity, picture, price, currency, is_done, created_at, updated_at`;
 
     const result = await pool.query(query, values);
 
@@ -317,12 +337,12 @@ router.post('/:itemId/claim', authenticate, [
     // Get updated item with claims
     const updatedItemResult = await pool.query(
       `SELECT 
-        wi.id, wi.name, wi.quantity, wi.picture, wi.price, wi.is_done,
+        wi.id, wi.name, wi.quantity, wi.picture, wi.price, wi.currency, wi.is_done,
         COALESCE(SUM(wc.quantity_claimed), 0) as total_claimed
        FROM wishlist_items wi
        LEFT JOIN wishlist_claims wc ON wi.id = wc.wishlist_item_id
        WHERE wi.id = $1
-       GROUP BY wi.id, wi.name, wi.quantity, wi.picture, wi.price, wi.is_done`,
+       GROUP BY wi.id, wi.name, wi.quantity, wi.picture, wi.price, wi.currency, wi.is_done`,
       [itemId]
     );
 
@@ -398,7 +418,7 @@ router.put('/:itemId/mark-done', authenticate, [
       `UPDATE wishlist_items 
        SET is_done = $1, updated_at = CURRENT_TIMESTAMP 
        WHERE id = $2 AND user_id = $3
-       RETURNING id, name, quantity, picture, price, is_done, created_at, updated_at`,
+       RETURNING id, name, quantity, picture, price, currency, is_done, created_at, updated_at`,
       [is_done, itemId, userId]
     );
 

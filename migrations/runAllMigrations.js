@@ -19,7 +19,8 @@ const migrations = [
   'add_birthday_email_log.sql',
   'add_group_status.sql',
   'add_accepting_requests.sql',
-  'add_wishlist.sql'
+  'add_wishlist.sql',
+  'add_currency_to_wishlist.sql'
 ];
 
 async function runAllMigrations() {
