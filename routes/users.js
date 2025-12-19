@@ -11,7 +11,7 @@ router.get('/profile', authenticate, async (req, res) => {
     const userId = req.user.id;
 
     const userResult = await pool.query(
-      `SELECT id, name, email, phone, birthday, is_verified, is_admin,
+      `SELECT id, name, email, birthday, is_verified, is_admin,
               notify_7_days_before, notify_1_day_before, notify_same_day,
               created_at 
        FROM users WHERE id = $1`,
@@ -42,7 +42,6 @@ router.get('/profile', authenticate, async (req, res) => {
 // Update profile
 router.put('/profile', authenticate, [
   body('name').optional().trim().notEmpty(),
-  body('phone').optional().trim().notEmpty(),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -51,7 +50,7 @@ router.put('/profile', authenticate, [
     }
 
     const userId = req.user.id;
-    const { name, phone } = req.body;
+    const { name } = req.body;
 
     // Prevent birthday updates - users must contact support
     if (req.body.birthday !== undefined) {
@@ -67,17 +66,12 @@ router.put('/profile', authenticate, [
       values.push(name);
     }
 
-    if (phone) {
-      updates.push(`phone = $${paramCount++}`);
-      values.push(phone);
-    }
-
     if (updates.length === 0) {
       return res.status(400).json({ error: 'No fields to update' });
     }
 
     values.push(userId);
-    const query = `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING id, name, email, phone, birthday`;
+    const query = `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING id, name, email, birthday`;
 
     const result = await pool.query(query, values);
 

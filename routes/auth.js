@@ -4,7 +4,7 @@ const jwt = require('jsonwebtoken');
 const { body, validationResult } = require('express-validator');
 const pool = require('../config/database');
 const { generateOTP } = require('../utils/helpers');
-const { sendOTPEmail, sendOTPSMS } = require('../utils/email');
+const { sendOTPEmail } = require('../utils/email');
 const { authLimiter, otpLimiter } = require('../middleware/rateLimiter');
 
 const router = express.Router();
@@ -13,7 +13,6 @@ const router = express.Router();
 router.post('/signup', authLimiter, [
   body('name').trim().notEmpty().withMessage('Name is required'),
   body('email').isEmail().withMessage('Valid email is required'),
-  body('phone').trim().notEmpty().withMessage('Phone number is required'),
   body('birthday').isISO8601().withMessage('Birthday is required and must be a valid date (YYYY-MM-DD)'),
   body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
 ], async (req, res) => {
@@ -23,16 +22,16 @@ router.post('/signup', authLimiter, [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { name, email, phone, birthday, password } = req.body;
+    const { name, email, birthday, password } = req.body;
 
     // Check if user already exists
     const existingUser = await pool.query(
-      'SELECT id FROM users WHERE email = $1 OR phone = $1',
+      'SELECT id FROM users WHERE email = $1',
       [email]
     );
 
     if (existingUser.rows.length > 0) {
-      return res.status(400).json({ error: 'User already exists with this email or phone' });
+      return res.status(400).json({ error: 'User already exists with this email' });
     }
 
     // Hash password
@@ -40,8 +39,8 @@ router.post('/signup', authLimiter, [
 
     // Create user
     const result = await pool.query(
-      'INSERT INTO users (name, email, phone, birthday, password_hash) VALUES ($1, $2, $3, $4, $5) RETURNING id, name, email, phone, birthday',
-      [name, email, phone, birthday, passwordHash]
+      'INSERT INTO users (name, email, birthday, password_hash) VALUES ($1, $2, $3, $4) RETURNING id, name, email, birthday',
+      [name, email, birthday, passwordHash]
     );
 
     const user = result.rows[0];
@@ -52,12 +51,11 @@ router.post('/signup', authLimiter, [
 
     await pool.query(
       'INSERT INTO otps (user_id, phone, email, code, type, expires_at) VALUES ($1, $2, $3, $4, $5, $6)',
-      [user.id, phone, email, otp, 'signup', expiresAt]
+      [user.id, null, email, otp, 'signup', expiresAt]
     );
 
-    // Send OTP via email and SMS
+    // Send OTP via email
     await sendOTPEmail(email, otp, 'signup');
-    await sendOTPSMS(phone, otp);
 
     res.status(201).json({
       message: 'User created successfully. Please verify OTP.',
@@ -131,12 +129,12 @@ router.post('/resend-otp', otpLimiter, [
   try {
     const { userId, type = 'signup' } = req.body;
 
-    const userResult = await pool.query('SELECT email, phone FROM users WHERE id = $1', [userId]);
+    const userResult = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
     if (userResult.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const { email, phone } = userResult.rows[0];
+    const { email } = userResult.rows[0];
 
     // Generate new OTP
     const otp = generateOTP();
@@ -144,11 +142,10 @@ router.post('/resend-otp', otpLimiter, [
 
     await pool.query(
       'INSERT INTO otps (user_id, phone, email, code, type, expires_at) VALUES ($1, $2, $3, $4, $5, $6)',
-      [userId, phone, email, otp, type, expiresAt]
+      [userId, null, email, otp, type, expiresAt]
     );
 
     await sendOTPEmail(email, otp, type);
-    await sendOTPSMS(phone, otp);
 
     res.json({ message: 'OTP resent successfully' });
   } catch (error) {
@@ -172,7 +169,7 @@ router.post('/login', authLimiter, [
 
     // Find user
     const userResult = await pool.query(
-      'SELECT id, name, email, phone, password_hash, is_verified, is_active FROM users WHERE email = $1',
+      'SELECT id, name, email, password_hash, is_verified, is_active FROM users WHERE email = $1',
       [email]
     );
 
@@ -218,7 +215,6 @@ router.post('/login', authLimiter, [
         id: user.id,
         name: user.name,
         email: user.email,
-        phone: user.phone,
         wallet: wallet ? { balance: wallet.balance || 0 } : { balance: 0 },
       },
     });
@@ -235,7 +231,7 @@ router.post('/forgot-password', authLimiter, [
   try {
     const { email } = req.body;
 
-    const userResult = await pool.query('SELECT id, phone FROM users WHERE email = $1', [email]);
+    const userResult = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
     if (userResult.rows.length === 0) {
       // Don't reveal if user exists
       return res.json({ message: 'If the email exists, an OTP has been sent' });
@@ -249,11 +245,10 @@ router.post('/forgot-password', authLimiter, [
 
     await pool.query(
       'INSERT INTO otps (user_id, phone, email, code, type, expires_at) VALUES ($1, $2, $3, $4, $5, $6)',
-      [user.id, user.phone, email, otp, 'forgot-password', expiresAt]
+      [user.id, null, email, otp, 'forgot-password', expiresAt]
     );
 
     await sendOTPEmail(email, otp, 'forgot-password');
-    await sendOTPSMS(user.phone, otp);
 
     res.json({ message: 'If the email exists, an OTP has been sent', userId: user.id });
   } catch (error) {

@@ -12,7 +12,7 @@ const authenticate = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     
     // Verify user still exists and is active
-    const result = await pool.query('SELECT id, email, name, phone, is_admin, is_active FROM users WHERE id = $1', [decoded.userId]);
+    const result = await pool.query('SELECT id, email, name, is_admin, is_active FROM users WHERE id = $1', [decoded.userId]);
     
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'User not found' });

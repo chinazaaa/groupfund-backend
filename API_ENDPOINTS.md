@@ -14,9 +14,9 @@ Base URL: `http://localhost:3000`
 ### Signup
 - **POST** `/api/auth/signup`
   - No authentication required
-  - Body: `{ name, email, phone, password }`
+  - Body: `{ name, email, birthday, password }`
   - Returns: `{ message, userId }`
-  - Sends OTP via email/SMS
+  - Sends OTP via email
 
 ### Verify OTP
 - **POST** `/api/auth/verify-otp`
@@ -36,7 +36,7 @@ Base URL: `http://localhost:3000`
 - **POST** `/api/auth/login`
   - No authentication required
   - Body: `{ email, password }`
-  - Returns: `{ token, user: { id, name, email, phone, wallet } }`
+  - Returns: `{ token, user: { id, name, email, wallet } }`
   - Returns JWT token for authenticated requests
 
 ### Forgot Password
@@ -66,7 +66,7 @@ Base URL: `http://localhost:3000`
 ### Get Profile
 - **GET** `/api/users/profile`
   - **Requires authentication**
-  - Returns: `{ user: { id, name, email, phone, birthday, is_verified, created_at }, wallet }`
+  - Returns: `{ user: { id, name, email, birthday, is_verified, created_at }, wallet }`
 
 ### Update Profile
 - **PUT** `/api/users/profile`
@@ -156,7 +156,7 @@ Base URL: `http://localhost:3000`
 ### Get Group Members
 - **GET** `/api/members/group/:groupId`
   - **Requires authentication**
-  - Returns: `{ members: [{ id, name, email, phone, birthday, role, status, joined_at }] }`
+  - Returns: `{ members: [{ id, name, email, birthday, role, status, joined_at }] }`
   - Must be a member of the group
 
 ### Approve/Reject Member
@@ -200,7 +200,7 @@ Base URL: `http://localhost:3000`
 - **GET** `/api/birthdays/upcoming`
   - **Requires authentication**
   - Query params: `groupId?` (optional), `days?` (default: 30)
-  - Returns: `{ birthdays: [{ id, name, email, phone, birthday, days_until_birthday, group_id?, group_name? }] }`
+  - Returns: `{ birthdays: [{ id, name, email, birthday, days_until_birthday, group_id?, group_name? }] }`
   - If groupId provided, returns birthdays for that group only
   - Otherwise returns birthdays across all user's groups
 
@@ -265,14 +265,14 @@ Base URL: `http://localhost:3000`
 - **GET** `/api/admin/users`
   - **Requires admin authentication**
   - Query params: `page?` (default: 1), `limit?` (default: 50), `search?`, `is_verified?`, `is_admin?`
-  - Returns: `{ users: [{ id, name, email, phone, birthday, is_verified, is_admin, created_at, wallet_balance, group_count }], pagination }`
-  - Supports search by name, email, or phone
+  - Returns: `{ users: [{ id, name, email, birthday, is_verified, is_admin, created_at, wallet_balance, group_count }], pagination }`
+  - Supports search by name or email
   - Supports filtering by verification status and admin status
 
 ### Get User by ID
 - **GET** `/api/admin/users/:userId`
   - **Requires admin authentication**
-  - Returns: `{ user: { id, name, email, phone, birthday, is_verified, is_admin, created_at, wallet_balance, ... }, groups: [...], transaction_count }`
+  - Returns: `{ user: { id, name, email, birthday, is_verified, is_admin, created_at, wallet_balance, ... }, groups: [...], transaction_count }`
   - Returns detailed user information including groups and transaction count
 
 ### Update User
