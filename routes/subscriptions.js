@@ -306,6 +306,28 @@ router.post('/contribute/:contributionId/reject', authenticate, async (req, res)
     const { contributionId } = req.params;
     const adminId = req.user.id;
 
+    // First check if contribution exists and verify admin access
+    const contributionCheck = await pool.query(
+      `SELECT sc.id, g.admin_id, g.group_type
+       FROM subscription_contributions sc
+       JOIN groups g ON sc.group_id = g.id
+       WHERE sc.id = $1`,
+      [contributionId]
+    );
+
+    if (contributionCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Subscription contribution not found' });
+    }
+
+    if (contributionCheck.rows[0].group_type !== 'subscription') {
+      return res.status(400).json({ error: 'This is not a subscription contribution' });
+    }
+
+    if (contributionCheck.rows[0].admin_id !== adminId) {
+      return res.status(403).json({ error: 'Only the group admin can reject contributions' });
+    }
+
+    // Get full contribution details
     const contributionResult = await pool.query(
       `SELECT sc.*, g.name as group_name, g.currency, g.status as group_status, g.admin_id, u.name as contributor_name
        FROM subscription_contributions sc
@@ -316,7 +338,7 @@ router.post('/contribute/:contributionId/reject', authenticate, async (req, res)
     );
 
     if (contributionResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Contribution not found or you are not the group admin' });
+      return res.status(404).json({ error: 'Contribution not found' });
     }
 
     const contribution = contributionResult.rows[0];

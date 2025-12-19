@@ -401,6 +401,236 @@ router.get('/my-groups', authenticate, async (req, res) => {
   }
 });
 
+// Get all upcoming deadlines across all group types (unified view)
+// IMPORTANT: This must be before /:groupId routes to avoid route conflicts
+router.get('/upcoming', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { days = 30 } = req.query;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const currentYear = today.getFullYear();
+    const currentMonth = today.getMonth() + 1;
+    const currentDay = today.getDate();
+
+    const upcomingItems = [];
+
+    // Get all groups user is a member of
+    const groupsResult = await pool.query(
+      `SELECT g.*, gm.role, gm.status as member_status
+       FROM groups g
+       JOIN group_members gm ON g.id = gm.group_id
+       WHERE gm.user_id = $1 AND gm.status = 'active'`,
+      [userId]
+    );
+
+    for (const group of groupsResult.rows) {
+      if (group.group_type === 'birthday') {
+        // Get upcoming birthdays in this group
+        const birthdaysResult = await pool.query(
+          `SELECT * FROM (
+            SELECT 
+              u.id, u.name, u.email, u.phone, u.birthday,
+              g.id as group_id, g.name as group_name, g.currency,
+              (
+                SELECT MAKE_DATE(
+                  EXTRACT(YEAR FROM CURRENT_DATE)::integer + 
+                  CASE 
+                    WHEN (DATE_PART('month', u.birthday) < DATE_PART('month', CURRENT_DATE))
+                         OR (DATE_PART('month', u.birthday) = DATE_PART('month', CURRENT_DATE) 
+                             AND DATE_PART('day', u.birthday) < DATE_PART('day', CURRENT_DATE))
+                    THEN 1
+                    ELSE 0
+                  END,
+                  DATE_PART('month', u.birthday)::integer,
+                  DATE_PART('day', u.birthday)::integer
+                )
+              ) as next_birthday_date,
+              (
+                SELECT (MAKE_DATE(
+                  EXTRACT(YEAR FROM CURRENT_DATE)::integer + 
+                  CASE 
+                    WHEN (DATE_PART('month', u.birthday) < DATE_PART('month', CURRENT_DATE))
+                         OR (DATE_PART('month', u.birthday) = DATE_PART('month', CURRENT_DATE) 
+                             AND DATE_PART('day', u.birthday) < DATE_PART('day', CURRENT_DATE))
+                    THEN 1
+                    ELSE 0
+                  END,
+                  DATE_PART('month', u.birthday)::integer,
+                  DATE_PART('day', u.birthday)::integer
+                ) - CURRENT_DATE)::integer
+              ) as days_until_birthday
+            FROM group_members gm
+            JOIN groups g ON gm.group_id = g.id
+            JOIN users u ON gm.user_id = u.id
+            WHERE gm.group_id = $1 
+              AND gm.status = 'active'
+              AND u.birthday IS NOT NULL
+              AND u.id != $2
+          ) subquery
+          WHERE days_until_birthday >= 0 AND days_until_birthday <= $3
+          ORDER BY days_until_birthday ASC`,
+          [group.id, userId, parseInt(days)]
+        );
+
+        for (const birthday of birthdaysResult.rows) {
+          // Check if user has paid for this birthday
+          const paymentCheck = await pool.query(
+            `SELECT status FROM birthday_contributions 
+             WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3
+             AND EXTRACT(YEAR FROM contribution_date) = $4`,
+            [group.id, birthday.id, userId, currentYear]
+          );
+
+          const hasPaid = paymentCheck.rows.length > 0 && 
+                         (paymentCheck.rows[0].status === 'paid' || paymentCheck.rows[0].status === 'confirmed');
+
+          upcomingItems.push({
+            type: 'birthday',
+            group_id: group.id,
+            group_name: group.name,
+            group_type: 'birthday',
+            currency: group.currency || 'NGN',
+            contribution_amount: parseFloat(group.contribution_amount),
+            deadline_date: birthday.next_birthday_date,
+            days_until_deadline: birthday.days_until_birthday,
+            has_paid: hasPaid,
+            event_name: `${birthday.name}'s Birthday`,
+            event_user_id: birthday.id,
+            event_user_name: birthday.name
+          });
+        }
+      } else if (group.group_type === 'subscription') {
+        // Calculate next subscription deadline
+        let nextDeadline;
+        if (group.subscription_frequency === 'monthly') {
+          // Next deadline is the deadline day of current or next month
+          if (currentDay <= group.subscription_deadline_day) {
+            nextDeadline = getDeadlineDate(currentYear, currentMonth - 1, group.subscription_deadline_day);
+          } else {
+            nextDeadline = getDeadlineDate(currentYear, currentMonth, group.subscription_deadline_day);
+          }
+        } else {
+          // Annual: deadline is on specific month and day
+          if (currentMonth < group.subscription_deadline_month || 
+              (currentMonth === group.subscription_deadline_month && currentDay <= group.subscription_deadline_day)) {
+            nextDeadline = getDeadlineDate(currentYear, group.subscription_deadline_month - 1, group.subscription_deadline_day);
+          } else {
+            nextDeadline = getDeadlineDate(currentYear + 1, group.subscription_deadline_month - 1, group.subscription_deadline_day);
+          }
+        }
+
+        nextDeadline.setHours(0, 0, 0, 0);
+        const daysUntilDeadline = Math.ceil((nextDeadline - today) / (1000 * 60 * 60 * 24));
+
+        if (daysUntilDeadline >= 0 && daysUntilDeadline <= parseInt(days)) {
+          // Check if user has paid for current period
+          let periodStart;
+          if (group.subscription_frequency === 'monthly') {
+            periodStart = new Date(currentYear, currentMonth - 1, 1);
+          } else {
+            periodStart = new Date(currentYear, 0, 1);
+          }
+
+          const paymentCheck = await pool.query(
+            `SELECT status FROM subscription_contributions 
+             WHERE group_id = $1 AND contributor_id = $2 AND subscription_period_start = $3`,
+            [group.id, userId, periodStart]
+          );
+
+          const hasPaid = paymentCheck.rows.length > 0 && 
+                         (paymentCheck.rows[0].status === 'paid' || paymentCheck.rows[0].status === 'confirmed');
+
+          // Get admin account details
+          const adminWallet = await pool.query(
+            `SELECT w.account_number, w.bank_name, w.account_name, u.name as admin_name
+             FROM wallets w
+             JOIN users u ON w.user_id = u.id
+             WHERE w.user_id = $1`,
+            [group.admin_id]
+          );
+
+          upcomingItems.push({
+            type: 'subscription',
+            group_id: group.id,
+            group_name: group.name,
+            group_type: 'subscription',
+            currency: group.currency || 'NGN',
+            contribution_amount: parseFloat(group.contribution_amount),
+            subscription_frequency: group.subscription_frequency,
+            subscription_platform: group.subscription_platform,
+            deadline_date: nextDeadline.toISOString().split('T')[0],
+            days_until_deadline: daysUntilDeadline,
+            has_paid: hasPaid,
+            event_name: `${group.subscription_platform} Subscription`,
+            admin_account_number: adminWallet.rows[0]?.account_number,
+            admin_bank_name: adminWallet.rows[0]?.bank_name,
+            admin_account_name: adminWallet.rows[0]?.account_name,
+            admin_name: adminWallet.rows[0]?.admin_name
+          });
+        }
+      } else if (group.group_type === 'general') {
+        // Check if group has a deadline
+        if (group.deadline) {
+          const deadline = new Date(group.deadline);
+          deadline.setHours(0, 0, 0, 0);
+          const daysUntilDeadline = Math.ceil((deadline - today) / (1000 * 60 * 60 * 24));
+
+          if (daysUntilDeadline >= 0 && daysUntilDeadline <= parseInt(days)) {
+            // Check if user has paid
+            const paymentCheck = await pool.query(
+              `SELECT status FROM general_contributions 
+               WHERE group_id = $1 AND contributor_id = $2`,
+              [group.id, userId]
+            );
+
+            const hasPaid = paymentCheck.rows.length > 0 && 
+                           (paymentCheck.rows[0].status === 'paid' || paymentCheck.rows[0].status === 'confirmed');
+
+            // Get admin account details
+            const adminWallet = await pool.query(
+              `SELECT w.account_number, w.bank_name, w.account_name, u.name as admin_name
+               FROM wallets w
+               JOIN users u ON w.user_id = u.id
+               WHERE w.user_id = $1`,
+              [group.admin_id]
+            );
+
+            upcomingItems.push({
+              type: 'general',
+              group_id: group.id,
+              group_name: group.name,
+              group_type: 'general',
+              currency: group.currency || 'NGN',
+              contribution_amount: parseFloat(group.contribution_amount),
+              deadline_date: group.deadline,
+              days_until_deadline: daysUntilDeadline,
+              has_paid: hasPaid,
+              event_name: group.name,
+              admin_account_number: adminWallet.rows[0]?.account_number,
+              admin_bank_name: adminWallet.rows[0]?.bank_name,
+              admin_account_name: adminWallet.rows[0]?.account_name,
+              admin_name: adminWallet.rows[0]?.admin_name
+            });
+          }
+        }
+      }
+    }
+
+    // Sort by days until deadline (soonest first)
+    upcomingItems.sort((a, b) => a.days_until_deadline - b.days_until_deadline);
+
+    res.json({
+      upcoming: upcomingItems,
+      total: upcomingItems.length
+    });
+  } catch (error) {
+    console.error('Get upcoming groups error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Get group health/score (accessible to everyone, even non-members)
 router.get('/:groupId/health', authenticate, async (req, res) => {
   try {
@@ -1007,235 +1237,6 @@ router.get('/:groupId/compliance', authenticate, async (req, res) => {
     });
   } catch (error) {
     console.error('Get group compliance error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Get all upcoming deadlines across all group types (unified view)
-router.get('/upcoming', authenticate, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const { days = 30 } = req.query;
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const currentYear = today.getFullYear();
-    const currentMonth = today.getMonth() + 1;
-    const currentDay = today.getDate();
-
-    const upcomingItems = [];
-
-    // Get all groups user is a member of
-    const groupsResult = await pool.query(
-      `SELECT g.*, gm.role, gm.status as member_status
-       FROM groups g
-       JOIN group_members gm ON g.id = gm.group_id
-       WHERE gm.user_id = $1 AND gm.status = 'active'`,
-      [userId]
-    );
-
-    for (const group of groupsResult.rows) {
-      if (group.group_type === 'birthday') {
-        // Get upcoming birthdays in this group
-        const birthdaysResult = await pool.query(
-          `SELECT * FROM (
-            SELECT 
-              u.id, u.name, u.email, u.phone, u.birthday,
-              g.id as group_id, g.name as group_name, g.currency,
-              (
-                SELECT MAKE_DATE(
-                  EXTRACT(YEAR FROM CURRENT_DATE)::integer + 
-                  CASE 
-                    WHEN (DATE_PART('month', u.birthday) < DATE_PART('month', CURRENT_DATE))
-                         OR (DATE_PART('month', u.birthday) = DATE_PART('month', CURRENT_DATE) 
-                             AND DATE_PART('day', u.birthday) < DATE_PART('day', CURRENT_DATE))
-                    THEN 1
-                    ELSE 0
-                  END,
-                  DATE_PART('month', u.birthday)::integer,
-                  DATE_PART('day', u.birthday)::integer
-                )
-              ) as next_birthday_date,
-              (
-                SELECT (MAKE_DATE(
-                  EXTRACT(YEAR FROM CURRENT_DATE)::integer + 
-                  CASE 
-                    WHEN (DATE_PART('month', u.birthday) < DATE_PART('month', CURRENT_DATE))
-                         OR (DATE_PART('month', u.birthday) = DATE_PART('month', CURRENT_DATE) 
-                             AND DATE_PART('day', u.birthday) < DATE_PART('day', CURRENT_DATE))
-                    THEN 1
-                    ELSE 0
-                  END,
-                  DATE_PART('month', u.birthday)::integer,
-                  DATE_PART('day', u.birthday)::integer
-                ) - CURRENT_DATE)::integer
-              ) as days_until_birthday
-            FROM group_members gm
-            JOIN groups g ON gm.group_id = g.id
-            JOIN users u ON gm.user_id = u.id
-            WHERE gm.group_id = $1 
-              AND gm.status = 'active'
-              AND u.birthday IS NOT NULL
-              AND u.id != $2
-          ) subquery
-          WHERE days_until_birthday >= 0 AND days_until_birthday <= $3
-          ORDER BY days_until_birthday ASC`,
-          [group.id, userId, parseInt(days)]
-        );
-
-        for (const birthday of birthdaysResult.rows) {
-          // Check if user has paid for this birthday
-          const paymentCheck = await pool.query(
-            `SELECT status FROM birthday_contributions 
-             WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3
-             AND EXTRACT(YEAR FROM contribution_date) = $4`,
-            [group.id, birthday.id, userId, currentYear]
-          );
-
-          const hasPaid = paymentCheck.rows.length > 0 && 
-                         (paymentCheck.rows[0].status === 'paid' || paymentCheck.rows[0].status === 'confirmed');
-
-          upcomingItems.push({
-            type: 'birthday',
-            group_id: group.id,
-            group_name: group.name,
-            group_type: 'birthday',
-            currency: group.currency || 'NGN',
-            contribution_amount: parseFloat(group.contribution_amount),
-            deadline_date: birthday.next_birthday_date,
-            days_until_deadline: birthday.days_until_birthday,
-            has_paid: hasPaid,
-            event_name: `${birthday.name}'s Birthday`,
-            event_user_id: birthday.id,
-            event_user_name: birthday.name
-          });
-        }
-      } else if (group.group_type === 'subscription') {
-        // Calculate next subscription deadline
-        let nextDeadline;
-        if (group.subscription_frequency === 'monthly') {
-          // Next deadline is the deadline day of current or next month
-          if (currentDay <= group.subscription_deadline_day) {
-            nextDeadline = getDeadlineDate(currentYear, currentMonth - 1, group.subscription_deadline_day);
-          } else {
-            nextDeadline = getDeadlineDate(currentYear, currentMonth, group.subscription_deadline_day);
-          }
-        } else {
-          // Annual: deadline is on specific month and day
-          if (currentMonth < group.subscription_deadline_month || 
-              (currentMonth === group.subscription_deadline_month && currentDay <= group.subscription_deadline_day)) {
-            nextDeadline = getDeadlineDate(currentYear, group.subscription_deadline_month - 1, group.subscription_deadline_day);
-          } else {
-            nextDeadline = getDeadlineDate(currentYear + 1, group.subscription_deadline_month - 1, group.subscription_deadline_day);
-          }
-        }
-
-        nextDeadline.setHours(0, 0, 0, 0);
-        const daysUntilDeadline = Math.ceil((nextDeadline - today) / (1000 * 60 * 60 * 24));
-
-        if (daysUntilDeadline >= 0 && daysUntilDeadline <= parseInt(days)) {
-          // Check if user has paid for current period
-          let periodStart;
-          if (group.subscription_frequency === 'monthly') {
-            periodStart = new Date(currentYear, currentMonth - 1, 1);
-          } else {
-            periodStart = new Date(currentYear, 0, 1);
-          }
-
-          const paymentCheck = await pool.query(
-            `SELECT status FROM subscription_contributions 
-             WHERE group_id = $1 AND contributor_id = $2 AND subscription_period_start = $3`,
-            [group.id, userId, periodStart]
-          );
-
-          const hasPaid = paymentCheck.rows.length > 0 && 
-                         (paymentCheck.rows[0].status === 'paid' || paymentCheck.rows[0].status === 'confirmed');
-
-          // Get admin account details
-          const adminWallet = await pool.query(
-            `SELECT w.account_number, w.bank_name, w.account_name, u.name as admin_name
-             FROM wallets w
-             JOIN users u ON w.user_id = u.id
-             WHERE w.user_id = $1`,
-            [group.admin_id]
-          );
-
-          upcomingItems.push({
-            type: 'subscription',
-            group_id: group.id,
-            group_name: group.name,
-            group_type: 'subscription',
-            currency: group.currency || 'NGN',
-            contribution_amount: parseFloat(group.contribution_amount),
-            subscription_frequency: group.subscription_frequency,
-            subscription_platform: group.subscription_platform,
-            deadline_date: nextDeadline.toISOString().split('T')[0],
-            days_until_deadline: daysUntilDeadline,
-            has_paid: hasPaid,
-            event_name: `${group.subscription_platform} Subscription`,
-            admin_account_number: adminWallet.rows[0]?.account_number,
-            admin_bank_name: adminWallet.rows[0]?.bank_name,
-            admin_account_name: adminWallet.rows[0]?.account_name,
-            admin_name: adminWallet.rows[0]?.admin_name
-          });
-        }
-      } else if (group.group_type === 'general') {
-        // Check if group has a deadline
-        if (group.deadline) {
-          const deadline = new Date(group.deadline);
-          deadline.setHours(0, 0, 0, 0);
-          const daysUntilDeadline = Math.ceil((deadline - today) / (1000 * 60 * 60 * 24));
-
-          if (daysUntilDeadline >= 0 && daysUntilDeadline <= parseInt(days)) {
-            // Check if user has paid
-            const paymentCheck = await pool.query(
-              `SELECT status FROM general_contributions 
-               WHERE group_id = $1 AND contributor_id = $2`,
-              [group.id, userId]
-            );
-
-            const hasPaid = paymentCheck.rows.length > 0 && 
-                           (paymentCheck.rows[0].status === 'paid' || paymentCheck.rows[0].status === 'confirmed');
-
-            // Get admin account details
-            const adminWallet = await pool.query(
-              `SELECT w.account_number, w.bank_name, w.account_name, u.name as admin_name
-               FROM wallets w
-               JOIN users u ON w.user_id = u.id
-               WHERE w.user_id = $1`,
-              [group.admin_id]
-            );
-
-            upcomingItems.push({
-              type: 'general',
-              group_id: group.id,
-              group_name: group.name,
-              group_type: 'general',
-              currency: group.currency || 'NGN',
-              contribution_amount: parseFloat(group.contribution_amount),
-              deadline_date: group.deadline,
-              days_until_deadline: daysUntilDeadline,
-              has_paid: hasPaid,
-              event_name: group.name,
-              admin_account_number: adminWallet.rows[0]?.account_number,
-              admin_bank_name: adminWallet.rows[0]?.bank_name,
-              admin_account_name: adminWallet.rows[0]?.account_name,
-              admin_name: adminWallet.rows[0]?.admin_name
-            });
-          }
-        }
-      }
-    }
-
-    // Sort by days until deadline (soonest first)
-    upcomingItems.sort((a, b) => a.days_until_deadline - b.days_until_deadline);
-
-    res.json({
-      upcoming: upcomingItems,
-      total: upcomingItems.length
-    });
-  } catch (error) {
-    console.error('Get upcoming groups error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

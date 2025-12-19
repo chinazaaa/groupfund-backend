@@ -271,6 +271,28 @@ router.post('/contribute/:contributionId/reject', authenticate, async (req, res)
     const { contributionId } = req.params;
     const adminId = req.user.id;
 
+    // First check if contribution exists and verify admin access
+    const contributionCheck = await pool.query(
+      `SELECT gc.id, g.admin_id, g.group_type
+       FROM general_contributions gc
+       JOIN groups g ON gc.group_id = g.id
+       WHERE gc.id = $1`,
+      [contributionId]
+    );
+
+    if (contributionCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'General contribution not found' });
+    }
+
+    if (contributionCheck.rows[0].group_type !== 'general') {
+      return res.status(400).json({ error: 'This is not a general group contribution' });
+    }
+
+    if (contributionCheck.rows[0].admin_id !== adminId) {
+      return res.status(403).json({ error: 'Only the group admin can reject contributions' });
+    }
+
+    // Get full contribution details
     const contributionResult = await pool.query(
       `SELECT gc.*, g.name as group_name, g.currency, g.status as group_status, g.admin_id, u.name as contributor_name
        FROM general_contributions gc
@@ -281,7 +303,7 @@ router.post('/contribute/:contributionId/reject', authenticate, async (req, res)
     );
 
     if (contributionResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Contribution not found or you are not the group admin' });
+      return res.status(404).json({ error: 'Contribution not found' });
     }
 
     const contribution = contributionResult.rows[0];
