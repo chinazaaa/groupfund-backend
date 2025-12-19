@@ -460,13 +460,28 @@ async function checkBirthdayReminders() {
 // }
 
 /**
- * Check for overdue contributions and send escalating reminders
- * Sends reminders 1, 3, 7, and 14 days after a birthday has passed if contribution is still unpaid
+ * Check for overdue contributions and send escalating reminders for all group types
+ * Sends reminders 1, 3, 7, and 14 days after a deadline has passed if contribution is still unpaid
+ * Handles: birthday groups, subscription groups, and general groups
  */
 async function checkOverdueContributions() {
   try {
     const today = new Date();
+    today.setHours(0, 0, 0, 0);
     const currentYear = today.getFullYear();
+    const currentMonth = today.getMonth() + 1;
+    const currentDay = today.getDate();
+    
+    // Helper function to get deadline date, handling months with fewer days
+    function getLastDayOfMonth(year, month) {
+      return new Date(year, month + 1, 0).getDate();
+    }
+    
+    function getDeadlineDate(year, month, deadlineDay) {
+      const lastDay = getLastDayOfMonth(year, month);
+      const actualDay = Math.min(deadlineDay, lastDay);
+      return new Date(year, month, actualDay);
+    }
     
     // Get all active users
     const usersResult = await pool.query(
@@ -479,7 +494,9 @@ async function checkOverdueContributions() {
     for (const user of usersResult.rows) {
       // Get all groups the user is in (exclude closed groups - they don't accept contributions)
       const groupsResult = await pool.query(
-        `SELECT g.id, g.name, g.contribution_amount, g.currency
+        `SELECT g.id, g.name, g.contribution_amount, g.currency, g.group_type,
+                g.subscription_frequency, g.subscription_platform,
+                g.subscription_deadline_day, g.subscription_deadline_month, g.deadline
          FROM groups g
          JOIN group_members gm ON g.id = gm.group_id
          WHERE gm.user_id = $1 AND gm.status = 'active' AND g.status = 'active'`,
@@ -504,42 +521,113 @@ async function checkOverdueContributions() {
         
         if (userJoinDateResult.rows.length === 0) continue;
         const userJoinDate = new Date(userJoinDateResult.rows[0].joined_at);
+        userJoinDate.setHours(0, 0, 0, 0);
 
-        // Get all active members in this group
-        const membersResult = await pool.query(
-          `SELECT u.id, u.name, u.birthday
-           FROM users u
-           JOIN group_members gm ON u.id = gm.user_id
-           WHERE gm.group_id = $1 AND gm.status = 'active' AND u.id != $2 AND u.birthday IS NOT NULL`,
-          [group.id, user.id]
-        );
+        if (group.group_type === 'birthday') {
+          // Get all active members in this group
+          const membersResult = await pool.query(
+            `SELECT u.id, u.name, u.birthday
+             FROM users u
+             JOIN group_members gm ON u.id = gm.user_id
+             WHERE gm.group_id = $1 AND gm.status = 'active' AND u.id != $2 AND u.birthday IS NOT NULL`,
+            [group.id, user.id]
+          );
 
-        for (const member of membersResult.rows) {
-          const memberBirthday = new Date(member.birthday);
-          const thisYearBirthday = new Date(currentYear, memberBirthday.getMonth(), memberBirthday.getDate());
-          
-          // Check if birthday has passed this year AND user was a member when the birthday occurred
-          // Only consider overdue if user joined before or on the birthday date
-          if (thisYearBirthday < today && userJoinDate <= thisYearBirthday) {
-            const daysOverdue = Math.floor((today - thisYearBirthday) / (1000 * 60 * 60 * 24));
+          for (const member of membersResult.rows) {
+            const memberBirthday = new Date(member.birthday);
+            const thisYearBirthday = new Date(currentYear, memberBirthday.getMonth(), memberBirthday.getDate());
+            thisYearBirthday.setHours(0, 0, 0, 0);
             
-            // Check if user has paid for this birthday
+            // Check if birthday has passed this year AND user was a member when the birthday occurred
+            // Only consider overdue if user joined before or on the birthday date
+            if (thisYearBirthday < today && userJoinDate <= thisYearBirthday) {
+              const daysOverdue = Math.floor((today - thisYearBirthday) / (1000 * 60 * 60 * 24));
+              
+              // Check if user has paid for this birthday
+              const contributionCheck = await pool.query(
+                `SELECT id, status FROM birthday_contributions 
+                 WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3
+                 AND EXTRACT(YEAR FROM contribution_date) = $4`,
+                [group.id, member.id, user.id, currentYear]
+              );
+
+              // Check if contribution is paid (status is 'paid' or 'confirmed')
+              // 'not_received' means they marked as paid but celebrant rejected it, so still overdue
+              const hasPaid = contributionCheck.rows.length > 0 && 
+                             (contributionCheck.rows[0].status === 'paid' || 
+                              contributionCheck.rows[0].status === 'confirmed');
+
+              // If not paid and overdue by 1, 3, 7, or 14 days, add to reminder list
+              if (!hasPaid && (daysOverdue === 1 || daysOverdue === 3 || daysOverdue === 7 || daysOverdue === 14)) {
+                // Check if reminder was already sent today for this specific overdue period
+                const reminderCheck = await pool.query(
+                  `SELECT id FROM notifications 
+                   WHERE user_id = $1 AND type = 'overdue_contribution' 
+                   AND created_at::date = CURRENT_DATE
+                   AND message LIKE $2
+                   AND group_id = $3`,
+                  [user.id, `%${daysOverdue} days overdue%`, group.id]
+                );
+
+                if (reminderCheck.rows.length === 0) {
+                  overdueByDays[daysOverdue].push({
+                    groupId: group.id,
+                    groupName: group.name,
+                    groupType: 'birthday',
+                    currency: group.currency || 'NGN',
+                    contributionAmount: parseFloat(group.contribution_amount),
+                    eventName: `${member.name}'s Birthday`,
+                    deadlineDate: thisYearBirthday.toISOString().split('T')[0],
+                    daysOverdue: daysOverdue,
+                    relatedUserId: member.id
+                  });
+                }
+              }
+            }
+          }
+        } else if (group.group_type === 'subscription') {
+          // Calculate subscription deadline
+          let deadlineDate;
+          if (group.subscription_frequency === 'monthly') {
+            // Check previous month's deadline
+            const prevMonth = currentMonth === 1 ? 12 : currentMonth - 1;
+            const prevYear = currentMonth === 1 ? currentYear - 1 : currentYear;
+            deadlineDate = getDeadlineDate(prevYear, prevMonth - 1, group.subscription_deadline_day);
+          } else {
+            // Annual - check if deadline has passed this year
+            deadlineDate = getDeadlineDate(currentYear, group.subscription_deadline_month - 1, group.subscription_deadline_day);
+            // If deadline hasn't passed yet this year, check last year's deadline
+            if (deadlineDate > today) {
+              deadlineDate = getDeadlineDate(currentYear - 1, group.subscription_deadline_month - 1, group.subscription_deadline_day);
+            }
+          }
+          
+          deadlineDate.setHours(0, 0, 0, 0);
+          
+          // Only consider overdue if deadline has passed and user was a member when deadline occurred
+          if (deadlineDate < today && userJoinDate <= deadlineDate) {
+            const daysOverdue = Math.floor((today - deadlineDate) / (1000 * 60 * 60 * 24));
+            
+            // Check if user has paid for the period that includes this deadline
+            let periodStart;
+            if (group.subscription_frequency === 'monthly') {
+              periodStart = new Date(deadlineDate.getFullYear(), deadlineDate.getMonth(), 1);
+            } else {
+              periodStart = new Date(deadlineDate.getFullYear(), 0, 1);
+            }
+            
             const contributionCheck = await pool.query(
-              `SELECT id, status FROM birthday_contributions 
-               WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3
-               AND EXTRACT(YEAR FROM contribution_date) = $4`,
-              [group.id, member.id, user.id, currentYear]
+              `SELECT id, status FROM subscription_contributions 
+               WHERE group_id = $1 AND contributor_id = $2 AND subscription_period_start = $3`,
+              [group.id, user.id, periodStart]
             );
 
-            // Check if contribution is paid (status is 'paid' or 'confirmed')
-            // 'not_received' means they marked as paid but celebrant rejected it, so still overdue
             const hasPaid = contributionCheck.rows.length > 0 && 
                            (contributionCheck.rows[0].status === 'paid' || 
                             contributionCheck.rows[0].status === 'confirmed');
 
             // If not paid and overdue by 1, 3, 7, or 14 days, add to reminder list
             if (!hasPaid && (daysOverdue === 1 || daysOverdue === 3 || daysOverdue === 7 || daysOverdue === 14)) {
-              // Check if reminder was already sent today for this specific overdue period
               const reminderCheck = await pool.query(
                 `SELECT id FROM notifications 
                  WHERE user_id = $1 AND type = 'overdue_contribution' 
@@ -553,12 +641,61 @@ async function checkOverdueContributions() {
                 overdueByDays[daysOverdue].push({
                   groupId: group.id,
                   groupName: group.name,
+                  groupType: 'subscription',
                   currency: group.currency || 'NGN',
                   contributionAmount: parseFloat(group.contribution_amount),
-                  birthdayUserId: member.id,
-                  birthdayUserName: member.name,
-                  birthdayDate: thisYearBirthday.toISOString().split('T')[0],
-                  daysOverdue: daysOverdue
+                  subscriptionPlatform: group.subscription_platform,
+                  subscriptionFrequency: group.subscription_frequency,
+                  eventName: `${group.subscription_platform} Subscription`,
+                  deadlineDate: deadlineDate.toISOString().split('T')[0],
+                  daysOverdue: daysOverdue,
+                  relatedUserId: null
+                });
+              }
+            }
+          }
+        } else if (group.group_type === 'general' && group.deadline) {
+          // Check if general group deadline has passed
+          const deadlineDate = new Date(group.deadline);
+          deadlineDate.setHours(0, 0, 0, 0);
+          
+          // Only consider overdue if deadline has passed and user was a member when deadline occurred
+          if (deadlineDate < today && userJoinDate <= deadlineDate) {
+            const daysOverdue = Math.floor((today - deadlineDate) / (1000 * 60 * 60 * 24));
+            
+            // Check if user has paid
+            const contributionCheck = await pool.query(
+              `SELECT id, status FROM general_contributions 
+               WHERE group_id = $1 AND contributor_id = $2`,
+              [group.id, user.id]
+            );
+
+            const hasPaid = contributionCheck.rows.length > 0 && 
+                           (contributionCheck.rows[0].status === 'paid' || 
+                            contributionCheck.rows[0].status === 'confirmed');
+
+            // If not paid and overdue by 1, 3, 7, or 14 days, add to reminder list
+            if (!hasPaid && (daysOverdue === 1 || daysOverdue === 3 || daysOverdue === 7 || daysOverdue === 14)) {
+              const reminderCheck = await pool.query(
+                `SELECT id FROM notifications 
+                 WHERE user_id = $1 AND type = 'overdue_contribution' 
+                 AND created_at::date = CURRENT_DATE
+                 AND message LIKE $2
+                 AND group_id = $3`,
+                [user.id, `%${daysOverdue} days overdue%`, group.id]
+              );
+
+              if (reminderCheck.rows.length === 0) {
+                overdueByDays[daysOverdue].push({
+                  groupId: group.id,
+                  groupName: group.name,
+                  groupType: 'general',
+                  currency: group.currency || 'NGN',
+                  contributionAmount: parseFloat(group.contribution_amount),
+                  eventName: group.name,
+                  deadlineDate: group.deadline,
+                  daysOverdue: daysOverdue,
+                  relatedUserId: null
                 });
               }
             }
@@ -589,7 +726,14 @@ async function checkOverdueContributions() {
             ? '⚠️ Overdue Contribution - 7 Days'
             : '⚠️ Overdue Contribution - 14 Days';
           
-          const message = `${overdue.birthdayUserName}'s birthday was ${daysNum} ${daysNum === 1 ? 'day' : 'days'} ago. Please send your contribution of ${overdue.contributionAmount} ${overdue.currency} in ${overdue.groupName}.`;
+          let message = '';
+          if (overdue.groupType === 'birthday') {
+            message = `${overdue.eventName} was ${daysNum} ${daysNum === 1 ? 'day' : 'days'} ago. Please send your contribution of ${overdue.contributionAmount} ${overdue.currency} in ${overdue.groupName}.`;
+          } else if (overdue.groupType === 'subscription') {
+            message = `Upcoming subscription ${overdue.subscriptionPlatform} in ${overdue.groupName} deadline was ${daysNum} ${daysNum === 1 ? 'day' : 'days'} ago. Please send your contribution of ${overdue.contributionAmount} ${overdue.currency}.`;
+          } else if (overdue.groupType === 'general') {
+            message = `Deadline for ${overdue.groupName} was ${daysNum} ${daysNum === 1 ? 'day' : 'days'} ago. Please send your contribution of ${overdue.contributionAmount} ${overdue.currency}.`;
+          }
 
           await createNotification(
             user.id,
@@ -597,7 +741,7 @@ async function checkOverdueContributions() {
             title,
             message,
             overdue.groupId,
-            overdue.birthdayUserId
+            overdue.relatedUserId
           );
         }
 
@@ -611,10 +755,13 @@ async function checkOverdueContributions() {
               daysNum,
               overdueList.map(o => ({
                 groupName: o.groupName,
+                groupType: o.groupType,
                 currency: o.currency,
                 contributionAmount: o.contributionAmount,
-                birthdayUserName: o.birthdayUserName,
-                birthdayDate: o.birthdayDate
+                eventName: o.eventName,
+                deadlineDate: o.deadlineDate,
+                subscriptionPlatform: o.subscriptionPlatform,
+                subscriptionFrequency: o.subscriptionFrequency
               }))
             );
           } catch (err) {

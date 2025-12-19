@@ -1144,16 +1144,34 @@ const sendOverdueContributionEmail = async (email, userName, daysOverdue, overdu
 
     // Build contributions list
     const contributionsHtml = overdueContributions.map(contribution => {
-      const birthdayDate = new Date(contribution.birthdayDate);
-      const formattedDate = birthdayDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+      const deadlineDate = new Date(contribution.deadlineDate);
+      const formattedDate = deadlineDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+      
+      let eventTitle = '';
+      let eventDetails = '';
+      
+      if (contribution.groupType === 'birthday') {
+        eventTitle = `🎂 ${contribution.eventName}`;
+        eventDetails = `Birthday: ${formattedDate}`;
+      } else if (contribution.groupType === 'subscription') {
+        eventTitle = `📺 ${contribution.eventName}`;
+        eventDetails = `Subscription: ${contribution.subscriptionPlatform} (${contribution.subscriptionFrequency === 'monthly' ? 'Monthly' : 'Annual'}) - Deadline: ${formattedDate}`;
+      } else if (contribution.groupType === 'general') {
+        eventTitle = `📋 ${contribution.eventName}`;
+        eventDetails = `Deadline: ${formattedDate}`;
+      } else {
+        // Fallback for backward compatibility
+        eventTitle = `🎂 ${contribution.birthdayUserName || contribution.eventName}`;
+        eventDetails = `Deadline: ${formattedDate}`;
+      }
       
       return `
             <div style="background: #fef2f2; padding: 15px; border-radius: 8px; margin: 12px 0; border-left: 4px solid #ef4444;">
               <p style="color: #374151; font-size: 16px; margin: 0 0 8px 0; font-weight: 600;">
-                🎂 ${contribution.birthdayUserName}
+                ${eventTitle}
               </p>
               <p style="color: #6b7280; font-size: 14px; margin: 4px 0;">
-                Birthday: ${formattedDate}
+                ${eventDetails}
               </p>
               <p style="color: #6b7280; font-size: 14px; margin: 4px 0;">
                 Group: ${contribution.groupName}
@@ -1223,6 +1241,11 @@ const sendOverdueContributionEmail = async (email, userName, daysOverdue, overdu
   }
 };
 
+// Alias for backward compatibility
+const sendMonthlyBirthdayNewsletter = async (email, userName, userId, monthName, groupsWithBirthdays) => {
+  return sendMonthlyNewsletter(email, userName, userId, monthName, groupsWithBirthdays, [], []);
+};
+
 module.exports = {
   sendOTPEmail,
   sendOTPSMS,
@@ -1232,7 +1255,7 @@ module.exports = {
   sendBirthdayReminderEmail,
   sendComprehensiveBirthdayReminderEmail,
   sendComprehensiveReminderEmail,
-  sendMonthlyBirthdayNewsletter, // Keep for backward compatibility
+  sendMonthlyBirthdayNewsletter, // Alias for backward compatibility
   sendMonthlyNewsletter,
   sendWaitlistConfirmationEmail,
   sendBetaInvitationEmail,
