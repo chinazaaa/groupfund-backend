@@ -28,6 +28,9 @@ router.post('/contribute', authenticate, contributionLimiter, async (req, res) =
     }
 
     const group = groupCheck.rows[0];
+    
+    // Check if contributor is the admin (group creator)
+    const isAdmin = group.admin_id === contributorId;
 
     // Check if user is active member
     const memberCheck = await pool.query(
@@ -67,22 +70,25 @@ router.post('/contribute', authenticate, contributionLimiter, async (req, res) =
       );
 
       let contributionId;
+      // If admin is paying, status should be 'confirmed' (they're paying to themselves)
+      // Otherwise, status is 'paid' (awaiting admin confirmation)
+      const contributionStatus = isAdmin ? 'confirmed' : 'paid';
 
       if (existingContribution.rows.length > 0) {
         contributionId = existingContribution.rows[0].id;
         await pool.query(
           `UPDATE general_contributions 
-           SET amount = $1, contribution_date = CURRENT_DATE, status = 'paid', note = $2
-           WHERE id = $3`,
-          [actualAmount, note || null, contributionId]
+           SET amount = $1, contribution_date = CURRENT_DATE, status = $2, note = $3
+           WHERE id = $4`,
+          [actualAmount, contributionStatus, note || null, contributionId]
         );
       } else {
         const contributionResult = await pool.query(
           `INSERT INTO general_contributions 
            (group_id, contributor_id, amount, contribution_date, status, note)
-           VALUES ($1, $2, $3, CURRENT_DATE, 'paid', $4)
+           VALUES ($1, $2, $3, CURRENT_DATE, $4, $5)
            RETURNING id`,
-          [groupId, contributorId, actualAmount, note || null]
+          [groupId, contributorId, actualAmount, contributionStatus, note || null]
         );
         contributionId = contributionResult.rows[0].id;
       }
@@ -104,11 +110,14 @@ router.post('/contribute', authenticate, contributionLimiter, async (req, res) =
         [group.admin_id, groupId, `%Contribution from ${contributorName}%`]
       );
 
+      // Transaction status should match contribution status
+      const transactionStatus = isAdmin ? 'confirmed' : 'paid';
+      
       if (existingDebit.rows.length === 0) {
         await pool.query(
           `INSERT INTO transactions (user_id, group_id, type, amount, description, status)
-           VALUES ($1, $2, 'debit', $3, $4, 'paid')`,
-          [contributorId, groupId, actualAmount, `Contribution for ${groupName}`]
+           VALUES ($1, $2, 'debit', $3, $4, $5)`,
+          [contributorId, groupId, actualAmount, `Contribution for ${groupName}`, transactionStatus]
         );
       }
 
@@ -116,9 +125,9 @@ router.post('/contribute', authenticate, contributionLimiter, async (req, res) =
       if (existingCredit.rows.length === 0) {
         const creditTransaction = await pool.query(
           `INSERT INTO transactions (user_id, group_id, type, amount, description, status)
-           VALUES ($1, $2, 'credit', $3, $4, 'paid')
+           VALUES ($1, $2, 'credit', $3, $4, $5)
            RETURNING id`,
-          [group.admin_id, groupId, actualAmount, `Contribution from ${contributorName} (${groupName})`]
+          [group.admin_id, groupId, actualAmount, `Contribution from ${contributorName} (${groupName})`, transactionStatus]
         );
         creditTransactionId = creditTransaction.rows[0].id;
       } else {
@@ -139,17 +148,23 @@ router.post('/contribute', authenticate, contributionLimiter, async (req, res) =
 
       await pool.query('COMMIT');
 
-      // Notify admin that contribution was marked as paid
-      await createNotification(
-        group.admin_id,
-        'general_contribution_paid',
-        'Contribution Received',
-        `${contributorName} marked their contribution of ${formatAmount(actualAmount, groupCurrency)} as paid${note ? `: ${note}` : ''}`,
-        groupId,
-        contributorId
-      );
+      // Only notify admin if it's not the admin themselves paying
+      if (!isAdmin) {
+        await createNotification(
+          group.admin_id,
+          'general_contribution_paid',
+          'Contribution Received',
+          `${contributorName} marked their contribution of ${formatAmount(actualAmount, groupCurrency)} as paid${note ? `: ${note}` : ''}`,
+          groupId,
+          contributorId
+        );
+      }
 
-      res.json({ message: 'Payment marked as paid successfully' });
+      res.json({ 
+        message: isAdmin 
+          ? 'Payment marked as confirmed successfully (admin payment)' 
+          : 'Payment marked as paid successfully' 
+      });
     } catch (error) {
       await pool.query('ROLLBACK');
       throw error;
@@ -426,6 +441,78 @@ router.get('/upcoming', authenticate, async (req, res) => {
     res.json({ groups: upcomingGroups });
   } catch (error) {
     console.error('Get upcoming general groups error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get current payment status for a general group (simple check for frontend)
+router.get('/:groupId/payment-status', authenticate, async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const userId = req.user.id;
+
+    // Check if user is active member of the group
+    const memberCheck = await pool.query(
+      'SELECT status FROM group_members WHERE group_id = $1 AND user_id = $2',
+      [groupId, userId]
+    );
+
+    if (memberCheck.rows.length === 0 || memberCheck.rows[0].status !== 'active') {
+      return res.status(403).json({ error: 'You are not an active member of this group' });
+    }
+
+    // Get group details
+    const groupResult = await pool.query(
+      `SELECT id, name, admin_id
+       FROM groups WHERE id = $1 AND group_type = 'general'`,
+      [groupId]
+    );
+
+    if (groupResult.rows.length === 0) {
+      return res.status(404).json({ error: 'General group not found' });
+    }
+
+    const group = groupResult.rows[0];
+    const isAdmin = group.admin_id === userId;
+
+    // Check payment status
+    const paymentCheck = await pool.query(
+      `SELECT id, status, contribution_date, amount, note, created_at
+       FROM general_contributions 
+       WHERE group_id = $1 AND contributor_id = $2`,
+      [groupId, userId]
+    );
+
+    let hasPaid = false;
+    let paymentStatus = 'not_paid';
+    let contributionDate = null;
+    let amount = null;
+    let note = null;
+    let contributionId = null;
+
+    if (paymentCheck.rows.length > 0) {
+      const contribution = paymentCheck.rows[0];
+      paymentStatus = contribution.status;
+      hasPaid = contribution.status === 'paid' || contribution.status === 'confirmed';
+      contributionDate = contribution.contribution_date;
+      amount = parseFloat(contribution.amount);
+      note = contribution.note;
+      contributionId = contribution.id;
+    }
+
+    res.json({
+      group_id: group.id,
+      group_name: group.name,
+      has_paid: hasPaid,
+      payment_status: paymentStatus,
+      contribution_date: contributionDate,
+      amount: amount,
+      note: note,
+      contribution_id: contributionId,
+      is_admin: isAdmin
+    });
+  } catch (error) {
+    console.error('Get payment status error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
