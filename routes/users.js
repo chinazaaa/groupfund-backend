@@ -42,6 +42,7 @@ router.get('/profile', authenticate, async (req, res) => {
 // Update profile
 router.put('/profile', authenticate, [
   body('name').optional().trim().notEmpty(),
+  body('birthday').optional().isISO8601().withMessage('Birthday must be a valid date (YYYY-MM-DD)'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -50,11 +51,23 @@ router.put('/profile', authenticate, [
     }
 
     const userId = req.user.id;
-    const { name } = req.body;
+    const { name, birthday } = req.body;
 
-    // Prevent birthday updates - users must contact support
-    if (req.body.birthday !== undefined) {
-      return res.status(403).json({ error: 'Birthday cannot be updated. Please contact support@groupfund.app to change your birthday.' });
+    // Check if user already has a birthday set
+    if (birthday !== undefined) {
+      const userCheck = await pool.query(
+        'SELECT birthday FROM users WHERE id = $1',
+        [userId]
+      );
+
+      if (userCheck.rows.length === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      // If birthday is already set, prevent updating it
+      if (userCheck.rows[0].birthday !== null) {
+        return res.status(403).json({ error: 'Birthday cannot be updated once set. Please contact support@groupfund.app to change your birthday.' });
+      }
     }
 
     const updates = [];
@@ -64,6 +77,11 @@ router.put('/profile', authenticate, [
     if (name) {
       updates.push(`name = $${paramCount++}`);
       values.push(name);
+    }
+
+    if (birthday !== undefined) {
+      updates.push(`birthday = $${paramCount++}`);
+      values.push(birthday);
     }
 
     if (updates.length === 0) {

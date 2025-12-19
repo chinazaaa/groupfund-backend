@@ -13,7 +13,6 @@ const router = express.Router();
 router.post('/signup', authLimiter, [
   body('name').trim().notEmpty().withMessage('Name is required'),
   body('email').isEmail().withMessage('Valid email is required'),
-  body('birthday').isISO8601().withMessage('Birthday is required and must be a valid date (YYYY-MM-DD)'),
   body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
 ], async (req, res) => {
   try {
@@ -22,7 +21,7 @@ router.post('/signup', authLimiter, [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { name, email, birthday, password } = req.body;
+    const { name, email, password } = req.body;
 
     // Check if user already exists
     const existingUser = await pool.query(
@@ -37,10 +36,10 @@ router.post('/signup', authLimiter, [
     // Hash password
     const passwordHash = await bcrypt.hash(password, 10);
 
-    // Create user
+    // Create user (birthday is optional and can be set later in profile)
     const result = await pool.query(
-      'INSERT INTO users (name, email, birthday, password_hash) VALUES ($1, $2, $3, $4) RETURNING id, name, email, birthday',
-      [name, email, birthday, passwordHash]
+      'INSERT INTO users (name, email, password_hash) VALUES ($1, $2, $3) RETURNING id, name, email, birthday',
+      [name, email, passwordHash]
     );
 
     const user = result.rows[0];
