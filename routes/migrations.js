@@ -18,7 +18,10 @@ const migrations = [
   'add_user_active_status.sql',
   'update_contribution_status.sql',
   'update_rejected_to_not_received.sql',
-  'add_birthday_email_log.sql'
+  'add_birthday_email_log.sql',
+  'add_group_status.sql',
+  'add_accepting_requests.sql',
+  'add_wishlist.sql'
 ];
 
 // Migration endpoint - SECURE THIS IN PRODUCTION!

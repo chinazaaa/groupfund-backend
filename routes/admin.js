@@ -1670,7 +1670,7 @@ router.get('/waitlist', async (req, res) => {
 
     let query = `
       SELECT 
-        id, name, email, phone, group_type, created_at
+        id, name, email, phone, group_type, created_at, beta_email_sent
       FROM waitlist
       WHERE 1=1
     `;
