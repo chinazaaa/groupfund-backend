@@ -473,6 +473,266 @@ const sendComprehensiveBirthdayReminderEmail = async (email, userName, daysUntil
   }
 };
 
+// Send comprehensive reminder email for all group types (birthday, subscription, general)
+// groups: array of group objects with different structures based on type:
+//   - birthday: { groupName, currency, birthdays: [{ name, hasPaid, contributionAmount, currency }] }
+//   - subscription: { groupName, currency, subscriptionPlatform, subscriptionFrequency, contributionAmount, deadlineDate }
+//   - general: { groupName, currency, contributionAmount, deadlineDate }
+const sendComprehensiveReminderEmail = async (email, userName, daysUntil, groups) => {
+  try {
+    const { formatAmount } = require('./currency');
+    
+    // Separate groups by type
+    const birthdayGroups = groups.filter(g => g.groupType === 'birthday');
+    const subscriptionGroups = groups.filter(g => g.groupType === 'subscription');
+    const generalGroups = groups.filter(g => g.groupType === 'general');
+    
+    // Calculate totals
+    let totalUnpaid = 0;
+    let totalItems = 0;
+    let subject = '';
+    let titleText = '';
+    let messageText = '';
+    let urgencyText = '';
+    let actionText = '';
+    
+    // Count birthday items
+    birthdayGroups.forEach(group => {
+      totalItems += group.birthdays.length;
+      totalUnpaid += group.birthdays.filter(b => !b.hasPaid).length;
+    });
+    
+    // Count subscription items
+    subscriptionGroups.forEach(() => {
+      totalItems++;
+      totalUnpaid++;
+    });
+    
+    // Count general items
+    generalGroups.forEach(() => {
+      totalItems++;
+      totalUnpaid++;
+    });
+    
+    // Build subject and messages based on group types
+    const hasOnlyBirthdays = birthdayGroups.length > 0 && subscriptionGroups.length === 0 && generalGroups.length === 0;
+    const hasOnlySubscriptions = subscriptionGroups.length > 0 && birthdayGroups.length === 0 && generalGroups.length === 0;
+    const hasOnlyGeneral = generalGroups.length > 0 && birthdayGroups.length === 0 && subscriptionGroups.length === 0;
+    
+    if (daysUntil === 7) {
+      if (hasOnlyBirthdays) {
+        subject = `Birthday Reminder: ${totalUnpaid} birthday${totalUnpaid > 1 ? 's' : ''} in 7 days - GroupFund`;
+        titleText = 'Birthday Reminder - 7 Days';
+        messageText = `You have ${totalUnpaid} unpaid birthday${totalUnpaid > 1 ? 's' : ''} in ${totalItems} total birthday${totalItems > 1 ? 's' : ''} coming up in 7 days across your groups.`;
+        actionText = 'Log in to the GroupFund app to mark your contributions as paid and wish them a happy birthday! 🎉';
+      } else if (hasOnlySubscriptions) {
+        subject = `Subscription Reminder: ${totalUnpaid} subscription${totalUnpaid > 1 ? 's' : ''} due in 7 days - GroupFund`;
+        titleText = 'Subscription Reminder - 7 Days';
+        messageText = `You have ${totalUnpaid} upcoming subscription${totalUnpaid > 1 ? 's' : ''} due in 7 days.`;
+        actionText = 'Log in to the GroupFund app to mark your contributions as paid!';
+      } else if (hasOnlyGeneral) {
+        subject = `Group Reminder: ${totalUnpaid} deadline${totalUnpaid > 1 ? 's' : ''} in 7 days - GroupFund`;
+        titleText = 'Group Reminder - 7 Days';
+        messageText = `You have ${totalUnpaid} upcoming deadline${totalUnpaid > 1 ? 's' : ''} in 7 days.`;
+        actionText = 'Log in to the GroupFund app to mark your contributions as paid!';
+      } else {
+        subject = `Reminder: ${totalUnpaid} upcoming deadline${totalUnpaid > 1 ? 's' : ''} in 7 days - GroupFund`;
+        titleText = 'Upcoming Deadlines Reminder - 7 Days';
+        messageText = `You have ${totalUnpaid} upcoming deadline${totalUnpaid > 1 ? 's' : ''} in 7 days across your groups.`;
+        actionText = 'Log in to the GroupFund app to mark your contributions as paid!';
+      }
+      urgencyText = 'You have 7 days to prepare your contributions.';
+    } else if (daysUntil === 1) {
+      if (hasOnlyBirthdays) {
+        subject = `Birthday Reminder: ${totalUnpaid} birthday${totalUnpaid > 1 ? 's' : ''} tomorrow! - GroupFund`;
+        titleText = 'Birthday Reminder - Tomorrow!';
+        messageText = `You have ${totalUnpaid} unpaid birthday${totalUnpaid > 1 ? 's' : ''} in ${totalItems} total birthday${totalItems > 1 ? 's' : ''} tomorrow across your groups!`;
+        actionText = 'Log in to the GroupFund app to mark your contributions as paid and wish them a happy birthday! 🎉';
+      } else if (hasOnlySubscriptions) {
+        subject = `Subscription Reminder: ${totalUnpaid} subscription${totalUnpaid > 1 ? 's' : ''} due tomorrow! - GroupFund`;
+        titleText = 'Subscription Reminder - Tomorrow!';
+        messageText = `You have ${totalUnpaid} subscription${totalUnpaid > 1 ? 's' : ''} due tomorrow!`;
+        actionText = 'Log in to the GroupFund app to mark your contributions as paid!';
+      } else if (hasOnlyGeneral) {
+        subject = `Group Reminder: ${totalUnpaid} deadline${totalUnpaid > 1 ? 's' : ''} tomorrow! - GroupFund`;
+        titleText = 'Group Reminder - Tomorrow!';
+        messageText = `You have ${totalUnpaid} deadline${totalUnpaid > 1 ? 's' : ''} tomorrow!`;
+        actionText = 'Log in to the GroupFund app to mark your contributions as paid!';
+      } else {
+        subject = `Reminder: ${totalUnpaid} deadline${totalUnpaid > 1 ? 's' : ''} tomorrow! - GroupFund`;
+        titleText = 'Upcoming Deadlines Reminder - Tomorrow!';
+        messageText = `You have ${totalUnpaid} deadline${totalUnpaid > 1 ? 's' : ''} tomorrow across your groups!`;
+        actionText = 'Log in to the GroupFund app to mark your contributions as paid!';
+      }
+      urgencyText = 'Action needed: Please mark your contributions as paid today.';
+    } else if (daysUntil === 0) {
+      if (hasOnlyBirthdays) {
+        subject = `Action Required: ${totalUnpaid} birthday${totalUnpaid > 1 ? 's' : ''} today! - GroupFund`;
+        titleText = 'Birthday Reminder - Today!';
+        messageText = `You have ${totalUnpaid} unpaid birthday${totalUnpaid > 1 ? 's' : ''} in ${totalItems} total birthday${totalItems > 1 ? 's' : ''} today across your groups!`;
+        actionText = 'Log in to the GroupFund app to mark your contributions as paid and wish them a happy birthday! 🎉';
+      } else if (hasOnlySubscriptions) {
+        subject = `Action Required: ${totalUnpaid} subscription${totalUnpaid > 1 ? 's' : ''} due today! - GroupFund`;
+        titleText = 'Subscription Reminder - Today!';
+        messageText = `You have ${totalUnpaid} subscription${totalUnpaid > 1 ? 's' : ''} due today!`;
+        actionText = 'Log in to the GroupFund app to mark your contributions as paid!';
+      } else if (hasOnlyGeneral) {
+        subject = `Action Required: ${totalUnpaid} deadline${totalUnpaid > 1 ? 's' : ''} today! - GroupFund`;
+        titleText = 'Group Reminder - Today!';
+        messageText = `You have ${totalUnpaid} deadline${totalUnpaid > 1 ? 's' : ''} today!`;
+        actionText = 'Log in to the GroupFund app to mark your contributions as paid!';
+      } else {
+        subject = `Action Required: ${totalUnpaid} deadline${totalUnpaid > 1 ? 's' : ''} today! - GroupFund`;
+        titleText = 'Upcoming Deadlines - Today!';
+        messageText = `You have ${totalUnpaid} deadline${totalUnpaid > 1 ? 's' : ''} today across your groups!`;
+        actionText = 'Log in to the GroupFund app to mark your contributions as paid!';
+      }
+      urgencyText = 'Action required: Please pay and mark your contributions as paid now.';
+    }
+    
+    // Build groups HTML sections
+    const groupsHtml = [];
+    
+    // Birthday groups
+    birthdayGroups.forEach(group => {
+      const groupUnpaid = group.birthdays.filter(b => !b.hasPaid).length;
+      const groupTotal = group.birthdays.length;
+      
+      const birthdaysListHtml = group.birthdays.map(birthday => {
+        const statusText = birthday.hasPaid ? '✅ Paid' : '❌ Not Paid';
+        const statusColor = birthday.hasPaid ? '#10b981' : '#ef4444';
+        return `
+              <div style="background: ${birthday.hasPaid ? '#f0fdf4' : '#fef2f2'}; padding: 12px; border-radius: 8px; margin: 8px 0; border-left: 3px solid ${statusColor};">
+                <p style="color: #374151; font-size: 15px; margin: 0; font-weight: 600;">
+                  ${birthday.name} - ${formatAmount(birthday.contributionAmount, birthday.currency || group.currency)}
+                </p>
+                <p style="color: ${statusColor}; font-size: 13px; margin: 4px 0 0 0; font-weight: 600;">
+                  ${statusText}
+                </p>
+              </div>
+            `;
+      }).join('');
+      
+      groupsHtml.push(`
+            <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
+              <p style="color: #374151; font-size: 18px; margin: 0 0 10px 0; font-weight: 700;">
+                🎂 ${group.groupName}
+              </p>
+              <p style="color: #6b7280; font-size: 14px; margin: 0 0 15px 0;">
+                ${groupUnpaid} of ${groupTotal} unpaid
+              </p>
+              ${birthdaysListHtml}
+            </div>
+          `);
+    });
+    
+    // Subscription groups
+    subscriptionGroups.forEach(group => {
+      const deadlineText = new Date(group.deadlineDate).toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+      groupsHtml.push(`
+            <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #8b5cf6;">
+              <p style="color: #374151; font-size: 18px; margin: 0 0 10px 0; font-weight: 700;">
+                📺 ${group.groupName} - ${group.subscriptionPlatform}
+              </p>
+              <p style="color: #6b7280; font-size: 14px; margin: 0 0 10px 0;">
+                ${group.subscriptionFrequency === 'monthly' ? 'Monthly' : 'Annual'} subscription
+              </p>
+              <div style="background: #fef2f2; padding: 12px; border-radius: 8px; margin: 8px 0; border-left: 3px solid #ef4444;">
+                <p style="color: #374151; font-size: 15px; margin: 0; font-weight: 600;">
+                  Amount: ${formatAmount(group.contributionAmount, group.currency)}
+                </p>
+                <p style="color: #6b7280; font-size: 13px; margin: 4px 0 0 0;">
+                  Deadline: ${deadlineText}
+                </p>
+                <p style="color: #ef4444; font-size: 13px; margin: 4px 0 0 0; font-weight: 600;">
+                  ❌ Not Paid
+                </p>
+              </div>
+            </div>
+          `);
+    });
+    
+    // General groups
+    generalGroups.forEach(group => {
+      const deadlineText = new Date(group.deadlineDate).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+      groupsHtml.push(`
+            <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
+              <p style="color: #374151; font-size: 18px; margin: 0 0 10px 0; font-weight: 700;">
+                📋 ${group.groupName}
+              </p>
+              <div style="background: #fef2f2; padding: 12px; border-radius: 8px; margin: 8px 0; border-left: 3px solid #ef4444;">
+                <p style="color: #374151; font-size: 15px; margin: 0; font-weight: 600;">
+                  Amount: ${formatAmount(group.contributionAmount, group.currency)}
+                </p>
+                <p style="color: #6b7280; font-size: 13px; margin: 4px 0 0 0;">
+                  Deadline: ${deadlineText}
+                </p>
+                <p style="color: #ef4444; font-size: 13px; margin: 4px 0 0 0; font-weight: 600;">
+                  ❌ Not Paid
+                </p>
+              </div>
+            </div>
+          `);
+    });
+    
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">${hasOnlyBirthdays ? '🎂' : '📅'} GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1a1a1a; font-size: 24px; margin-top: 0;">${titleText}</h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${userName},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            ${messageText}
+          </p>
+          
+          ${groupsHtml.join('')}
+
+          <div style="background: #e0e7ff; padding: 20px; border-radius: 8px; margin: 20px 0; border: 2px solid #6366f1;">
+            <p style="color: #4338ca; font-size: 16px; margin: 0; font-weight: 600; text-align: center;">
+              ⚠️ ${urgencyText}
+            </p>
+          </div>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            ${actionText}
+          </p>
+          
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Best regards,<br/>
+            <strong style="color: #6366f1;">The GroupFund Team</strong>
+          </p>
+          
+          <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            This is an automated reminder email from GroupFund. You can manage your notification preferences in the app settings.
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject,
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error sending comprehensive reminder email:', error);
+      return false;
+    }
+
+    console.log('Comprehensive reminder email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending comprehensive reminder email:', error);
+    return false;
+  }
+};
+
 // Send monthly birthday newsletter email
 // groupsWithBirthdays: array of { groupName, currency, contributionAmount, birthdays: [{ id, name, birthday }] }
 const sendMonthlyBirthdayNewsletter = async (email, userName, userId, monthName, groupsWithBirthdays) => {
@@ -901,6 +1161,7 @@ module.exports = {
   sendBirthdayEmail,
   sendBirthdayReminderEmail,
   sendComprehensiveBirthdayReminderEmail,
+  sendComprehensiveReminderEmail,
   sendMonthlyBirthdayNewsletter,
   sendWaitlistConfirmationEmail,
   sendBetaInvitationEmail,

@@ -3,11 +3,12 @@ const { createNotification } = require('../utils/notifications');
 const { sendBirthdayEmail } = require('../utils/email');
 
 /**
- * Check for upcoming birthdays and send reminder notifications
+ * Check for upcoming deadlines (birthdays, subscriptions, general groups) and send reminder notifications
  * NOTE: This job is currently disabled. Use the admin endpoints instead:
- * - POST /api/admin/birthdays/trigger-birthday-wishes
- * - POST /api/admin/birthdays/trigger-reminders
- * - POST /api/admin/birthdays/send-monthly-newsletter
+ * - POST /api/admin/birthdays/trigger-birthday-wishes (birthday-specific)
+ * - POST /api/admin/contributions/trigger-reminders (all group types)
+ * - POST /api/admin/contributions/trigger-overdue-reminders (all group types)
+ * - POST /api/admin/birthdays/send-monthly-newsletter (birthday-specific)
  * 
  * This function is kept for reference but should not be run automatically.
  */
@@ -110,46 +111,53 @@ async function checkBirthdayReminders() {
     }
 
     // Get all active users with their notification preferences for reminder calculations
+    // For birthday reminders, we only need users with birthdays set
+    // For subscription/general reminders, we need all active users
     const usersResult = await pool.query(
       `SELECT id, name, email, birthday, 
               notify_7_days_before, notify_1_day_before, notify_same_day
        FROM users 
-       WHERE birthday IS NOT NULL AND is_verified = TRUE`
+       WHERE is_verified = TRUE AND is_active = TRUE`
     );
 
     for (const user of usersResult.rows) {
-      const userBirthday = new Date(user.birthday);
-      const currentYear = today.getFullYear();
-      
-      // Calculate next birthday date
-      let nextBirthday = new Date(currentYear, userBirthday.getMonth(), userBirthday.getDate());
-      if (nextBirthday < today) {
-        // Birthday already passed this year, use next year
-        nextBirthday = new Date(currentYear + 1, userBirthday.getMonth(), userBirthday.getDate());
+      // Helper function to get deadline date, handling months with fewer days
+      function getLastDayOfMonth(year, month) {
+        return new Date(year, month + 1, 0).getDate();
       }
       
-      // Calculate days until birthday
-      const daysUntil = Math.floor((nextBirthday - today) / (1000 * 60 * 60 * 24));
+      function getDeadlineDate(year, month, deadlineDay) {
+        const lastDay = getLastDayOfMonth(year, month);
+        const actualDay = Math.min(deadlineDay, lastDay);
+        return new Date(year, month, actualDay);
+      }
       
       // Get all groups the user is in (exclude closed groups - they don't accept contributions)
       const groupsResult = await pool.query(
-        `SELECT g.id, g.name, g.contribution_amount, g.currency
+        `SELECT g.id, g.name, g.contribution_amount, g.currency, g.group_type,
+                g.subscription_frequency, g.subscription_platform, 
+                g.subscription_deadline_day, g.subscription_deadline_month, g.deadline
          FROM groups g
          JOIN group_members gm ON g.id = gm.group_id
          WHERE gm.user_id = $1 AND gm.status = 'active' AND g.status = 'active'`,
         [user.id]
       );
       
-      // Collect all groups with birthdays organized by day (7, 1, 0)
+      // Collect all groups with deadlines organized by day (7, 1, 0)
       const groupsByDay = {
         7: [],
         1: [],
         0: []
       };
       
-      // For each group, check for upcoming birthdays of other members
+      const currentYear = today.getFullYear();
+      const currentMonth = today.getMonth() + 1;
+      const currentDay = today.getDate();
+      
+      // For each group, check for upcoming deadlines based on group type
       for (const group of groupsResult.rows) {
-        // Get all active members in this group
+        if (group.group_type === 'birthday') {
+          // Get all active members in this group
         const membersResult = await pool.query(
           `SELECT u.id, u.name, u.birthday
            FROM users u
@@ -206,9 +214,94 @@ async function checkBirthdayReminders() {
               groupId: group.id,
               groupName: group.name,
               currency: group.currency || 'NGN',
+              groupType: 'birthday',
               birthdays: birthdays
             });
           }
+        }
+        } else if (group.group_type === 'subscription') {
+        // Calculate next subscription deadline
+        let nextDeadline;
+        if (group.subscription_frequency === 'monthly') {
+          if (currentDay <= group.subscription_deadline_day) {
+            nextDeadline = getDeadlineDate(currentYear, currentMonth - 1, group.subscription_deadline_day);
+          } else {
+            nextDeadline = getDeadlineDate(currentYear, currentMonth, group.subscription_deadline_day);
+          }
+        } else {
+          // Annual
+          if (currentMonth < group.subscription_deadline_month || 
+              (currentMonth === group.subscription_deadline_month && currentDay <= group.subscription_deadline_day)) {
+            nextDeadline = getDeadlineDate(currentYear, group.subscription_deadline_month - 1, group.subscription_deadline_day);
+          } else {
+            nextDeadline = getDeadlineDate(currentYear + 1, group.subscription_deadline_month - 1, group.subscription_deadline_day);
+          }
+        }
+        
+        nextDeadline.setHours(0, 0, 0, 0);
+        const daysUntilDeadline = Math.ceil((nextDeadline - today) / (1000 * 60 * 60 * 24));
+        
+        if (daysUntilDeadline === 7 || daysUntilDeadline === 1 || daysUntilDeadline === 0) {
+          // Check if user has paid for current period
+          let periodStart;
+          if (group.subscription_frequency === 'monthly') {
+            periodStart = new Date(currentYear, currentMonth - 1, 1);
+          } else {
+            periodStart = new Date(currentYear, 0, 1);
+          }
+          
+          const contributionCheck = await pool.query(
+            `SELECT id FROM subscription_contributions 
+             WHERE group_id = $1 AND contributor_id = $2 AND subscription_period_start = $3
+             AND status IN ('paid', 'confirmed')`,
+            [group.id, user.id, periodStart]
+          );
+          
+          const hasPaid = contributionCheck.rows.length > 0;
+          
+          if (!hasPaid) {
+            groupsByDay[daysUntilDeadline].push({
+              groupId: group.id,
+              groupName: group.name,
+              currency: group.currency || 'NGN',
+              groupType: 'subscription',
+              subscriptionPlatform: group.subscription_platform,
+              subscriptionFrequency: group.subscription_frequency,
+              contributionAmount: parseFloat(group.contribution_amount),
+              deadlineDate: nextDeadline.toISOString().split('T')[0]
+            });
+          }
+        }
+      } else if (group.group_type === 'general') {
+        // Check if group has a deadline
+        if (group.deadline) {
+          const deadline = new Date(group.deadline);
+          deadline.setHours(0, 0, 0, 0);
+          const daysUntilDeadline = Math.ceil((deadline - today) / (1000 * 60 * 60 * 24));
+          
+          if (daysUntilDeadline === 7 || daysUntilDeadline === 1 || daysUntilDeadline === 0) {
+            // Check if user has paid
+            const contributionCheck = await pool.query(
+              `SELECT id FROM general_contributions 
+               WHERE group_id = $1 AND contributor_id = $2
+               AND status IN ('paid', 'confirmed')`,
+              [group.id, user.id]
+            );
+            
+            const hasPaid = contributionCheck.rows.length > 0;
+            
+            if (!hasPaid) {
+              groupsByDay[daysUntilDeadline].push({
+                groupId: group.id,
+                groupName: group.name,
+                currency: group.currency || 'NGN',
+                groupType: 'general',
+                contributionAmount: parseFloat(group.contribution_amount),
+                deadlineDate: group.deadline
+              });
+            }
+          }
+        }
         }
       }
       
@@ -234,10 +327,10 @@ async function checkBirthdayReminders() {
           continue;
         }
         
-        // Check if reminder was already sent today for this day
+        // Check if reminder was already sent today for this day (check all reminder types)
         const reminderCheck = await pool.query(
           `SELECT id FROM notifications 
-           WHERE user_id = $1 AND type = 'birthday_reminder' 
+           WHERE user_id = $1 AND type IN ('birthday_reminder', 'subscription_reminder', 'general_reminder', 'reminder')
            AND created_at::date = CURRENT_DATE
            AND message LIKE $2`,
           [user.id, `%${daysNum === 0 ? 'today' : daysNum === 1 ? 'tomorrow' : '7 days'}%`]
@@ -247,47 +340,97 @@ async function checkBirthdayReminders() {
           continue; // Already sent today
         }
         
-        // Build simple notification message
+        // Build simple notification message based on group types
         let title = '';
         let message = '';
+        let notificationType = 'reminder';
+        let relatedUserId = null;
         
-        if (daysNum === 7) {
-          title = 'Birthday Reminder';
-          message = '7 days reminder: One or more birthdays coming up. Check your email for details.';
-        } else if (daysNum === 1) {
-          title = 'Birthday Reminder';
-          message = 'Tomorrow reminder: One or more birthdays tomorrow. Check your email for details.';
-        } else if (daysNum === 0) {
-          title = 'Birthday Reminder - Action Required';
-          message = 'Today reminder: One or more birthdays today. Check your email for details.';
+        // Check what types of groups we have
+        const hasBirthdayGroups = groups.some(g => g.groupType === 'birthday');
+        const hasSubscriptionGroups = groups.some(g => g.groupType === 'subscription');
+        const hasGeneralGroups = groups.some(g => g.groupType === 'general');
+        
+        if (hasBirthdayGroups && !hasSubscriptionGroups && !hasGeneralGroups) {
+          // Only birthday groups
+          notificationType = 'birthday_reminder';
+          if (daysNum === 7) {
+            title = 'Birthday Reminder';
+            message = '7 days reminder: One or more birthdays coming up. Check your email for details.';
+          } else if (daysNum === 1) {
+            title = 'Birthday Reminder';
+            message = 'Tomorrow reminder: One or more birthdays tomorrow. Check your email for details.';
+          } else if (daysNum === 0) {
+            title = 'Birthday Reminder - Action Required';
+            message = 'Today reminder: One or more birthdays today. Check your email for details.';
+          }
+          const firstGroup = groups.find(g => g.groupType === 'birthday');
+          const firstUnpaid = firstGroup.birthdays.find(b => !b.hasPaid);
+          relatedUserId = firstUnpaid?.id;
+        } else if (hasSubscriptionGroups && !hasBirthdayGroups && !hasGeneralGroups) {
+          // Only subscription groups
+          notificationType = 'subscription_reminder';
+          const firstGroup = groups.find(g => g.groupType === 'subscription');
+          if (daysNum === 7) {
+            title = 'Subscription Reminder';
+            message = `7 days reminder: Upcoming subscription ${firstGroup.subscriptionPlatform} in ${firstGroup.groupName}. Check your email for details.`;
+          } else if (daysNum === 1) {
+            title = 'Subscription Reminder';
+            message = `Tomorrow reminder: Subscription ${firstGroup.subscriptionPlatform} in ${firstGroup.groupName} is due tomorrow. Check your email for details.`;
+          } else if (daysNum === 0) {
+            title = 'Subscription Reminder - Action Required';
+            message = `Today reminder: Subscription ${firstGroup.subscriptionPlatform} in ${firstGroup.groupName} is due today. Check your email for details.`;
+          }
+        } else if (hasGeneralGroups && !hasBirthdayGroups && !hasSubscriptionGroups) {
+          // Only general groups
+          notificationType = 'general_reminder';
+          const firstGroup = groups.find(g => g.groupType === 'general');
+          if (daysNum === 7) {
+            title = 'Group Reminder';
+            message = `7 days reminder: Upcoming deadline for ${firstGroup.groupName}. Check your email for details.`;
+          } else if (daysNum === 1) {
+            title = 'Group Reminder';
+            message = `Tomorrow reminder: Deadline for ${firstGroup.groupName} is tomorrow. Check your email for details.`;
+          } else if (daysNum === 0) {
+            title = 'Group Reminder - Action Required';
+            message = `Today reminder: Deadline for ${firstGroup.groupName} is today. Check your email for details.`;
+          }
+        } else {
+          // Mixed group types
+          notificationType = 'reminder';
+          if (daysNum === 7) {
+            title = 'Upcoming Deadlines Reminder';
+            message = '7 days reminder: You have upcoming deadlines. Check your email for details.';
+          } else if (daysNum === 1) {
+            title = 'Upcoming Deadlines Reminder';
+            message = 'Tomorrow reminder: You have deadlines tomorrow. Check your email for details.';
+          } else if (daysNum === 0) {
+            title = 'Upcoming Deadlines - Action Required';
+            message = 'Today reminder: You have deadlines today. Check your email for details.';
+          }
         }
         
-        // Send simple notification (use first group and first unpaid member for compatibility)
+        // Send simple notification (use first group)
         const firstGroup = groups[0];
-        const firstUnpaid = firstGroup.birthdays.find(b => !b.hasPaid);
         
         await createNotification(
           user.id,
-          'birthday_reminder',
+          notificationType,
           title,
           message,
           firstGroup.groupId,
-          firstUnpaid.id
+          relatedUserId
         );
         
         // Send comprehensive email with all groups
         if (user.email) {
           try {
-            const { sendComprehensiveBirthdayReminderEmail } = require('../utils/email');
-            await sendComprehensiveBirthdayReminderEmail(
+            const { sendComprehensiveReminderEmail } = require('../utils/email');
+            await sendComprehensiveReminderEmail(
               user.email,
               user.name,
               daysNum,
-              groups.map(g => ({
-                groupName: g.groupName,
-                currency: g.currency,
-                birthdays: g.birthdays
-              }))
+              groups
             );
           } catch (err) {
             console.error(`Error sending comprehensive reminder email to ${user.email}:`, err);

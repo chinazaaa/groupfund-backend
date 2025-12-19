@@ -823,8 +823,9 @@ router.post('/birthdays/trigger-birthday-wishes', async (req, res) => {
   }
 });
 
-// Trigger birthday reminders to contributors (7 days, 1 day, same day - respects user preferences)
-router.post('/birthdays/trigger-reminders', async (req, res) => {
+// Trigger reminders to contributors for all group types (7 days, 1 day, same day - respects user preferences)
+// Handles: birthday groups, subscription groups, and general groups
+router.post('/contributions/trigger-reminders', async (req, res) => {
   try {
     const { createNotification } = require('../utils/notifications');
     
@@ -1108,7 +1109,7 @@ router.post('/birthdays/trigger-reminders', async (req, res) => {
     }
 
     res.json({
-      message: 'Birthday reminders processed successfully',
+      message: 'Reminders processed successfully',
       summary: {
         reminders_7_days: {
           total: results.reminders_7_days.sent + results.reminders_7_days.skipped,
@@ -1129,8 +1130,8 @@ router.post('/birthdays/trigger-reminders', async (req, res) => {
       details: results
     });
   } catch (error) {
-    console.error('Error triggering birthday reminders:', error);
-    res.status(500).json({ error: 'Server error triggering birthday reminders', message: error.message });
+    console.error('Error triggering reminders:', error);
+    res.status(500).json({ error: 'Server error triggering reminders', message: error.message });
   }
 });
 
@@ -1847,10 +1848,10 @@ router.post('/waitlist/send-beta-invitations', async (req, res) => {
   }
 });
 
-// Trigger overdue contribution reminders (1, 3, 7, 14 days after birthday)
-router.post('/birthdays/trigger-overdue-reminders', async (req, res) => {
+// Trigger overdue contribution reminders for all group types (1, 3, 7, 14 days after deadline)
+router.post('/contributions/trigger-overdue-reminders', async (req, res) => {
   try {
-    const { checkOverdueContributions } = require('../jobs/birthdayReminders');
+    const { checkOverdueContributions } = require('../jobs/contributionsReminders');
     
     await checkOverdueContributions();
     

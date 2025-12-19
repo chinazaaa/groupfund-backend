@@ -8,7 +8,7 @@
     "dev": "nodemon server.js",
     "migrate": "node migrations/runMigrations.js",
     "migrate:all": "node migrations/runAllMigrations.js",
-    "birthday-reminders": "node jobs/birthdayReminders.js"
+    "birthday-reminders": "node jobs/contributionsReminders.js"
   },
   "keywords": [
     "birthday",
