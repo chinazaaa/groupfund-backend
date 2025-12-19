@@ -25,7 +25,10 @@ const migrations = [
   'add_currency_to_wishlist.sql',
   'add_fulfilled_to_wishlist_claims.sql',
   'add_link_and_notes_to_wishlist.sql',
-  'make_phone_nullable.sql'
+  'make_phone_nullable.sql',
+  'add_group_types.sql',
+  'add_subscription_contributions.sql',
+  'add_general_contributions.sql'
 ];
 
 // Migration endpoint - SECURE THIS IN PRODUCTION!
