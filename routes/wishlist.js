@@ -3,6 +3,8 @@ const { body, validationResult } = require('express-validator');
 const pool = require('../config/database');
 const { authenticate } = require('../middleware/auth');
 const { CURRENCIES } = require('../utils/currency');
+const { createNotification } = require('../utils/notifications');
+const { formatAmount } = require('../utils/currency');
 
 const router = express.Router();
 
@@ -15,6 +17,106 @@ router.get('/currencies', authenticate, async (req, res) => {
     });
   } catch (error) {
     console.error('Get currencies error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get all claims for a user's wishlist items (who claimed what) - Celebrant view
+router.get('/:userId/claims', authenticate, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const currentUserId = req.user.id;
+
+    // Only the wishlist owner can view their claims
+    if (currentUserId !== userId) {
+      return res.status(403).json({ error: 'You can only view claims for your own wishlist' });
+    }
+
+    // Get all claims for user's wishlist items
+    const claimsResult = await pool.query(
+      `SELECT 
+        wc.id as claim_id,
+        wc.quantity_claimed,
+        wc.created_at as claimed_at,
+        wi.id as item_id,
+        wi.name as item_name,
+        wi.price,
+        wi.currency,
+        wi.is_done,
+        u.id as claimed_by_user_id,
+        u.name as claimed_by_user_name,
+        u.email as claimed_by_user_email
+       FROM wishlist_claims wc
+       JOIN wishlist_items wi ON wc.wishlist_item_id = wi.id
+       JOIN users u ON wc.claimed_by_user_id = u.id
+       WHERE wi.user_id = $1
+       ORDER BY wc.created_at DESC`,
+      [userId]
+    );
+
+    res.json({
+      user_id: userId,
+      total_claims: claimsResult.rows.length,
+      claims: claimsResult.rows,
+    });
+  } catch (error) {
+    console.error('Get wishlist claims error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get all items a user has claimed (Claimer view - see their own claims)
+router.get('/my-claims', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Get all items this user has claimed
+    const claimsResult = await pool.query(
+      `SELECT 
+        wc.id as claim_id,
+        wc.quantity_claimed,
+        wc.created_at as claimed_at,
+        wi.id as item_id,
+        wi.name as item_name,
+        wi.picture,
+        wi.price,
+        wi.currency,
+        wi.quantity as item_total_quantity,
+        wi.is_done as is_fulfilled,
+        wi.created_at as item_created_at,
+        wi.updated_at as item_updated_at,
+        owner.id as owner_id,
+        owner.name as owner_name,
+        owner.email as owner_email,
+        -- Calculate total claimed for this item
+        (SELECT COALESCE(SUM(wc2.quantity_claimed), 0)
+         FROM wishlist_claims wc2
+         WHERE wc2.wishlist_item_id = wi.id) as total_claimed_for_item,
+        -- Calculate remaining for this item
+        (wi.quantity - COALESCE((SELECT SUM(wc2.quantity_claimed) FROM wishlist_claims wc2 WHERE wc2.wishlist_item_id = wi.id), 0)) as remaining_for_item
+       FROM wishlist_claims wc
+       JOIN wishlist_items wi ON wc.wishlist_item_id = wi.id
+       JOIN users owner ON wi.user_id = owner.id
+       WHERE wc.claimed_by_user_id = $1
+       ORDER BY wc.created_at DESC`,
+      [userId]
+    );
+
+    // Separate into fulfilled and pending
+    const fulfilled = claimsResult.rows.filter(claim => claim.is_fulfilled);
+    const pending = claimsResult.rows.filter(claim => !claim.is_fulfilled);
+
+    res.json({
+      user_id: userId,
+      total_claims: claimsResult.rows.length,
+      fulfilled_count: fulfilled.length,
+      pending_count: pending.length,
+      fulfilled: fulfilled,
+      pending: pending,
+      all_claims: claimsResult.rows,
+    });
+  } catch (error) {
+    console.error('Get my claims error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -349,6 +451,43 @@ router.post('/:itemId/claim', authenticate, [
     const updatedItem = updatedItemResult.rows[0];
     const remainingAfterClaim = updatedItem.quantity - parseInt(updatedItem.total_claimed);
 
+    // Get user names for notification
+    const claimerResult = await pool.query(
+      'SELECT name FROM users WHERE id = $1',
+      [claimedByUserId]
+    );
+    const claimerName = claimerResult.rows[0]?.name || 'Someone';
+
+    // Get shared groups to determine which group to associate with notification
+    const sharedGroupResult = await pool.query(
+      `SELECT g.id, g.name
+       FROM groups g
+       JOIN group_members gm1 ON g.id = gm1.group_id
+       JOIN group_members gm2 ON g.id = gm2.group_id
+       WHERE gm1.user_id = $1 AND gm2.user_id = $2
+         AND gm1.status = 'active' AND gm2.status = 'active'
+       LIMIT 1`,
+      [claimedByUserId, item.owner_id]
+    );
+
+    const groupId = sharedGroupResult.rows[0]?.id || null;
+    const groupName = sharedGroupResult.rows[0]?.name || 'your group';
+
+    // Create notification for wishlist owner
+    const quantityText = quantity === 1 ? 'item' : `${quantity} items`;
+    const priceText = item.price 
+      ? ` (${formatAmount(item.price, item.currency || 'NGN')})` 
+      : '';
+    
+    await createNotification(
+      item.owner_id,
+      'wishlist_claim',
+      'Wishlist Item Claimed',
+      `${claimerName} claimed ${quantityText} of "${item.name}"${priceText} from your wishlist`,
+      groupId,
+      claimedByUserId
+    );
+
     res.json({
       message: 'Item claimed successfully',
       item: {
@@ -369,18 +508,58 @@ router.delete('/:itemId/claim/:claimId', authenticate, async (req, res) => {
     const { itemId, claimId } = req.params;
     const userId = req.user.id;
 
-    // Check if claim belongs to user
-    const claimCheck = await pool.query(
-      'SELECT id FROM wishlist_claims WHERE id = $1 AND claimed_by_user_id = $2 AND wishlist_item_id = $3',
+    // Get claim details and item info before deleting
+    const claimDetails = await pool.query(
+      `SELECT wc.id, wc.quantity_claimed, wi.user_id as owner_id, wi.name as item_name
+       FROM wishlist_claims wc
+       JOIN wishlist_items wi ON wc.wishlist_item_id = wi.id
+       WHERE wc.id = $1 AND wc.claimed_by_user_id = $2 AND wc.wishlist_item_id = $3`,
       [claimId, userId, itemId]
     );
 
-    if (claimCheck.rows.length === 0) {
+    if (claimDetails.rows.length === 0) {
       return res.status(404).json({ error: 'Claim not found or you do not have permission to remove it' });
     }
 
+    const claim = claimDetails.rows[0];
+    const ownerId = claim.owner_id;
+    const itemName = claim.item_name;
+    const quantityClaimed = claim.quantity_claimed;
+
+    // Get user name for notification
+    const claimerResult = await pool.query(
+      'SELECT name FROM users WHERE id = $1',
+      [userId]
+    );
+    const claimerName = claimerResult.rows[0]?.name || 'Someone';
+
+    // Get shared groups to determine which group to associate with notification
+    const sharedGroupResult = await pool.query(
+      `SELECT g.id, g.name
+       FROM groups g
+       JOIN group_members gm1 ON g.id = gm1.group_id
+       JOIN group_members gm2 ON g.id = gm2.group_id
+       WHERE gm1.user_id = $1 AND gm2.user_id = $2
+         AND gm1.status = 'active' AND gm2.status = 'active'
+       LIMIT 1`,
+      [userId, ownerId]
+    );
+
+    const groupId = sharedGroupResult.rows[0]?.id || null;
+
     // Delete claim
     await pool.query('DELETE FROM wishlist_claims WHERE id = $1', [claimId]);
+
+    // Create notification for wishlist owner
+    const quantityText = quantityClaimed === 1 ? 'item' : `${quantityClaimed} items`;
+    await createNotification(
+      ownerId,
+      'wishlist_unclaim',
+      'Wishlist Item Unclaimed',
+      `${claimerName} unclaimed ${quantityText} of "${itemName}" from your wishlist`,
+      groupId,
+      userId
+    );
 
     res.json({ message: 'Claim removed successfully' });
   } catch (error) {
@@ -403,15 +582,21 @@ router.put('/:itemId/mark-done', authenticate, [
     const userId = req.user.id;
     const { is_done } = req.body;
 
-    // Check if item belongs to user
-    const itemCheck = await pool.query(
-      'SELECT id FROM wishlist_items WHERE id = $1 AND user_id = $2',
+    // Get item details first
+    const itemResult = await pool.query(
+      `SELECT wi.*, u.name as owner_name
+       FROM wishlist_items wi
+       JOIN users u ON wi.user_id = u.id
+       WHERE wi.id = $1 AND wi.user_id = $2`,
       [itemId, userId]
     );
 
-    if (itemCheck.rows.length === 0) {
+    if (itemResult.rows.length === 0) {
       return res.status(404).json({ error: 'Wishlist item not found or you do not have permission to update it' });
     }
+
+    const item = itemResult.rows[0];
+    const previousStatus = item.is_done;
 
     // Update item
     const result = await pool.query(
@@ -422,8 +607,50 @@ router.put('/:itemId/mark-done', authenticate, [
       [is_done, itemId, userId]
     );
 
+    // If marking as done (fulfilled), notify all users who claimed this item
+    if (is_done && !previousStatus) {
+      // Get all claims for this item
+      const claimsResult = await pool.query(
+        `SELECT wc.claimed_by_user_id, wc.quantity_claimed, u.name as claimer_name
+         FROM wishlist_claims wc
+         JOIN users u ON wc.claimed_by_user_id = u.id
+         WHERE wc.wishlist_item_id = $1`,
+        [itemId]
+      );
+
+      // Notify each claimer
+      for (const claim of claimsResult.rows) {
+        const claimerId = claim.claimed_by_user_id;
+        const quantityText = claim.quantity_claimed === 1 ? 'item' : `${claim.quantity_claimed} items`;
+        
+        // Get shared group for this specific claimer
+        const claimerGroupResult = await pool.query(
+          `SELECT DISTINCT g.id, g.name
+           FROM groups g
+           JOIN group_members gm1 ON g.id = gm1.group_id
+           JOIN group_members gm2 ON g.id = gm2.group_id
+           WHERE gm1.user_id = $1 AND gm2.user_id = $2
+             AND gm1.status = 'active' AND gm2.status = 'active'
+           LIMIT 1`,
+          [userId, claimerId]
+        );
+
+        const groupId = claimerGroupResult.rows[0]?.id || null;
+        const ownerName = item.owner_name || 'The celebrant';
+
+        await createNotification(
+          claimerId,
+          'wishlist_fulfilled',
+          'Wishlist Item Fulfilled',
+          `${ownerName} marked "${item.name}" as fulfilled. Thank you for claiming ${quantityText}!`,
+          groupId,
+          userId
+        );
+      }
+    }
+
     res.json({
-      message: `Item marked as ${is_done ? 'done' : 'not done'} successfully`,
+      message: `Item marked as ${is_done ? 'fulfilled' : 'not fulfilled'} successfully`,
       item: result.rows[0],
     });
   } catch (error) {
