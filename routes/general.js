@@ -634,7 +634,7 @@ router.get('/:groupId/compliance', authenticate, async (req, res) => {
 
     // Get group details
     const groupResult = await pool.query(
-      `SELECT id, name, contribution_amount, currency, deadline
+      `SELECT id, name, contribution_amount, currency, deadline, admin_id
        FROM groups WHERE id = $1 AND group_type = 'general'`,
       [groupId]
     );

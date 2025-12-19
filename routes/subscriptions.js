@@ -639,7 +639,7 @@ router.get('/:groupId/compliance', authenticate, async (req, res) => {
     // Get group details
     const groupResult = await pool.query(
       `SELECT id, name, contribution_amount, currency, subscription_frequency, 
-              subscription_deadline_day, subscription_deadline_month
+              subscription_deadline_day, subscription_deadline_month, admin_id
        FROM groups WHERE id = $1 AND group_type = 'subscription'`,
       [groupId]
     );
