@@ -13,6 +13,14 @@ router.post('/create', authenticate, [
   body('contributionAmount').isFloat({ min: 0 }).withMessage('Contribution amount must be a positive number'),
   body('maxMembers').isInt({ min: 2 }).withMessage('Max members must be at least 2'),
   body('currency').optional().isLength({ min: 3, max: 3 }).withMessage('Currency must be a 3-letter code'),
+  body('groupType').optional().isIn(['birthday', 'subscription', 'general']).withMessage('Group type must be birthday, subscription, or general'),
+  // Subscription-specific validations
+  body('subscriptionFrequency').optional().isIn(['monthly', 'annual']).withMessage('Subscription frequency must be monthly or annual'),
+  body('subscriptionPlatform').optional().trim().notEmpty().withMessage('Subscription platform is required for subscription groups'),
+  body('subscriptionDeadlineDay').optional().isInt({ min: 1, max: 31 }).withMessage('Subscription deadline day must be between 1 and 31'),
+  body('subscriptionDeadlineMonth').optional().isInt({ min: 1, max: 12 }).withMessage('Subscription deadline month must be between 1 and 12'),
+  // General group validations
+  body('deadline').optional().isISO8601().withMessage('Deadline must be a valid date'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -20,8 +28,57 @@ router.post('/create', authenticate, [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { name, contributionAmount, maxMembers, currency = 'NGN' } = req.body;
+    const { 
+      name, 
+      contributionAmount, 
+      maxMembers, 
+      currency = 'NGN',
+      groupType = 'birthday',
+      subscriptionFrequency,
+      subscriptionPlatform,
+      subscriptionDeadlineDay,
+      subscriptionDeadlineMonth,
+      deadline
+    } = req.body;
     const adminId = req.user.id;
+
+    // Validate birthday group: user must have birthday set
+    if (groupType === 'birthday') {
+      const userResult = await pool.query(
+        'SELECT birthday FROM users WHERE id = $1',
+        [adminId]
+      );
+      
+      if (userResult.rows.length === 0 || !userResult.rows[0].birthday) {
+        return res.status(400).json({ 
+          error: 'You must set your birthday before creating a birthday group. Please update your profile first.' 
+        });
+      }
+    }
+
+    // Validate subscription group fields
+    if (groupType === 'subscription') {
+      if (!subscriptionFrequency) {
+        return res.status(400).json({ error: 'Subscription frequency is required for subscription groups' });
+      }
+      if (!subscriptionPlatform) {
+        return res.status(400).json({ error: 'Subscription platform is required for subscription groups' });
+      }
+      if (!subscriptionDeadlineDay || subscriptionDeadlineDay < 1 || subscriptionDeadlineDay > 31) {
+        return res.status(400).json({ error: 'Subscription deadline day is required and must be between 1 and 31' });
+      }
+      if (subscriptionFrequency === 'annual' && (!subscriptionDeadlineMonth || subscriptionDeadlineMonth < 1 || subscriptionDeadlineMonth > 12)) {
+        return res.status(400).json({ error: 'Subscription deadline month is required for annual subscriptions (1-12)' });
+      }
+    }
+
+    // Validate general group deadline
+    if (groupType === 'general' && deadline) {
+      const deadlineDate = new Date(deadline);
+      if (deadlineDate < new Date()) {
+        return res.status(400).json({ error: 'Deadline cannot be in the past' });
+      }
+    }
 
     // Generate unique invite code
     let inviteCode;
@@ -34,12 +91,34 @@ router.post('/create', authenticate, [
       }
     }
 
+    // Build insert query based on group type
+    let insertFields = 'name, invite_code, contribution_amount, max_members, admin_id, currency, group_type';
+    let insertValues = '$1, $2, $3, $4, $5, $6, $7';
+    let params = [name, inviteCode, contributionAmount, maxMembers, adminId, currency, groupType];
+    let paramCount = 8;
+
+    if (groupType === 'subscription') {
+      insertFields += ', subscription_frequency, subscription_platform, subscription_deadline_day';
+      insertValues += `, $${paramCount++}, $${paramCount++}, $${paramCount++}`;
+      params.push(subscriptionFrequency, subscriptionPlatform, subscriptionDeadlineDay);
+      
+      if (subscriptionFrequency === 'annual') {
+        insertFields += ', subscription_deadline_month';
+        insertValues += `, $${paramCount++}`;
+        params.push(subscriptionDeadlineMonth);
+      }
+    } else if (groupType === 'general' && deadline) {
+      insertFields += ', deadline';
+      insertValues += `, $${paramCount++}`;
+      params.push(deadline);
+    }
+
     // Create group
     const groupResult = await pool.query(
-      `INSERT INTO groups (name, invite_code, contribution_amount, max_members, admin_id, currency) 
-       VALUES ($1, $2, $3, $4, $5, $6) 
-       RETURNING id, name, invite_code, contribution_amount, max_members, admin_id, currency, accepting_requests, created_at`,
-      [name, inviteCode, contributionAmount, maxMembers, adminId, currency]
+      `INSERT INTO groups (${insertFields}) 
+       VALUES (${insertValues}) 
+       RETURNING id, name, invite_code, contribution_amount, max_members, admin_id, currency, accepting_requests, group_type, subscription_frequency, subscription_platform, subscription_deadline_day, subscription_deadline_month, deadline, created_at`,
+      params
     );
 
     const group = groupResult.rows[0];
@@ -68,14 +147,16 @@ router.get('/preview/:inviteCode', authenticate, async (req, res) => {
 
     const groupResult = await pool.query(
       `SELECT 
-        g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.created_at,
+        g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.group_type,
+        g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline,
         COUNT(gm.id) FILTER (WHERE gm.status = 'active') as current_members,
         u.name as admin_name
        FROM groups g
        LEFT JOIN group_members gm ON g.id = gm.group_id
        LEFT JOIN users u ON g.admin_id = u.id
        WHERE g.invite_code = $1
-       GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.created_at, u.name`,
+       GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.group_type,
+                g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline, g.created_at, u.name`,
       [inviteCode]
     );
 
@@ -97,6 +178,12 @@ router.get('/preview/:inviteCode', authenticate, async (req, res) => {
         accepting_requests: group.accepting_requests !== false, // Default to true if null
         current_members: parseInt(group.current_members || 0),
         admin_name: group.admin_name,
+        group_type: group.group_type || 'birthday',
+        subscription_frequency: group.subscription_frequency,
+        subscription_platform: group.subscription_platform,
+        subscription_deadline_day: group.subscription_deadline_day,
+        subscription_deadline_month: group.subscription_deadline_month,
+        deadline: group.deadline,
         created_at: group.created_at,
       },
     });
@@ -134,6 +221,20 @@ router.post('/join', authenticate, [
     }
 
     const group = groupResult.rows[0];
+
+    // Check birthday requirement for birthday groups
+    if (group.group_type === 'birthday') {
+      const userResult = await pool.query(
+        'SELECT birthday FROM users WHERE id = $1',
+        [userId]
+      );
+      
+      if (userResult.rows.length === 0 || !userResult.rows[0].birthday) {
+        return res.status(400).json({ 
+          error: 'You must set your birthday before joining a birthday group. Please update your profile first.' 
+        });
+      }
+    }
 
     // Check if group is closed
     if (group.status === 'closed') {
@@ -260,7 +361,9 @@ router.get('/my-groups', authenticate, async (req, res) => {
 
     const result = await pool.query(
       `SELECT
-        g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.created_at,
+        g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.group_type,
+        g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline,
+        g.created_at,
         gm.role, gm.status as member_status,
         COUNT(DISTINCT gm2.id) FILTER (WHERE gm2.status = 'active') as active_members,
         u.name as admin_name
@@ -270,7 +373,9 @@ router.get('/my-groups', authenticate, async (req, res) => {
        LEFT JOIN users u ON g.admin_id = u.id
        WHERE gm.user_id = $1
          AND gm.status != 'inactive'
-       GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.created_at, gm.role, gm.status, u.name
+       GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.group_type,
+                g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline,
+                g.created_at, gm.role, gm.status, u.name
        ORDER BY g.created_at DESC`,
       [userId]
     );
@@ -502,7 +607,7 @@ router.get('/:groupId', authenticate, async (req, res) => {
        LEFT JOIN group_members gm ON g.id = gm.group_id AND gm.status = 'active'
        LEFT JOIN group_members gm2 ON g.id = gm2.group_id AND gm2.status = 'pending'
        WHERE g.id = $1
-       GROUP BY g.id, u.name, g.accepting_requests`,
+       GROUP BY g.id, u.name`,
       [groupId]
     );
 

@@ -459,28 +459,25 @@ router.post('/contribute', authenticate, require('../middleware/rateLimiter').co
     const { groupId, birthdayUserId, amount, note } = req.body;
     const contributorId = req.user.id;
 
-    // Validate all users are in the same group
+    // Validate all users are in the same group and group is a birthday group
     const groupCheck = await pool.query(
-      `SELECT COUNT(*) FROM group_members 
-       WHERE group_id = $1 AND user_id IN ($2, $3) AND status = 'active'`,
+      `SELECT g.group_type, g.status, COUNT(*) as member_count
+       FROM groups g
+       JOIN group_members gm ON g.id = gm.group_id
+       WHERE g.id = $1 AND gm.user_id IN ($2, $3) AND gm.status = 'active'
+       GROUP BY g.group_type, g.status`,
       [groupId, contributorId, birthdayUserId]
     );
 
-    if (parseInt(groupCheck.rows[0].count) !== 2) {
+    if (groupCheck.rows.length === 0 || parseInt(groupCheck.rows[0].member_count) !== 2) {
       return res.status(400).json({ error: 'Both users must be active members of the group' });
     }
 
-    // Check if group is closed (closed groups cannot accept new contributions)
-    const groupStatusCheck = await pool.query(
-      'SELECT status FROM groups WHERE id = $1',
-      [groupId]
-    );
-
-    if (groupStatusCheck.rows.length === 0) {
-      return res.status(404).json({ error: 'Group not found' });
+    if (groupCheck.rows[0].group_type !== 'birthday') {
+      return res.status(400).json({ error: 'This endpoint is only for birthday groups' });
     }
 
-    if (groupStatusCheck.rows[0].status === 'closed') {
+    if (groupCheck.rows[0].status === 'closed') {
       return res.status(400).json({ error: 'This group is closed and no longer accepting contributions' });
     }
 
@@ -630,9 +627,9 @@ router.post('/contribute/:contributionId/confirm', authenticate, async (req, res
     const { contributionId } = req.params;
     const celebrantId = req.user.id;
 
-    // Get contribution details
+    // Get contribution details and verify group is birthday type
     const contributionResult = await pool.query(
-      `SELECT bc.*, g.name as group_name, g.currency, g.status as group_status, u.name as contributor_name
+      `SELECT bc.*, g.name as group_name, g.currency, g.status as group_status, g.group_type, u.name as contributor_name
        FROM birthday_contributions bc
        JOIN groups g ON bc.group_id = g.id
        JOIN users u ON bc.contributor_id = u.id
@@ -645,6 +642,10 @@ router.post('/contribute/:contributionId/confirm', authenticate, async (req, res
     }
 
     const contribution = contributionResult.rows[0];
+
+    if (contribution.group_type !== 'birthday') {
+      return res.status(400).json({ error: 'This endpoint is only for birthday groups' });
+    }
 
     // Check if group is closed (closed groups cannot have contributions confirmed/rejected)
     if (contribution.group_status === 'closed') {
@@ -725,9 +726,9 @@ router.post('/contribute/:contributionId/reject', authenticate, async (req, res)
     const { contributionId } = req.params;
     const celebrantId = req.user.id;
 
-    // Get contribution details
+    // Get contribution details and verify group is birthday type
     const contributionResult = await pool.query(
-      `SELECT bc.*, g.name as group_name, g.currency, g.status as group_status, u.name as contributor_name
+      `SELECT bc.*, g.name as group_name, g.currency, g.status as group_status, g.group_type, u.name as contributor_name
        FROM birthday_contributions bc
        JOIN groups g ON bc.group_id = g.id
        JOIN users u ON bc.contributor_id = u.id
@@ -740,6 +741,10 @@ router.post('/contribute/:contributionId/reject', authenticate, async (req, res)
     }
 
     const contribution = contributionResult.rows[0];
+
+    if (contribution.group_type !== 'birthday') {
+      return res.status(400).json({ error: 'This endpoint is only for birthday groups' });
+    }
 
     // Check if group is closed (closed groups cannot have contributions confirmed/rejected)
     if (contribution.group_status === 'closed') {

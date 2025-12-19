@@ -95,6 +95,8 @@ app.use('/api/users', require('./routes/users'));
 app.use('/api/groups', require('./routes/groups'));
 app.use('/api/members', require('./routes/members'));
 app.use('/api/birthdays', require('./routes/birthdays'));
+app.use('/api/subscriptions', require('./routes/subscriptions'));
+app.use('/api/general', require('./routes/general'));
 app.use('/api/contributions', require('./routes/contributions'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/contact', require('./routes/contact'));

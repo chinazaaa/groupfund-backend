@@ -131,21 +131,22 @@ router.get('/:userId', authenticate, async (req, res) => {
     const { userId } = req.params;
     const currentUserId = req.user.id;
 
-    // Check if current user is in any shared groups with the wishlist owner
+    // Check if current user is in any shared birthday groups with the wishlist owner
     const sharedGroupsCheck = await pool.query(
       `SELECT DISTINCT g.id
        FROM groups g
        JOIN group_members gm1 ON g.id = gm1.group_id
        JOIN group_members gm2 ON g.id = gm2.group_id
        WHERE gm1.user_id = $1 AND gm2.user_id = $2
-         AND gm1.status = 'active' AND gm2.status = 'active'`,
+         AND gm1.status = 'active' AND gm2.status = 'active'
+         AND g.group_type = 'birthday'`,
       [currentUserId, userId]
     );
 
     // If viewing own wishlist, allow it
-    // Otherwise, only allow if they share at least one active group
+    // Otherwise, only allow if they share at least one active birthday group
     if (currentUserId !== userId && sharedGroupsCheck.rows.length === 0) {
-      return res.status(403).json({ error: 'You can only view wishlists of users in your groups' });
+      return res.status(403).json({ error: 'You can only view wishlists of users in your birthday groups' });
     }
 
     // Get wishlist items for the user
@@ -409,19 +410,20 @@ router.post('/:itemId/claim', authenticate, [
 
     const item = itemResult.rows[0];
 
-    // Check if user is in a shared group with the item owner
+    // Check if user is in a shared birthday group with the item owner
     const sharedGroupsCheck = await pool.query(
       `SELECT DISTINCT g.id
        FROM groups g
        JOIN group_members gm1 ON g.id = gm1.group_id
        JOIN group_members gm2 ON g.id = gm2.group_id
        WHERE gm1.user_id = $1 AND gm2.user_id = $2
-         AND gm1.status = 'active' AND gm2.status = 'active'`,
+         AND gm1.status = 'active' AND gm2.status = 'active'
+         AND g.group_type = 'birthday'`,
       [claimedByUserId, item.owner_id]
     );
 
     if (sharedGroupsCheck.rows.length === 0) {
-      return res.status(403).json({ error: 'You can only claim items from users in your groups' });
+      return res.status(403).json({ error: 'You can only claim items from users in your birthday groups' });
     }
 
     // Check if item is marked as done (fulfilled outside app)
@@ -506,7 +508,7 @@ router.post('/:itemId/claim', authenticate, [
     );
     const claimerName = claimerResult.rows[0]?.name || 'Someone';
 
-    // Get shared groups to determine which group to associate with notification
+    // Get shared birthday groups to determine which group to associate with notification
     const sharedGroupResult = await pool.query(
       `SELECT g.id, g.name
        FROM groups g
@@ -514,6 +516,7 @@ router.post('/:itemId/claim', authenticate, [
        JOIN group_members gm2 ON g.id = gm2.group_id
        WHERE gm1.user_id = $1 AND gm2.user_id = $2
          AND gm1.status = 'active' AND gm2.status = 'active'
+         AND g.group_type = 'birthday'
        LIMIT 1`,
       [claimedByUserId, item.owner_id]
     );
@@ -581,7 +584,7 @@ router.delete('/:itemId/claim/:claimId', authenticate, async (req, res) => {
     );
     const claimerName = claimerResult.rows[0]?.name || 'Someone';
 
-    // Get shared groups to determine which group to associate with notification
+    // Get shared birthday groups to determine which group to associate with notification
     const sharedGroupResult = await pool.query(
       `SELECT g.id, g.name
        FROM groups g
@@ -589,6 +592,7 @@ router.delete('/:itemId/claim/:claimId', authenticate, async (req, res) => {
        JOIN group_members gm2 ON g.id = gm2.group_id
        WHERE gm1.user_id = $1 AND gm2.user_id = $2
          AND gm1.status = 'active' AND gm2.status = 'active'
+         AND g.group_type = 'birthday'
        LIMIT 1`,
       [userId, ownerId]
     );
@@ -671,7 +675,7 @@ router.put('/claim/:claimId/fulfill', authenticate, [
     if (is_fulfilled && !previousStatus) {
       const quantityText = claim.quantity_claimed === 1 ? 'item' : `${claim.quantity_claimed} items`;
       
-      // Get shared group for this specific claimer
+      // Get shared birthday group for this specific claimer
       const claimerGroupResult = await pool.query(
         `SELECT DISTINCT g.id, g.name
          FROM groups g
@@ -679,6 +683,7 @@ router.put('/claim/:claimId/fulfill', authenticate, [
          JOIN group_members gm2 ON g.id = gm2.group_id
          WHERE gm1.user_id = $1 AND gm2.user_id = $2
            AND gm1.status = 'active' AND gm2.status = 'active'
+           AND g.group_type = 'birthday'
          LIMIT 1`,
         [userId, claimerId]
       );
@@ -778,7 +783,7 @@ router.put('/:itemId/fulfill', authenticate, [
           const claimerId = claim.claimed_by_user_id;
           const quantityText = claim.quantity_claimed === 1 ? 'item' : `${claim.quantity_claimed} items`;
           
-          // Get shared group for this specific claimer
+          // Get shared birthday group for this specific claimer
           const claimerGroupResult = await pool.query(
             `SELECT DISTINCT g.id, g.name
              FROM groups g
@@ -786,6 +791,7 @@ router.put('/:itemId/fulfill', authenticate, [
              JOIN group_members gm2 ON g.id = gm2.group_id
              WHERE gm1.user_id = $1 AND gm2.user_id = $2
                AND gm1.status = 'active' AND gm2.status = 'active'
+               AND g.group_type = 'birthday'
              LIMIT 1`,
             [userId, claimerId]
           );
