@@ -750,7 +750,8 @@ router.get('/:groupId/compliance', authenticate, async (req, res) => {
         created_at: createdAt,
         is_paid: isPaid,
         is_pending: isPending,
-        is_unpaid: isUnpaid
+        is_unpaid: isUnpaid,
+        is_admin: member.id === group.admin_id
       });
     }
 
@@ -762,6 +763,7 @@ router.get('/:groupId/compliance', authenticate, async (req, res) => {
       subscription_frequency: group.subscription_frequency,
       period_start: periodStartDate.toISOString().split('T')[0],
       period_end: periodEndDate.toISOString().split('T')[0],
+      admin_id: group.admin_id,
       summary: {
         total_members: complianceData.length,
         paid_count: paidCount,

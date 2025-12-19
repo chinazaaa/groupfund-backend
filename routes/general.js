@@ -707,7 +707,8 @@ router.get('/:groupId/compliance', authenticate, async (req, res) => {
         created_at: createdAt,
         is_paid: isPaid,
         is_pending: isPending,
-        is_unpaid: isUnpaid
+        is_unpaid: isUnpaid,
+        is_admin: member.id === group.admin_id
       });
     }
 
@@ -717,6 +718,7 @@ router.get('/:groupId/compliance', authenticate, async (req, res) => {
       currency: group.currency || 'NGN',
       contribution_amount: parseFloat(group.contribution_amount),
       deadline: group.deadline,
+      admin_id: group.admin_id,
       summary: {
         total_members: complianceData.length,
         paid_count: paidCount,

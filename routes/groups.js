@@ -1321,7 +1321,7 @@ router.get('/:groupId/compliance', authenticate, async (req, res) => {
 
     // Get group details
     const groupResult = await pool.query(
-      'SELECT id, name, contribution_amount, currency FROM groups WHERE id = $1',
+      'SELECT id, name, contribution_amount, currency, admin_id FROM groups WHERE id = $1',
       [groupId]
     );
 
@@ -1420,7 +1420,8 @@ router.get('/:groupId/compliance', authenticate, async (req, res) => {
           amount: amount,
           note: note,
           is_overdue: isOverdue,
-          days_overdue: isOverdue ? daysUntilOrSince : null
+          days_overdue: isOverdue ? daysUntilOrSince : null,
+          is_admin: contributor.id === group.admin_id
         });
       }
 
@@ -1444,6 +1445,7 @@ router.get('/:groupId/compliance', authenticate, async (req, res) => {
       group_name: group.name,
       currency: group.currency || 'NGN',
       contribution_amount: parseFloat(group.contribution_amount),
+      admin_id: group.admin_id,
       compliance: complianceData
     });
   } catch (error) {
