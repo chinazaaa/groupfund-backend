@@ -123,17 +123,23 @@ router.get('/received', authenticate, async (req, res) => {
     const { limit = 50, offset = 0 } = req.query;
 
     // Query from transactions table for received payments (type='credit')
-    // This ensures consistency with what's shown in contribution history
+    // Join with all contribution types: birthday, subscription, and general
     const result = await pool.query(
       `SELECT 
         t.id, t.amount, t.created_at as contribution_date, t.status, t.created_at, 
-        t.description, bc.note, bc.id as contribution_id, bc.status as contribution_status,
-        g.id as group_id, g.name as group_name, g.currency,
-        bc.contributor_id, u.name as contributor_name
+        t.description, 
+        COALESCE(bc.note, sc.note, gc.note) as note,
+        COALESCE(bc.id, sc.id, gc.id) as contribution_id,
+        COALESCE(bc.status, sc.status, gc.status) as contribution_status,
+        g.id as group_id, g.name as group_name, g.currency, g.group_type,
+        COALESCE(bc.contributor_id, sc.contributor_id, gc.contributor_id) as contributor_id,
+        u.name as contributor_name
        FROM transactions t
        LEFT JOIN groups g ON t.group_id = g.id
        LEFT JOIN birthday_contributions bc ON bc.transaction_id = t.id
-       LEFT JOIN users u ON bc.contributor_id = u.id
+       LEFT JOIN subscription_contributions sc ON sc.transaction_id = t.id
+       LEFT JOIN general_contributions gc ON gc.transaction_id = t.id
+       LEFT JOIN users u ON u.id = COALESCE(bc.contributor_id, sc.contributor_id, gc.contributor_id)
        WHERE t.user_id = $1 AND t.type = 'credit'
        ORDER BY t.created_at DESC
        LIMIT $2 OFFSET $3`,
@@ -147,14 +153,24 @@ router.get('/received', authenticate, async (req, res) => {
       
       // If contributor_name is not available, try to extract from description
       if (!contributorName && row.description) {
-        // Description format: "Birthday gift from [Name] (Group Name)" or "Birthday gift from [Name]"
-        const match = row.description.match(/Birthday gift from ([^(]+)/);
-        if (match) {
-          contributorName = match[1].trim();
+        // Try different description formats:
+        // "Birthday gift from [Name] (Group Name)"
+        // "Subscription contribution from [Name] (Group Name)"
+        // "Contribution from [Name] (Group Name)"
+        const birthdayMatch = row.description.match(/Birthday gift from ([^(]+)/);
+        const subscriptionMatch = row.description.match(/Subscription contribution from ([^(]+)/);
+        const generalMatch = row.description.match(/Contribution from ([^(]+)/);
+        
+        if (birthdayMatch) {
+          contributorName = birthdayMatch[1].trim();
+        } else if (subscriptionMatch) {
+          contributorName = subscriptionMatch[1].trim();
+        } else if (generalMatch) {
+          contributorName = generalMatch[1].trim();
         }
       }
       
-      // Get contribution status from birthday_contributions table
+      // Get contribution status from the appropriate contributions table
       let contributionStatus = row.contribution_status || row.status || 'completed';
       if (!row.contribution_status && row.status === 'completed') {
         // Legacy: if transaction status is 'completed' but no contribution record, treat as confirmed
@@ -170,13 +186,14 @@ router.get('/received', authenticate, async (req, res) => {
         note: row.note,
         group_id: row.group_id,
         group_name: row.group_name,
+        group_type: row.group_type,
         currency: row.currency || 'NGN',
         contributor_id: row.contributor_id,
         contributor_name: contributorName || 'Unknown',
         contribution_id: row.contribution_id,
       };
     }).filter(contribution => {
-      // For received history (celebrant): Only show "paid" (awaiting) or "confirmed", filter out "not_paid" and "not_received"
+      // For received history (admin/celebrant): Only show "paid" (awaiting) or "confirmed", filter out "not_paid" and "not_received"
       return contribution.status === 'paid' || contribution.status === 'confirmed';
     });
 
