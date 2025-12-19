@@ -32,9 +32,9 @@ router.post('/contribute', authenticate, contributionLimiter, async (req, res) =
 
     // Validate group exists and is a subscription group
     const groupCheck = await pool.query(
-      `SELECT g.*, u.account_number, u.bank_name, u.account_name
+      `SELECT g.*, w.account_number, w.bank_name, w.account_name
        FROM groups g
-       LEFT JOIN wallets u ON g.admin_id = u.user_id
+       LEFT JOIN wallets w ON g.admin_id = w.user_id
        WHERE g.id = $1 AND g.group_type = 'subscription'`,
       [groupId]
     );
@@ -411,7 +411,7 @@ router.get('/upcoming', authenticate, async (req, res) => {
           g.id as group_id, g.name as group_name, g.currency, g.contribution_amount,
           g.subscription_frequency, g.subscription_platform,
           g.subscription_deadline_day, g.subscription_deadline_month,
-          g.admin_id, u.name as admin_name, u.account_number, u.bank_name, u.account_name
+          g.admin_id, u.name as admin_name, w.account_number, w.bank_name, w.account_name
         FROM groups g
         JOIN group_members gm ON g.id = gm.group_id
         LEFT JOIN wallets w ON g.admin_id = w.user_id
@@ -425,7 +425,7 @@ router.get('/upcoming', authenticate, async (req, res) => {
           g.id as group_id, g.name as group_name, g.currency, g.contribution_amount,
           g.subscription_frequency, g.subscription_platform,
           g.subscription_deadline_day, g.subscription_deadline_month,
-          g.admin_id, u.name as admin_name, u.account_number, u.bank_name, u.account_name
+          g.admin_id, u.name as admin_name, w.account_number, w.bank_name, w.account_name
         FROM groups g
         JOIN group_members gm ON g.id = gm.group_id
         LEFT JOIN wallets w ON g.admin_id = w.user_id

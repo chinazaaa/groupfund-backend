@@ -16,9 +16,9 @@ router.post('/contribute', authenticate, contributionLimiter, async (req, res) =
 
     // Validate group exists and is a general group
     const groupCheck = await pool.query(
-      `SELECT g.*, u.account_number, u.bank_name, u.account_name
+      `SELECT g.*, w.account_number, w.bank_name, w.account_name
        FROM groups g
-       LEFT JOIN wallets u ON g.admin_id = u.user_id
+       LEFT JOIN wallets w ON g.admin_id = w.user_id
        WHERE g.id = $1 AND g.group_type = 'general'`,
       [groupId]
     );
