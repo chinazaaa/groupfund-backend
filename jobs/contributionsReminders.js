@@ -472,6 +472,8 @@ async function checkOverdueContributions() {
     const currentMonth = today.getMonth() + 1;
     const currentDay = today.getDate();
     
+    console.log(`[Overdue Reminders] Starting check at ${today.toISOString()}`);
+    
     // Helper function to get deadline date, handling months with fewer days
     function getLastDayOfMonth(year, month) {
       return new Date(year, month + 1, 0).getDate();
@@ -490,6 +492,8 @@ async function checkOverdueContributions() {
        FROM users 
        WHERE is_verified = TRUE AND is_active = TRUE`
     );
+
+    console.log(`[Overdue Reminders] Processing ${usersResult.rows.length} users`);
 
     for (const user of usersResult.rows) {
       // Get all groups the user is in (exclude closed groups - they don't accept contributions)
@@ -510,6 +514,8 @@ async function checkOverdueContributions() {
         7: [],
         14: []
       };
+      
+      let userOverdueCount = 0;
 
       for (const group of groupsResult.rows) {
         // Get user's join date for this group
@@ -570,6 +576,7 @@ async function checkOverdueContributions() {
                 );
 
                 if (reminderCheck.rows.length === 0) {
+                  userOverdueCount++;
                   overdueByDays[daysOverdue].push({
                     groupId: group.id,
                     groupName: group.name,
@@ -581,6 +588,9 @@ async function checkOverdueContributions() {
                     daysOverdue: daysOverdue,
                     relatedUserId: member.id
                   });
+                  console.log(`[Overdue Reminders] Found overdue birthday: User ${user.id}, Group ${group.id}, ${daysOverdue} days overdue`);
+                } else {
+                  console.log(`[Overdue Reminders] Skipping - reminder already sent today for user ${user.id}, group ${group.id}, ${daysOverdue} days`);
                 }
               }
             }
@@ -638,6 +648,7 @@ async function checkOverdueContributions() {
               );
 
               if (reminderCheck.rows.length === 0) {
+                userOverdueCount++;
                 overdueByDays[daysOverdue].push({
                   groupId: group.id,
                   groupName: group.name,
@@ -651,7 +662,14 @@ async function checkOverdueContributions() {
                   daysOverdue: daysOverdue,
                   relatedUserId: null
                 });
+                console.log(`[Overdue Reminders] Found overdue subscription: User ${user.id}, Group ${group.id}, ${daysOverdue} days overdue`);
+              } else {
+                console.log(`[Overdue Reminders] Skipping - reminder already sent today for user ${user.id}, group ${group.id}, ${daysOverdue} days`);
               }
+            } else if (hasPaid) {
+              console.log(`[Overdue Reminders] User ${user.id} has already paid for subscription group ${group.id}`);
+            } else {
+              console.log(`[Overdue Reminders] Subscription group ${group.id} for user ${user.id}: daysOverdue=${daysOverdue}, not in reminder list (1,3,7,14)`);
             }
           }
         } else if (group.group_type === 'general' && group.deadline) {
@@ -686,6 +704,7 @@ async function checkOverdueContributions() {
               );
 
               if (reminderCheck.rows.length === 0) {
+                userOverdueCount++;
                 overdueByDays[daysOverdue].push({
                   groupId: group.id,
                   groupName: group.name,
@@ -697,7 +716,14 @@ async function checkOverdueContributions() {
                   daysOverdue: daysOverdue,
                   relatedUserId: null
                 });
+                console.log(`[Overdue Reminders] Found overdue general: User ${user.id}, Group ${group.id}, ${daysOverdue} days overdue`);
+              } else {
+                console.log(`[Overdue Reminders] Skipping - reminder already sent today for user ${user.id}, group ${group.id}, ${daysOverdue} days`);
               }
+            } else if (hasPaid) {
+              console.log(`[Overdue Reminders] User ${user.id} has already paid for general group ${group.id}`);
+            } else {
+              console.log(`[Overdue Reminders] General group ${group.id} for user ${user.id}: daysOverdue=${daysOverdue}, not in reminder list (1,3,7,14)`);
             }
           }
         }
@@ -713,8 +739,11 @@ async function checkOverdueContributions() {
 
         // Check user preferences - use same_day preference for overdue reminders
         if (!user.notify_same_day) {
+          console.log(`[Overdue Reminders] Skipping user ${user.id} - notify_same_day is false`);
           continue; // Skip if user doesn't want same-day notifications
         }
+        
+        console.log(`[Overdue Reminders] Processing ${overdueList.length} overdue items for user ${user.id} at ${daysNum} days overdue`);
 
         // Send notification for each overdue contribution
         for (const overdue of overdueList) {
@@ -743,6 +772,7 @@ async function checkOverdueContributions() {
             overdue.groupId,
             overdue.relatedUserId
           );
+          console.log(`[Overdue Reminders] Sent notification to user ${user.id} for ${overdue.groupName} (${daysNum} days overdue)`);
         }
 
         // Send comprehensive email if user has email
@@ -764,14 +794,21 @@ async function checkOverdueContributions() {
                 subscriptionFrequency: o.subscriptionFrequency
               }))
             );
+            console.log(`[Overdue Reminders] Sent email to ${user.email} for ${overdueList.length} overdue items`);
           } catch (err) {
-            console.error(`Error sending overdue contribution email to ${user.email}:`, err);
+            console.error(`[Overdue Reminders] Error sending email to ${user.email}:`, err);
           }
+        } else if (!user.email) {
+          console.log(`[Overdue Reminders] User ${user.id} has no email address`);
         }
+      }
+      
+      if (userOverdueCount > 0) {
+        console.log(`[Overdue Reminders] User ${user.id} (${user.name}) has ${userOverdueCount} overdue contribution(s)`);
       }
     }
 
-    console.log('Overdue contributions check completed');
+    console.log('[Overdue Reminders] Overdue contributions check completed');
   } catch (error) {
     console.error('Error checking overdue contributions:', error);
   }
