@@ -22,7 +22,8 @@ const migrations = [
   'add_group_status.sql',
   'add_accepting_requests.sql',
   'add_wishlist.sql',
-  'add_currency_to_wishlist.sql'
+  'add_currency_to_wishlist.sql',
+  'add_fulfilled_to_wishlist_claims.sql'
 ];
 
 // Migration endpoint - SECURE THIS IN PRODUCTION!

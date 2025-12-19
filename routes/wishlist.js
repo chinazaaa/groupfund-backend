@@ -37,12 +37,12 @@ router.get('/:userId/claims', authenticate, async (req, res) => {
       `SELECT 
         wc.id as claim_id,
         wc.quantity_claimed,
+        wc.is_fulfilled,
         wc.created_at as claimed_at,
         wi.id as item_id,
         wi.name as item_name,
         wi.price,
         wi.currency,
-        wi.is_done,
         u.id as claimed_by_user_id,
         u.name as claimed_by_user_name,
         u.email as claimed_by_user_email
@@ -75,6 +75,7 @@ router.get('/my-claims', authenticate, async (req, res) => {
       `SELECT 
         wc.id as claim_id,
         wc.quantity_claimed,
+        wc.is_fulfilled,
         wc.created_at as claimed_at,
         wi.id as item_id,
         wi.name as item_name,
@@ -82,7 +83,6 @@ router.get('/my-claims', authenticate, async (req, res) => {
         wi.price,
         wi.currency,
         wi.quantity as item_total_quantity,
-        wi.is_done as is_fulfilled,
         wi.created_at as item_created_at,
         wi.updated_at as item_updated_at,
         owner.id as owner_id,
@@ -161,6 +161,7 @@ router.get('/:userId', authenticate, async (req, res) => {
           `SELECT 
             wc.id as claim_id,
             wc.quantity_claimed,
+            wc.is_fulfilled,
             wc.created_at as claimed_at,
             u.id as claimed_by_user_id,
             u.name as claimed_by_user_name
@@ -174,14 +175,25 @@ router.get('/:userId', authenticate, async (req, res) => {
           (sum, claim) => sum + claim.quantity_claimed,
           0
         );
+        const totalFulfilled = claimsResult.rows.reduce(
+          (sum, claim) => sum + (claim.is_fulfilled ? claim.quantity_claimed : 0),
+          0
+        );
         const remaining = Math.max(0, item.quantity - totalClaimed);
+        
+        // Item is fully done if:
+        // 1. Item is marked as done (is_done = true) - covers scenarios 2 & 3 (fulfilled outside app)
+        // 2. OR all claims are fulfilled and quantity is met
+        const isFullyDone = item.is_done || (totalClaimed > 0 && totalFulfilled === totalClaimed && totalClaimed >= item.quantity);
 
         return {
           ...item,
           claims: claimsResult.rows,
           total_claimed: totalClaimed,
+          total_fulfilled: totalFulfilled,
           remaining: remaining,
-          is_available: remaining > 0 && !item.is_done,
+          is_available: remaining > 0 && !isFullyDone,
+          is_fully_done: isFullyDone,
         };
       })
     );
@@ -386,21 +398,31 @@ router.post('/:itemId/claim', authenticate, [
       return res.status(403).json({ error: 'You can only claim items from users in your groups' });
     }
 
-    // Check if item is done
+    // Check if item is marked as done (fulfilled outside app)
     if (item.is_done) {
-      return res.status(400).json({ error: 'This item has been marked as done' });
+      return res.status(400).json({ error: 'This item has been marked as fulfilled' });
     }
 
-    // Get current claims
+    // Get current claims and check if item is fully done
     const claimsResult = await pool.query(
-      `SELECT SUM(quantity_claimed) as total_claimed
+      `SELECT 
+        SUM(quantity_claimed) as total_claimed,
+        SUM(CASE WHEN is_fulfilled THEN quantity_claimed ELSE 0 END) as total_fulfilled
        FROM wishlist_claims
        WHERE wishlist_item_id = $1`,
       [itemId]
     );
 
     const totalClaimed = parseInt(claimsResult.rows[0]?.total_claimed || 0);
+    const totalFulfilled = parseInt(claimsResult.rows[0]?.total_fulfilled || 0);
     const remaining = item.quantity - totalClaimed;
+    
+    // Check if item is fully done (all claims fulfilled and quantity met)
+    const isFullyDone = totalClaimed > 0 && totalFulfilled === totalClaimed && totalClaimed >= item.quantity;
+    
+    if (isFullyDone) {
+      return res.status(400).json({ error: 'This item has been fully fulfilled' });
+    }
 
     if (quantity > remaining) {
       return res.status(400).json({ 
@@ -568,9 +590,100 @@ router.delete('/:itemId/claim/:claimId', authenticate, async (req, res) => {
   }
 });
 
-// Mark item as done (celebrant only)
-router.put('/:itemId/mark-done', authenticate, [
-  body('is_done').isBoolean().withMessage('is_done must be a boolean'),
+// Mark a specific claim as fulfilled (celebrant only)
+router.put('/claim/:claimId/fulfill', authenticate, [
+  body('is_fulfilled').isBoolean().withMessage('is_fulfilled must be a boolean'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { claimId } = req.params;
+    const userId = req.user.id; // Celebrant
+    const { is_fulfilled } = req.body;
+
+    // Get claim details and verify celebrant owns the item
+    const claimResult = await pool.query(
+      `SELECT 
+        wc.id as claim_id,
+        wc.claimed_by_user_id,
+        wc.quantity_claimed,
+        wc.is_fulfilled as previous_status,
+        wi.id as item_id,
+        wi.name as item_name,
+        wi.user_id as owner_id,
+        owner.name as owner_name,
+        claimer.name as claimer_name
+       FROM wishlist_claims wc
+       JOIN wishlist_items wi ON wc.wishlist_item_id = wi.id
+       JOIN users owner ON wi.user_id = owner.id
+       JOIN users claimer ON wc.claimed_by_user_id = claimer.id
+       WHERE wc.id = $1 AND wi.user_id = $2`,
+      [claimId, userId]
+    );
+
+    if (claimResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Claim not found or you do not have permission to update it' });
+    }
+
+    const claim = claimResult.rows[0];
+    const previousStatus = claim.previous_status;
+    const claimerId = claim.claimed_by_user_id;
+
+    // Update claim
+    const updateResult = await pool.query(
+      `UPDATE wishlist_claims 
+       SET is_fulfilled = $1 
+       WHERE id = $2
+       RETURNING id, wishlist_item_id, claimed_by_user_id, quantity_claimed, is_fulfilled, created_at`,
+      [is_fulfilled, claimId]
+    );
+
+    // If marking as fulfilled (and wasn't before), notify the claimer
+    if (is_fulfilled && !previousStatus) {
+      const quantityText = claim.quantity_claimed === 1 ? 'item' : `${claim.quantity_claimed} items`;
+      
+      // Get shared group for this specific claimer
+      const claimerGroupResult = await pool.query(
+        `SELECT DISTINCT g.id, g.name
+         FROM groups g
+         JOIN group_members gm1 ON g.id = gm1.group_id
+         JOIN group_members gm2 ON g.id = gm2.group_id
+         WHERE gm1.user_id = $1 AND gm2.user_id = $2
+           AND gm1.status = 'active' AND gm2.status = 'active'
+         LIMIT 1`,
+        [userId, claimerId]
+      );
+
+      const groupId = claimerGroupResult.rows[0]?.id || null;
+      const ownerName = claim.owner_name || 'The celebrant';
+
+      await createNotification(
+        claimerId,
+        'wishlist_fulfilled',
+        'Wishlist Claim Fulfilled',
+        `${ownerName} marked your claim of ${quantityText} of "${claim.item_name}" as fulfilled. Thank you!`,
+        groupId,
+        userId
+      );
+    }
+
+    res.json({
+      message: `Claim marked as ${is_fulfilled ? 'fulfilled' : 'not fulfilled'} successfully`,
+      claim: updateResult.rows[0],
+    });
+  } catch (error) {
+    console.error('Mark claim fulfilled error:', error);
+    res.status(500).json({ error: 'Server error marking claim as fulfilled' });
+  }
+});
+
+// Mark entire item as fulfilled (celebrant only) - for items fulfilled outside the app
+// This marks all existing claims as fulfilled (and notifies claimers) and marks the item as done
+router.put('/:itemId/fulfill', authenticate, [
+  body('is_fulfilled').isBoolean().withMessage('is_fulfilled must be a boolean'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -579,10 +692,10 @@ router.put('/:itemId/mark-done', authenticate, [
     }
 
     const { itemId } = req.params;
-    const userId = req.user.id;
-    const { is_done } = req.body;
+    const userId = req.user.id; // Celebrant
+    const { is_fulfilled } = req.body;
 
-    // Get item details first
+    // Get item details and verify celebrant owns it
     const itemResult = await pool.query(
       `SELECT wi.*, u.name as owner_name
        FROM wishlist_items wi
@@ -596,66 +709,107 @@ router.put('/:itemId/mark-done', authenticate, [
     }
 
     const item = itemResult.rows[0];
-    const previousStatus = item.is_done;
+    const previousItemStatus = item.is_done;
 
-    // Update item
-    const result = await pool.query(
+    // Update item as done/fulfilled
+    const itemUpdateResult = await pool.query(
       `UPDATE wishlist_items 
        SET is_done = $1, updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $2 AND user_id = $3
+       WHERE id = $2
        RETURNING id, name, quantity, picture, price, currency, is_done, created_at, updated_at`,
-      [is_done, itemId, userId]
+      [is_fulfilled, itemId]
     );
 
-    // If marking as done (fulfilled), notify all users who claimed this item
-    if (is_done && !previousStatus) {
-      // Get all claims for this item
+    // If marking as fulfilled, mark all existing claims as fulfilled and notify claimers
+    if (is_fulfilled && !previousItemStatus) {
+      // Get all unfulfilled claims for this item
       const claimsResult = await pool.query(
-        `SELECT wc.claimed_by_user_id, wc.quantity_claimed, u.name as claimer_name
+        `SELECT 
+          wc.id as claim_id,
+          wc.claimed_by_user_id,
+          wc.quantity_claimed,
+          wc.is_fulfilled,
+          u.name as claimer_name
          FROM wishlist_claims wc
          JOIN users u ON wc.claimed_by_user_id = u.id
-         WHERE wc.wishlist_item_id = $1`,
+         WHERE wc.wishlist_item_id = $1 AND wc.is_fulfilled = FALSE`,
         [itemId]
       );
 
-      // Notify each claimer
-      for (const claim of claimsResult.rows) {
-        const claimerId = claim.claimed_by_user_id;
-        const quantityText = claim.quantity_claimed === 1 ? 'item' : `${claim.quantity_claimed} items`;
-        
-        // Get shared group for this specific claimer
-        const claimerGroupResult = await pool.query(
-          `SELECT DISTINCT g.id, g.name
-           FROM groups g
-           JOIN group_members gm1 ON g.id = gm1.group_id
-           JOIN group_members gm2 ON g.id = gm2.group_id
-           WHERE gm1.user_id = $1 AND gm2.user_id = $2
-             AND gm1.status = 'active' AND gm2.status = 'active'
-           LIMIT 1`,
-          [userId, claimerId]
+      // Mark all unfulfilled claims as fulfilled
+      if (claimsResult.rows.length > 0) {
+        await pool.query(
+          `UPDATE wishlist_claims 
+           SET is_fulfilled = TRUE 
+           WHERE wishlist_item_id = $1 AND is_fulfilled = FALSE`,
+          [itemId]
         );
 
-        const groupId = claimerGroupResult.rows[0]?.id || null;
+        // Notify each claimer (only those who had actual claims)
         const ownerName = item.owner_name || 'The celebrant';
+        
+        for (const claim of claimsResult.rows) {
+          const claimerId = claim.claimed_by_user_id;
+          const quantityText = claim.quantity_claimed === 1 ? 'item' : `${claim.quantity_claimed} items`;
+          
+          // Get shared group for this specific claimer
+          const claimerGroupResult = await pool.query(
+            `SELECT DISTINCT g.id, g.name
+             FROM groups g
+             JOIN group_members gm1 ON g.id = gm1.group_id
+             JOIN group_members gm2 ON g.id = gm2.group_id
+             WHERE gm1.user_id = $1 AND gm2.user_id = $2
+               AND gm1.status = 'active' AND gm2.status = 'active'
+             LIMIT 1`,
+            [userId, claimerId]
+          );
 
-        await createNotification(
-          claimerId,
-          'wishlist_fulfilled',
-          'Wishlist Item Fulfilled',
-          `${ownerName} marked "${item.name}" as fulfilled. Thank you for claiming ${quantityText}!`,
-          groupId,
-          userId
-        );
+          const groupId = claimerGroupResult.rows[0]?.id || null;
+
+          await createNotification(
+            claimerId,
+            'wishlist_fulfilled',
+            'Wishlist Claim Fulfilled',
+            `${ownerName} marked your claim of ${quantityText} of "${item.name}" as fulfilled. Thank you!`,
+            groupId,
+            userId
+          );
+        }
       }
+      // If no claims exist, no notifications are sent (scenario 2)
+    } else if (!is_fulfilled && previousItemStatus) {
+      // If unmarking as fulfilled, also unmark all claims
+      await pool.query(
+        `UPDATE wishlist_claims 
+         SET is_fulfilled = FALSE 
+         WHERE wishlist_item_id = $1`,
+        [itemId]
+      );
     }
 
+    // Get updated claims summary
+    const claimsSummary = await pool.query(
+      `SELECT 
+        COUNT(*) as total_claims,
+        SUM(quantity_claimed) as total_claimed_quantity,
+        SUM(CASE WHEN is_fulfilled THEN quantity_claimed ELSE 0 END) as total_fulfilled_quantity
+       FROM wishlist_claims
+       WHERE wishlist_item_id = $1`,
+      [itemId]
+    );
+
     res.json({
-      message: `Item marked as ${is_done ? 'fulfilled' : 'not fulfilled'} successfully`,
-      item: result.rows[0],
+      message: `Item marked as ${is_fulfilled ? 'fulfilled' : 'not fulfilled'} successfully`,
+      item: itemUpdateResult.rows[0],
+      claims_summary: {
+        total_claims: parseInt(claimsSummary.rows[0]?.total_claims || 0),
+        total_claimed_quantity: parseInt(claimsSummary.rows[0]?.total_claimed_quantity || 0),
+        total_fulfilled_quantity: parseInt(claimsSummary.rows[0]?.total_fulfilled_quantity || 0),
+      },
     });
   } catch (error) {
-    console.error('Mark wishlist item done error:', error);
-    res.status(500).json({ error: 'Server error marking item as done' });
+    console.error('Mark item fulfilled error:', error);
+    res.status(500).json({ error: 'Server error marking item as fulfilled' });
   }
 });
 
