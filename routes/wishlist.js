@@ -43,6 +43,8 @@ router.get('/:userId/claims', authenticate, async (req, res) => {
         wi.name as item_name,
         wi.price,
         wi.currency,
+        wi.link,
+        wi.notes,
         u.id as claimed_by_user_id,
         u.name as claimed_by_user_name,
         u.email as claimed_by_user_email
@@ -82,6 +84,8 @@ router.get('/my-claims', authenticate, async (req, res) => {
         wi.picture,
         wi.price,
         wi.currency,
+        wi.link,
+        wi.notes,
         wi.quantity as item_total_quantity,
         wi.created_at as item_created_at,
         wi.updated_at as item_updated_at,
@@ -147,7 +151,7 @@ router.get('/:userId', authenticate, async (req, res) => {
     // Get wishlist items for the user
     const itemsResult = await pool.query(
       `SELECT 
-        id, name, quantity, picture, price, currency, is_done, created_at, updated_at
+        id, name, quantity, picture, price, currency, link, notes, is_done, created_at, updated_at
        FROM wishlist_items
        WHERE user_id = $1
        ORDER BY created_at DESC`,
@@ -220,6 +224,13 @@ router.post('/', authenticate, [
   }),
   body('price').optional().isFloat({ min: 0 }).withMessage('Price must be a positive number'),
   body('currency').optional().isLength({ min: 3, max: 3 }).withMessage('Currency must be a 3-letter code'),
+  body('link').optional().custom((value) => {
+    if (value === null || value === undefined || value === '') return true;
+    // If provided, must be a valid URL
+    const urlPattern = /^https?:\/\/.+/i;
+    return urlPattern.test(value) || 'Link must be a valid URL';
+  }),
+  body('notes').optional().isString().withMessage('Notes must be a string'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -228,13 +239,13 @@ router.post('/', authenticate, [
     }
 
     const userId = req.user.id;
-    const { name, quantity = 1, picture, price, currency = 'NGN' } = req.body;
+    const { name, quantity = 1, picture, price, currency = 'NGN', link, notes } = req.body;
 
     const result = await pool.query(
-      `INSERT INTO wishlist_items (user_id, name, quantity, picture, price, currency)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, name, quantity, picture, price, currency, is_done, created_at, updated_at`,
-      [userId, name, quantity, picture || null, price || null, currency]
+      `INSERT INTO wishlist_items (user_id, name, quantity, picture, price, currency, link, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING id, name, quantity, picture, price, currency, link, notes, is_done, created_at, updated_at`,
+      [userId, name, quantity, picture || null, price || null, currency, link || null, notes || null]
     );
 
     res.status(201).json({
@@ -259,6 +270,13 @@ router.put('/:itemId', authenticate, [
   }),
   body('price').optional().isFloat({ min: 0 }),
   body('currency').optional().isLength({ min: 3, max: 3 }).withMessage('Currency must be a 3-letter code'),
+  body('link').optional().custom((value) => {
+    if (value === null || value === undefined || value === '') return true;
+    // If provided, must be a valid URL
+    const urlPattern = /^https?:\/\/.+/i;
+    return urlPattern.test(value) || 'Link must be a valid URL';
+  }),
+  body('notes').optional().isString().withMessage('Notes must be a string'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -268,7 +286,7 @@ router.put('/:itemId', authenticate, [
 
     const { itemId } = req.params;
     const userId = req.user.id;
-    const { name, quantity, picture, price, currency } = req.body;
+    const { name, quantity, picture, price, currency, link, notes } = req.body;
 
     // Check if item belongs to user
     const itemCheck = await pool.query(
@@ -305,6 +323,14 @@ router.put('/:itemId', authenticate, [
       updates.push(`currency = $${paramCount++}`);
       values.push(currency);
     }
+    if (link !== undefined) {
+      updates.push(`link = $${paramCount++}`);
+      values.push(link || null);
+    }
+    if (notes !== undefined) {
+      updates.push(`notes = $${paramCount++}`);
+      values.push(notes || null);
+    }
 
     if (updates.length === 0) {
       return res.status(400).json({ error: 'No fields to update' });
@@ -314,7 +340,7 @@ router.put('/:itemId', authenticate, [
     const query = `UPDATE wishlist_items 
                   SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP 
                   WHERE id = $${paramCount} AND user_id = $${paramCount + 1}
-                  RETURNING id, name, quantity, picture, price, currency, is_done, created_at, updated_at`;
+                  RETURNING id, name, quantity, picture, price, currency, link, notes, is_done, created_at, updated_at`;
 
     const result = await pool.query(query, values);
 
@@ -716,7 +742,7 @@ router.put('/:itemId/fulfill', authenticate, [
       `UPDATE wishlist_items 
        SET is_done = $1, updated_at = CURRENT_TIMESTAMP 
        WHERE id = $2
-       RETURNING id, name, quantity, picture, price, currency, is_done, created_at, updated_at`,
+       RETURNING id, name, quantity, picture, price, currency, link, notes, is_done, created_at, updated_at`,
       [is_fulfilled, itemId]
     );
 
