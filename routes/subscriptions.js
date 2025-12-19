@@ -8,6 +8,22 @@ const { contributionLimiter } = require('../middleware/rateLimiter');
 
 const router = express.Router();
 
+// Helper function to get the last day of a month
+function getLastDayOfMonth(year, month) {
+  // month is 0-indexed (0 = January, 11 = December)
+  return new Date(year, month + 1, 0).getDate();
+}
+
+// Helper function to get deadline date, handling months with fewer days
+// If deadline day is 31 but month only has 30 days, use the 30th
+// If deadline day is 31 but month is February (28/29 days), use the last day of February
+function getDeadlineDate(year, month, deadlineDay) {
+  // month is 0-indexed (0 = January, 11 = December)
+  const lastDay = getLastDayOfMonth(year, month);
+  const actualDay = Math.min(deadlineDay, lastDay);
+  return new Date(year, month, actualDay);
+}
+
 // Contribute to subscription (Mark as Paid)
 router.post('/contribute', authenticate, contributionLimiter, async (req, res) => {
   try {
@@ -54,7 +70,9 @@ router.post('/contribute', authenticate, contributionLimiter, async (req, res) =
     if (group.subscription_frequency === 'monthly') {
       // Monthly: period is current month
       periodStart = new Date(currentYear, currentMonth - 1, 1);
-      periodEnd = new Date(currentYear, currentMonth, 0); // Last day of current month
+      // Get last day of current month (handles 28/29/30/31 days correctly)
+      const lastDay = getLastDayOfMonth(currentYear, currentMonth - 1);
+      periodEnd = new Date(currentYear, currentMonth - 1, lastDay);
     } else {
       // Annual: period is current year
       periodStart = new Date(currentYear, 0, 1);
@@ -416,18 +434,20 @@ router.get('/upcoming', authenticate, async (req, res) => {
 
       if (group.subscription_frequency === 'monthly') {
         // Next deadline is the deadline day of current or next month
+        // Handle months with fewer days (e.g., if deadline is 31 but month only has 30 days)
         if (currentDay <= group.subscription_deadline_day) {
-          nextDeadline = new Date(currentYear, currentMonth - 1, group.subscription_deadline_day);
+          nextDeadline = getDeadlineDate(currentYear, currentMonth - 1, group.subscription_deadline_day);
         } else {
-          nextDeadline = new Date(currentYear, currentMonth, group.subscription_deadline_day);
+          nextDeadline = getDeadlineDate(currentYear, currentMonth, group.subscription_deadline_day);
         }
       } else {
         // Annual: deadline is on specific month and day
+        // Handle months with fewer days (e.g., if deadline is 31 but month only has 30 days)
         if (currentMonth < group.subscription_deadline_month || 
             (currentMonth === group.subscription_deadline_month && currentDay <= group.subscription_deadline_day)) {
-          nextDeadline = new Date(currentYear, group.subscription_deadline_month - 1, group.subscription_deadline_day);
+          nextDeadline = getDeadlineDate(currentYear, group.subscription_deadline_month - 1, group.subscription_deadline_day);
         } else {
-          nextDeadline = new Date(currentYear + 1, group.subscription_deadline_month - 1, group.subscription_deadline_day);
+          nextDeadline = getDeadlineDate(currentYear + 1, group.subscription_deadline_month - 1, group.subscription_deadline_day);
         }
       }
 
@@ -529,7 +549,9 @@ router.get('/:groupId/compliance', authenticate, async (req, res) => {
     // Calculate period end
     let periodEndDate;
     if (group.subscription_frequency === 'monthly') {
-      periodEndDate = new Date(periodStartDate.getFullYear(), periodStartDate.getMonth() + 1, 0);
+      // Get last day of the month (handles 28/29/30/31 days correctly)
+      const lastDay = getLastDayOfMonth(periodStartDate.getFullYear(), periodStartDate.getMonth());
+      periodEndDate = new Date(periodStartDate.getFullYear(), periodStartDate.getMonth(), lastDay);
     } else {
       periodEndDate = new Date(periodStartDate.getFullYear(), 11, 31);
     }
