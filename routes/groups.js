@@ -631,6 +631,217 @@ router.get('/upcoming', authenticate, async (req, res) => {
   }
 });
 
+// Get all overdue contributions across all group types (unified view)
+// IMPORTANT: This must be before /:groupId routes to avoid route conflicts
+router.get('/overdue', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { groupId } = req.query;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const currentYear = today.getFullYear();
+    const currentMonth = today.getMonth() + 1;
+    const currentDay = today.getDate();
+
+    const overdueItems = [];
+
+    // Get all groups user is a member of
+    let groupsQuery = `
+      SELECT g.*, gm.role, gm.status as member_status, gm.joined_at
+      FROM groups g
+      JOIN group_members gm ON g.id = gm.group_id
+      WHERE gm.user_id = $1 AND gm.status = 'active'
+    `;
+    const groupsParams = [userId];
+    
+    if (groupId) {
+      groupsQuery += ` AND g.id = $2`;
+      groupsParams.push(groupId);
+    }
+
+    const groupsResult = await pool.query(groupsQuery, groupsParams);
+
+    for (const group of groupsResult.rows) {
+      const userJoinDate = new Date(group.joined_at);
+      userJoinDate.setHours(0, 0, 0, 0);
+
+      if (group.group_type === 'birthday') {
+        // Get overdue birthday contributions
+        const membersResult = await pool.query(
+          `SELECT u.id, u.name, u.birthday
+           FROM users u
+           JOIN group_members gm ON u.id = gm.user_id
+           WHERE gm.group_id = $1 AND gm.status = 'active' AND u.birthday IS NOT NULL AND u.id != $2`,
+          [group.id, userId]
+        );
+
+        for (const member of membersResult.rows) {
+          const memberBirthday = new Date(member.birthday);
+          const thisYearBirthday = new Date(currentYear, memberBirthday.getMonth(), memberBirthday.getDate());
+          thisYearBirthday.setHours(0, 0, 0, 0);
+          
+          const daysSinceBirthday = Math.floor((today - thisYearBirthday) / (1000 * 60 * 60 * 24));
+          
+          // Only mark as overdue if birthday was at least 1 day ago and user was a member
+          if (daysSinceBirthday >= 1 && userJoinDate <= thisYearBirthday) {
+            const contributionCheck = await pool.query(
+              `SELECT status FROM birthday_contributions 
+               WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3
+               AND EXTRACT(YEAR FROM contribution_date) = $4`,
+              [group.id, member.id, userId, currentYear]
+            );
+
+            const isOverdue = contributionCheck.rows.length === 0 || 
+                             contributionCheck.rows[0].status === 'not_paid' || 
+                             contributionCheck.rows[0].status === 'not_received';
+            
+            if (isOverdue) {
+              overdueItems.push({
+                type: 'birthday',
+                group_id: group.id,
+                group_name: group.name,
+                group_type: 'birthday',
+                currency: group.currency || 'NGN',
+                contribution_amount: parseFloat(group.contribution_amount),
+                deadline_date: thisYearBirthday.toISOString().split('T')[0],
+                days_overdue: daysSinceBirthday,
+                status: contributionCheck.rows.length > 0 ? contributionCheck.rows[0].status : 'not_paid',
+                event_name: `${member.name}'s Birthday`,
+                event_user_id: member.id,
+                event_user_name: member.name
+              });
+            }
+          }
+        }
+      } else if (group.group_type === 'subscription') {
+        // Calculate subscription deadline
+        let deadlineDate;
+        if (group.subscription_frequency === 'monthly') {
+          // Check current month deadline
+          deadlineDate = getDeadlineDate(currentYear, currentMonth - 1, group.subscription_deadline_day);
+        } else {
+          // Annual - check if deadline has passed this year
+          deadlineDate = getDeadlineDate(currentYear, group.subscription_deadline_month - 1, group.subscription_deadline_day);
+        }
+
+        deadlineDate.setHours(0, 0, 0, 0);
+        const daysSinceDeadline = Math.floor((today - deadlineDate) / (1000 * 60 * 60 * 24));
+
+        // Only mark as overdue if deadline has passed (at least 1 day ago)
+        if (daysSinceDeadline >= 1) {
+          // Check if user has paid for the period that includes this deadline
+          let periodStart;
+          if (group.subscription_frequency === 'monthly') {
+            periodStart = new Date(deadlineDate.getFullYear(), deadlineDate.getMonth(), 1);
+          } else {
+            periodStart = new Date(deadlineDate.getFullYear(), 0, 1);
+          }
+
+          const contributionCheck = await pool.query(
+            `SELECT status FROM subscription_contributions 
+             WHERE group_id = $1 AND contributor_id = $2 AND subscription_period_start = $3`,
+            [group.id, userId, periodStart]
+          );
+
+          const isOverdue = contributionCheck.rows.length === 0 || 
+                           contributionCheck.rows[0].status === 'not_paid' || 
+                           contributionCheck.rows[0].status === 'not_received';
+          
+          if (isOverdue) {
+            // Get admin account details
+            const adminWallet = await pool.query(
+              `SELECT w.account_number, w.bank_name, w.account_name, u.name as admin_name
+               FROM wallets w
+               JOIN users u ON w.user_id = u.id
+               WHERE w.user_id = $1`,
+              [group.admin_id]
+            );
+
+            overdueItems.push({
+              type: 'subscription',
+              group_id: group.id,
+              group_name: group.name,
+              group_type: 'subscription',
+              currency: group.currency || 'NGN',
+              contribution_amount: parseFloat(group.contribution_amount),
+              subscription_frequency: group.subscription_frequency,
+              subscription_platform: group.subscription_platform,
+              deadline_date: deadlineDate.toISOString().split('T')[0],
+              days_overdue: daysSinceDeadline,
+              status: contributionCheck.rows.length > 0 ? contributionCheck.rows[0].status : 'not_paid',
+              event_name: `${group.subscription_platform} Subscription`,
+              admin_account_number: adminWallet.rows[0]?.account_number,
+              admin_bank_name: adminWallet.rows[0]?.bank_name,
+              admin_account_name: adminWallet.rows[0]?.account_name,
+              admin_name: adminWallet.rows[0]?.admin_name
+            });
+          }
+        }
+      } else if (group.group_type === 'general') {
+        // Check if group has a deadline that has passed
+        if (group.deadline) {
+          const deadline = new Date(group.deadline);
+          deadline.setHours(0, 0, 0, 0);
+          const daysSinceDeadline = Math.floor((today - deadline) / (1000 * 60 * 60 * 24));
+          
+          // Only mark as overdue if deadline has passed (at least 1 day ago)
+          if (daysSinceDeadline >= 1) {
+            const contributionCheck = await pool.query(
+              `SELECT status FROM general_contributions 
+               WHERE group_id = $1 AND contributor_id = $2`,
+              [group.id, userId]
+            );
+
+            const isOverdue = contributionCheck.rows.length === 0 || 
+                             contributionCheck.rows[0].status === 'not_paid' || 
+                             contributionCheck.rows[0].status === 'not_received';
+            
+            if (isOverdue) {
+              // Get admin account details
+              const adminWallet = await pool.query(
+                `SELECT w.account_number, w.bank_name, w.account_name, u.name as admin_name
+                 FROM wallets w
+                 JOIN users u ON w.user_id = u.id
+                 WHERE w.user_id = $1`,
+                [group.admin_id]
+              );
+
+              overdueItems.push({
+                type: 'general',
+                group_id: group.id,
+                group_name: group.name,
+                group_type: 'general',
+                currency: group.currency || 'NGN',
+                contribution_amount: parseFloat(group.contribution_amount),
+                deadline_date: group.deadline,
+                days_overdue: daysSinceDeadline,
+                status: contributionCheck.rows.length > 0 ? contributionCheck.rows[0].status : 'not_paid',
+                event_name: group.name,
+                admin_account_number: adminWallet.rows[0]?.account_number,
+                admin_bank_name: adminWallet.rows[0]?.bank_name,
+                admin_account_name: adminWallet.rows[0]?.account_name,
+                admin_name: adminWallet.rows[0]?.admin_name
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Sort by days overdue (most overdue first)
+    overdueItems.sort((a, b) => b.days_overdue - a.days_overdue);
+
+    res.json({
+      overdue: overdueItems,
+      total: overdueItems.length
+    });
+  } catch (error) {
+    console.error('Get overdue groups error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Get group health/score (accessible to everyone, even non-members)
 router.get('/:groupId/health', authenticate, async (req, res) => {
   try {
