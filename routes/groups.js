@@ -378,7 +378,7 @@ router.get('/my-groups', authenticate, async (req, res) => {
         g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.group_type,
         g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline,
         g.created_at,
-        gm.role, gm.status as member_status,
+        gm.role, gm.status as member_status, gm.joined_at,
         COUNT(DISTINCT gm2.id) FILTER (WHERE gm2.status = 'active') as active_members,
         u.name as admin_name
        FROM group_members gm
@@ -389,8 +389,8 @@ router.get('/my-groups', authenticate, async (req, res) => {
          AND gm.status != 'inactive'
        GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.group_type,
                 g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline,
-                g.created_at, gm.role, gm.status, u.name
-       ORDER BY g.created_at DESC`,
+                g.created_at, gm.role, gm.status, gm.joined_at, u.name
+       ORDER BY gm.joined_at DESC`,
       [userId]
     );
 

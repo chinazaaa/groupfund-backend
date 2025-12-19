@@ -517,6 +517,8 @@ async function checkOverdueContributions() {
       
       let userOverdueCount = 0;
 
+      console.log(`[Overdue Reminders] User ${user.id} (${user.name}) is in ${groupsResult.rows.length} groups`);
+      
       for (const group of groupsResult.rows) {
         // Get user's join date for this group
         const userJoinDateResult = await pool.query(
@@ -528,6 +530,8 @@ async function checkOverdueContributions() {
         if (userJoinDateResult.rows.length === 0) continue;
         const userJoinDate = new Date(userJoinDateResult.rows[0].joined_at);
         userJoinDate.setHours(0, 0, 0, 0);
+        
+        console.log(`[Overdue Reminders] Checking group ${group.id} (${group.group_name || group.name}, type: ${group.group_type}) for user ${user.id}`);
 
         if (group.group_type === 'birthday') {
           // Get all active members in this group
@@ -562,6 +566,8 @@ async function checkOverdueContributions() {
               const hasPaid = contributionCheck.rows.length > 0 && 
                              (contributionCheck.rows[0].status === 'paid' || 
                               contributionCheck.rows[0].status === 'confirmed');
+              
+              console.log(`[Overdue Reminders] Birthday group ${group.id} (${member.name}'s birthday): hasPaid=${hasPaid}, contributionCheck.rows.length=${contributionCheck.rows.length}, daysOverdue=${daysOverdue}, birthday=${thisYearBirthday.toISOString().split('T')[0]}`);
 
               // If not paid and overdue by 1, 3, 7, or 14 days, add to reminder list
               if (!hasPaid && (daysOverdue === 1 || daysOverdue === 3 || daysOverdue === 7 || daysOverdue === 14)) {
@@ -592,6 +598,14 @@ async function checkOverdueContributions() {
                 } else {
                   console.log(`[Overdue Reminders] Skipping - reminder already sent today for user ${user.id}, group ${group.id}, ${daysOverdue} days`);
                 }
+              } else if (hasPaid) {
+                console.log(`[Overdue Reminders] User ${user.id} has already paid for birthday group ${group.id} (${member.name}'s birthday)`);
+              } else if (daysOverdue < 1) {
+                console.log(`[Overdue Reminders] Birthday group ${group.id} for user ${user.id}: birthday hasn't passed yet (${daysOverdue} days)`);
+              } else if (daysOverdue > 14) {
+                console.log(`[Overdue Reminders] Birthday group ${group.id} for user ${user.id}: too overdue (${daysOverdue} days, max is 14)`);
+              } else {
+                console.log(`[Overdue Reminders] Birthday group ${group.id} for user ${user.id}: daysOverdue=${daysOverdue}, not in reminder list (must be exactly 1,3,7,14)`);
               }
             }
           }
@@ -599,10 +613,14 @@ async function checkOverdueContributions() {
           // Calculate subscription deadline
           let deadlineDate;
           if (group.subscription_frequency === 'monthly') {
-            // Check previous month's deadline
-            const prevMonth = currentMonth === 1 ? 12 : currentMonth - 1;
-            const prevYear = currentMonth === 1 ? currentYear - 1 : currentYear;
-            deadlineDate = getDeadlineDate(prevYear, prevMonth - 1, group.subscription_deadline_day);
+            // For monthly, check current month's deadline first
+            deadlineDate = getDeadlineDate(currentYear, currentMonth - 1, group.subscription_deadline_day);
+            // If current month's deadline hasn't passed yet, check previous month
+            if (deadlineDate > today) {
+              const prevMonth = currentMonth === 1 ? 12 : currentMonth - 1;
+              const prevYear = currentMonth === 1 ? currentYear - 1 : currentYear;
+              deadlineDate = getDeadlineDate(prevYear, prevMonth - 1, group.subscription_deadline_day);
+            }
           } else {
             // Annual - check if deadline has passed this year
             deadlineDate = getDeadlineDate(currentYear, group.subscription_deadline_month - 1, group.subscription_deadline_day);
@@ -614,9 +632,13 @@ async function checkOverdueContributions() {
           
           deadlineDate.setHours(0, 0, 0, 0);
           
+          console.log(`[Overdue Reminders] Subscription group ${group.id}: deadline=${deadlineDate.toISOString().split('T')[0]}, today=${today.toISOString().split('T')[0]}, userJoined=${userJoinDate.toISOString().split('T')[0]}`);
+          
           // Only consider overdue if deadline has passed and user was a member when deadline occurred
           if (deadlineDate < today && userJoinDate <= deadlineDate) {
             const daysOverdue = Math.floor((today - deadlineDate) / (1000 * 60 * 60 * 24));
+            
+            console.log(`[Overdue Reminders] Subscription group ${group.id}: daysOverdue=${daysOverdue}, checking payment status...`);
             
             // Check if user has paid for the period that includes this deadline
             let periodStart;
@@ -668,8 +690,12 @@ async function checkOverdueContributions() {
               }
             } else if (hasPaid) {
               console.log(`[Overdue Reminders] User ${user.id} has already paid for subscription group ${group.id}`);
+            } else if (daysOverdue < 1) {
+              console.log(`[Overdue Reminders] Subscription group ${group.id} for user ${user.id}: deadline hasn't passed yet (${daysOverdue} days)`);
+            } else if (daysOverdue > 14) {
+              console.log(`[Overdue Reminders] Subscription group ${group.id} for user ${user.id}: too overdue (${daysOverdue} days, max is 14)`);
             } else {
-              console.log(`[Overdue Reminders] Subscription group ${group.id} for user ${user.id}: daysOverdue=${daysOverdue}, not in reminder list (1,3,7,14)`);
+              console.log(`[Overdue Reminders] Subscription group ${group.id} for user ${user.id}: daysOverdue=${daysOverdue}, not in reminder list (must be exactly 1,3,7,14)`);
             }
           }
         } else if (group.group_type === 'general' && group.deadline) {
@@ -677,9 +703,13 @@ async function checkOverdueContributions() {
           const deadlineDate = new Date(group.deadline);
           deadlineDate.setHours(0, 0, 0, 0);
           
+          console.log(`[Overdue Reminders] General group ${group.id}: deadline=${deadlineDate.toISOString().split('T')[0]}, today=${today.toISOString().split('T')[0]}, userJoined=${userJoinDate.toISOString().split('T')[0]}`);
+          
           // Only consider overdue if deadline has passed and user was a member when deadline occurred
           if (deadlineDate < today && userJoinDate <= deadlineDate) {
             const daysOverdue = Math.floor((today - deadlineDate) / (1000 * 60 * 60 * 24));
+            
+            console.log(`[Overdue Reminders] General group ${group.id}: daysOverdue=${daysOverdue}, checking payment status...`);
             
             // Check if user has paid
             const contributionCheck = await pool.query(
@@ -722,8 +752,12 @@ async function checkOverdueContributions() {
               }
             } else if (hasPaid) {
               console.log(`[Overdue Reminders] User ${user.id} has already paid for general group ${group.id}`);
+            } else if (daysOverdue < 1) {
+              console.log(`[Overdue Reminders] General group ${group.id} for user ${user.id}: deadline hasn't passed yet (${daysOverdue} days)`);
+            } else if (daysOverdue > 14) {
+              console.log(`[Overdue Reminders] General group ${group.id} for user ${user.id}: too overdue (${daysOverdue} days, max is 14)`);
             } else {
-              console.log(`[Overdue Reminders] General group ${group.id} for user ${user.id}: daysOverdue=${daysOverdue}, not in reminder list (1,3,7,14)`);
+              console.log(`[Overdue Reminders] General group ${group.id} for user ${user.id}: daysOverdue=${daysOverdue}, not in reminder list (must be exactly 1,3,7,14)`);
             }
           }
         }
