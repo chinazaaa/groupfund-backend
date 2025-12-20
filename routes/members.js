@@ -190,26 +190,50 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
       }
     }
 
-    // Calculate reliability score (0-100)
-    // Formula: (on-time payments / total contributions) * 100
-    // If no contributions yet, give neutral score of 50
-    let reliabilityScore = 50; // Default neutral score
-    let onTimeRate = 0;
+    // Get reports count for this user
+    const reportsResult = await pool.query(
+      `SELECT 
+        COUNT(*) FILTER (WHERE status = 'pending') as pending_reports,
+        COUNT(*) FILTER (WHERE status = 'resolved') as resolved_reports,
+        COUNT(*) FILTER (WHERE status IN ('pending', 'resolved')) as total_valid_reports
+       FROM reports 
+       WHERE reported_user_id = $1`,
+      [userId]
+    );
 
-    // totalContributions should include ALL contributions (confirmed or not) for reliability calculation
-    if (totalContributions > 0) {
+    const pendingReports = parseInt(reportsResult.rows[0]?.pending_reports || 0);
+    const resolvedReports = parseInt(reportsResult.rows[0]?.resolved_reports || 0);
+    const totalValidReports = parseInt(reportsResult.rows[0]?.total_valid_reports || 0);
+
+    // Reliability starts at 100% and only reduces for overdue contributions and reports
+    let reliabilityScore = 100; // Start at 100% (excellent)
+    let onTimeRate = 100;
+
+    // Only reduce reliability if there are overdue contributions
+    // If deadlines haven't passed yet, reliability remains at 100%
+    if (totalOverdue > 0 && totalContributions > 0) {
       onTimeRate = (totalOnTime / totalContributions) * 100;
       reliabilityScore = Math.round(onTimeRate);
     }
 
+    // Reduce reliability based on reports
+    // Pending reports (not yet reviewed) are more urgent: -5 points each
+    // Resolved reports (valid concerns) still matter but less urgent: -3 points each
+    // Dismissed reports don't affect reliability (they were false/invalid)
+    const reportPenalty = (pendingReports * 5) + (resolvedReports * 3);
+    reliabilityScore = Math.max(0, reliabilityScore - reportPenalty);
+    
+    // Update on_time_rate to reflect report penalty (but don't go below 0)
+    onTimeRate = Math.max(0, onTimeRate - reportPenalty);
+
     // Generate summary text
     let summaryText = '';
-    let rating = 'neutral';
+    let rating = 'excellent';
 
-    if (totalContributions === 0) {
+    if (totalContributions === 0 && totalOverdue === 0 && totalValidReports === 0) {
       summaryText = 'New member - No contribution history yet';
       rating = 'new';
-    } else if (totalOverdue === 0) {
+    } else if (totalOverdue === 0 && totalValidReports === 0) {
       summaryText = 'Excellent - No overdue contributions';
       rating = 'excellent';
     } else if (reliabilityScore >= 90) {
@@ -230,6 +254,9 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
     if (totalOverdue > 0) {
       summaryText += ` (${totalOverdue} overdue)`;
     }
+    if (totalValidReports > 0) {
+      summaryText += ` (${totalValidReports} report${totalValidReports > 1 ? 's' : ''})`;
+    }
 
     res.json({
       user: {
@@ -243,8 +270,12 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
         total_contributions: totalContributions, // All contributions (past/today birthdays)
         total_on_time: totalOnTime, // Confirmed and paid on/before birthday
         total_overdue: totalOverdue, // Overdue contributions
-        on_time_rate: totalContributions > 0 ? Math.round(onTimeRate * 10) / 10 : 0, // Round to 1 decimal
-        reliability_score: reliabilityScore
+        on_time_rate: Math.round(onTimeRate * 10) / 10, // Round to 1 decimal
+        reliability_score: reliabilityScore,
+        pending_reports: pendingReports,
+        resolved_reports: resolvedReports,
+        total_valid_reports: totalValidReports,
+        report_penalty: reportPenalty
       },
       summary: {
         text: summaryText,

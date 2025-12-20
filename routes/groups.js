@@ -981,23 +981,51 @@ async function calculateAdminReliability(adminId) {
       }
     }
 
-    // Calculate reliability score (0-100)
-    let reliabilityScore = 50; // Default neutral score
-    let onTimeRate = 0;
+    // Get reports count for this user
+    const reportsResult = await pool.query(
+      `SELECT 
+        COUNT(*) FILTER (WHERE status = 'pending') as pending_reports,
+        COUNT(*) FILTER (WHERE status = 'resolved') as resolved_reports,
+        COUNT(*) FILTER (WHERE status IN ('pending', 'resolved')) as total_valid_reports
+       FROM reports 
+       WHERE reported_user_id = $1`,
+      [adminId]
+    );
 
-    if (totalContributions > 0) {
+    const pendingReports = parseInt(reportsResult.rows[0]?.pending_reports || 0);
+    const resolvedReports = parseInt(reportsResult.rows[0]?.resolved_reports || 0);
+    const totalValidReports = parseInt(reportsResult.rows[0]?.total_valid_reports || 0);
+
+    // Calculate reliability score (0-100)
+    // Reliability starts at 100% and only reduces for overdue contributions and reports
+    let reliabilityScore = 100; // Start at 100% (excellent)
+    let onTimeRate = 100;
+
+    // Only reduce reliability if there are overdue contributions
+    // If deadlines haven't passed yet, reliability remains at 100%
+    if (totalOverdue > 0 && totalContributions > 0) {
       onTimeRate = (totalOnTime / totalContributions) * 100;
       reliabilityScore = Math.round(onTimeRate);
     }
 
+    // Reduce reliability based on reports
+    // Pending reports (not yet reviewed) are more urgent: -5 points each
+    // Resolved reports (valid concerns) still matter but less urgent: -3 points each
+    // Dismissed reports don't affect reliability (they were false/invalid)
+    const reportPenalty = (pendingReports * 5) + (resolvedReports * 3);
+    reliabilityScore = Math.max(0, reliabilityScore - reportPenalty);
+    
+    // Update on_time_rate to reflect report penalty (but don't go below 0)
+    onTimeRate = Math.max(0, onTimeRate - reportPenalty);
+
     // Generate summary text
     let summaryText = '';
-    let rating = 'neutral';
+    let rating = 'excellent';
 
-    if (totalContributions === 0) {
+    if (totalContributions === 0 && totalOverdue === 0 && totalValidReports === 0) {
       summaryText = 'New admin - No contribution history yet';
       rating = 'new';
-    } else if (totalOverdue === 0) {
+    } else if (totalOverdue === 0 && totalValidReports === 0) {
       summaryText = 'Excellent - No overdue contributions';
       rating = 'excellent';
     } else if (reliabilityScore >= 90) {
@@ -1018,14 +1046,21 @@ async function calculateAdminReliability(adminId) {
     if (totalOverdue > 0) {
       summaryText += ` (${totalOverdue} overdue)`;
     }
+    if (totalValidReports > 0) {
+      summaryText += ` (${totalValidReports} report${totalValidReports > 1 ? 's' : ''})`;
+    }
 
     return {
       metrics: {
         total_contributions: totalContributions,
         total_on_time: totalOnTime,
         total_overdue: totalOverdue,
-        on_time_rate: totalContributions > 0 ? Math.round(onTimeRate * 10) / 10 : 0,
-        reliability_score: reliabilityScore
+        on_time_rate: Math.round(onTimeRate * 10) / 10,
+        reliability_score: reliabilityScore,
+        pending_reports: pendingReports,
+        resolved_reports: resolvedReports,
+        total_valid_reports: totalValidReports,
+        report_penalty: reportPenalty
       },
       summary: {
         text: summaryText,
@@ -1039,8 +1074,12 @@ async function calculateAdminReliability(adminId) {
         total_contributions: 0,
         total_on_time: 0,
         total_overdue: 0,
-        on_time_rate: 0,
-        reliability_score: 50
+        on_time_rate: 100,
+        reliability_score: 100,
+        pending_reports: 0,
+        resolved_reports: 0,
+        total_valid_reports: 0,
+        report_penalty: 0
       },
       summary: {
         text: 'Unable to calculate reliability',
@@ -1252,10 +1291,13 @@ async function calculateSubscriptionGroupHealth(groupId) {
     }
 
     // Get reports count for this group
+    // Only count reports that indicate real issues: pending (not yet reviewed) and resolved (valid)
+    // Dismissed reports (invalid/false) don't affect health
     const reportsResult = await pool.query(
       `SELECT 
         COUNT(*) FILTER (WHERE status = 'pending') as pending_reports,
-        COUNT(*) FILTER (WHERE status = 'reviewed') as reviewed_reports,
+        COUNT(*) FILTER (WHERE status = 'resolved') as resolved_reports,
+        COUNT(*) FILTER (WHERE status IN ('pending', 'resolved')) as total_valid_reports,
         COUNT(*) as total_reports
        FROM reports 
        WHERE reported_group_id = $1`,
@@ -1263,7 +1305,8 @@ async function calculateSubscriptionGroupHealth(groupId) {
     );
 
     const pendingReports = parseInt(reportsResult.rows[0]?.pending_reports || 0);
-    const reviewedReports = parseInt(reportsResult.rows[0]?.reviewed_reports || 0);
+    const resolvedReports = parseInt(reportsResult.rows[0]?.resolved_reports || 0);
+    const totalValidReports = parseInt(reportsResult.rows[0]?.total_valid_reports || 0);
     const totalReports = parseInt(reportsResult.rows[0]?.total_reports || 0);
 
     // Debug logging
@@ -1271,7 +1314,8 @@ async function calculateSubscriptionGroupHealth(groupId) {
       console.log('Group health calculation - reports found:', {
         groupId,
         pendingReports,
-        reviewedReports,
+        resolvedReports,
+        totalValidReports,
         totalReports
       });
     }
@@ -1291,14 +1335,21 @@ async function calculateSubscriptionGroupHealth(groupId) {
     }
 
     // Calculate compliance rate based on on-time vs expected (for display purposes)
-    if (totalExpectedContributions > 0) {
+    // But if nothing is overdue yet, keep compliance at 100%
+    // Compliance only reduces when there are actual overdue contributions
+    if (totalExpectedContributions > 0 && totalOverdueContributions > 0) {
       const onTimeRate = (totalOnTime / totalExpectedContributions) * 100;
       complianceRate = Math.round(onTimeRate * 10) / 10;
+    } else if (totalExpectedContributions > 0 && totalOverdueContributions === 0) {
+      // If there are expected contributions but none are overdue yet, compliance is 100%
+      complianceRate = 100;
     }
 
     // Reduce health score based on reports
-    // Each pending report reduces score by 5 points, each reviewed report by 2 points
-    const reportPenalty = (pendingReports * 5) + (reviewedReports * 2);
+    // Pending reports (not yet reviewed) are more urgent: -5 points each
+    // Resolved reports (valid concerns) still matter but less urgent: -3 points each
+    // Dismissed reports don't affect health (they were false/invalid)
+    const reportPenalty = (pendingReports * 5) + (resolvedReports * 3);
     healthScore = Math.max(0, healthScore - reportPenalty);
     
     // Update compliance rate to reflect reports penalty (but don't go below 0)
@@ -1350,7 +1401,8 @@ async function calculateSubscriptionGroupHealth(groupId) {
         compliance_rate: Math.round(complianceRate * 10) / 10,
         health_score: healthScore,
         pending_reports: pendingReports,
-        reviewed_reports: reviewedReports,
+        resolved_reports: resolvedReports,
+        total_valid_reports: totalValidReports,
         total_reports: totalReports,
         report_penalty: reportPenalty
       },
@@ -1524,10 +1576,13 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
     }
 
     // Get reports count for this group
+    // Only count reports that indicate real issues: pending (not yet reviewed) and resolved (valid)
+    // Dismissed reports (invalid/false) don't affect health
     const reportsResult = await pool.query(
       `SELECT 
         COUNT(*) FILTER (WHERE status = 'pending') as pending_reports,
-        COUNT(*) FILTER (WHERE status = 'reviewed') as reviewed_reports,
+        COUNT(*) FILTER (WHERE status = 'resolved') as resolved_reports,
+        COUNT(*) FILTER (WHERE status IN ('pending', 'resolved')) as total_valid_reports,
         COUNT(*) as total_reports
        FROM reports 
        WHERE reported_group_id = $1`,
@@ -1535,7 +1590,8 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
     );
 
     const pendingReports = parseInt(reportsResult.rows[0]?.pending_reports || 0);
-    const reviewedReports = parseInt(reportsResult.rows[0]?.reviewed_reports || 0);
+    const resolvedReports = parseInt(reportsResult.rows[0]?.resolved_reports || 0);
+    const totalValidReports = parseInt(reportsResult.rows[0]?.total_valid_reports || 0);
     const totalReports = parseInt(reportsResult.rows[0]?.total_reports || 0);
 
     // Debug logging
@@ -1543,7 +1599,8 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
       console.log('Group health calculation - reports found:', {
         groupId,
         pendingReports,
-        reviewedReports,
+        resolvedReports,
+        totalValidReports,
         totalReports
       });
     }
@@ -1564,14 +1621,20 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
 
     // Calculate compliance rate based on on-time vs expected (for display purposes)
     // But if nothing is overdue yet, keep compliance at 100%
+    // Compliance only reduces when there are actual overdue contributions
     if (totalExpectedContributions > 0 && totalOverdueContributions > 0) {
       const onTimeRate = (totalOnTime / totalExpectedContributions) * 100;
       complianceRate = Math.round(onTimeRate * 10) / 10;
+    } else if (totalExpectedContributions > 0 && totalOverdueContributions === 0) {
+      // If there are expected contributions but none are overdue yet, compliance is 100%
+      complianceRate = 100;
     }
 
     // Reduce health score based on reports
-    // Each pending report reduces score by 5 points, each reviewed report by 2 points
-    const reportPenalty = (pendingReports * 5) + (reviewedReports * 2);
+    // Pending reports (not yet reviewed) are more urgent: -5 points each
+    // Resolved reports (valid concerns) still matter but less urgent: -3 points each
+    // Dismissed reports don't affect health (they were false/invalid)
+    const reportPenalty = (pendingReports * 5) + (resolvedReports * 3);
     healthScore = Math.max(0, healthScore - reportPenalty);
     
     // Update compliance rate to reflect reports penalty (but don't go below 0)
@@ -1629,7 +1692,8 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
         compliance_rate: Math.round(complianceRate * 10) / 10, // Round to 1 decimal
         health_score: healthScore,
         pending_reports: pendingReports,
-        reviewed_reports: reviewedReports,
+        resolved_reports: resolvedReports,
+        total_valid_reports: totalValidReports,
         total_reports: totalReports,
         report_penalty: reportPenalty
       },
@@ -1733,7 +1797,8 @@ router.get('/:groupId', authenticate, async (req, res) => {
     let healthText = 'Healthy - All contributions up to date';
     let healthRating = 'healthy';
     let pendingReports = 0;
-    let reviewedReports = 0;
+    let resolvedReports = 0;
+    let totalValidReports = 0;
     let totalReports = 0;
     let reportPenalty = 0;
 
@@ -1746,7 +1811,8 @@ router.get('/:groupId', authenticate, async (req, res) => {
         healthText = healthData.health.text;
         healthRating = healthData.health.rating;
         pendingReports = healthData.metrics.pending_reports || 0;
-        reviewedReports = healthData.metrics.reviewed_reports || 0;
+        resolvedReports = healthData.metrics.resolved_reports || 0;
+        totalValidReports = healthData.metrics.total_valid_reports || 0;
         totalReports = healthData.metrics.total_reports || 0;
         reportPenalty = healthData.metrics.report_penalty || 0;
       }
@@ -1873,10 +1939,13 @@ router.get('/:groupId', authenticate, async (req, res) => {
       }
 
       // Get reports count for this group
+      // Only count reports that indicate real issues: pending (not yet reviewed) and resolved (valid)
+      // Dismissed reports (invalid/false) don't affect health
       const reportsResult = await pool.query(
         `SELECT 
           COUNT(*) FILTER (WHERE status = 'pending') as pending_reports,
-          COUNT(*) FILTER (WHERE status = 'reviewed') as reviewed_reports,
+          COUNT(*) FILTER (WHERE status = 'resolved') as resolved_reports,
+          COUNT(*) FILTER (WHERE status IN ('pending', 'resolved')) as total_valid_reports,
           COUNT(*) as total_reports
          FROM reports 
          WHERE reported_group_id = $1`,
@@ -1884,7 +1953,8 @@ router.get('/:groupId', authenticate, async (req, res) => {
       );
 
       pendingReports = parseInt(reportsResult.rows[0]?.pending_reports || 0);
-      reviewedReports = parseInt(reportsResult.rows[0]?.reviewed_reports || 0);
+      const resolvedReports = parseInt(reportsResult.rows[0]?.resolved_reports || 0);
+      const totalValidReports = parseInt(reportsResult.rows[0]?.total_valid_reports || 0);
       totalReports = parseInt(reportsResult.rows[0]?.total_reports || 0);
 
       // Debug logging
@@ -1892,7 +1962,8 @@ router.get('/:groupId', authenticate, async (req, res) => {
         console.log('Group health calculation - reports found:', {
           groupId,
           pendingReports,
-          reviewedReports,
+          resolvedReports,
+          totalValidReports,
           totalReports
         });
       }
@@ -1913,14 +1984,20 @@ router.get('/:groupId', authenticate, async (req, res) => {
 
       // Calculate compliance rate based on on-time vs expected (for display purposes)
       // But if nothing is overdue yet, keep compliance at 100%
+      // Compliance only reduces when there are actual overdue contributions
       if (totalExpectedContributions > 0 && totalOverdueContributions > 0) {
         const onTimeRate = (totalOnTime / totalExpectedContributions) * 100;
         complianceRate = Math.round(onTimeRate * 10) / 10;
+      } else if (totalExpectedContributions > 0 && totalOverdueContributions === 0) {
+        // If there are expected contributions but none are overdue yet, compliance is 100%
+        complianceRate = 100;
       }
 
       // Reduce health score based on reports
-      // Each pending report reduces score by 5 points, each reviewed report by 2 points
-      reportPenalty = (pendingReports * 5) + (reviewedReports * 2);
+      // Pending reports (not yet reviewed) are more urgent: -5 points each
+      // Resolved reports (valid concerns) still matter but less urgent: -3 points each
+      // Dismissed reports don't affect health (they were false/invalid)
+      reportPenalty = (pendingReports * 5) + (resolvedReports * 3);
       healthScore = Math.max(0, healthScore - reportPenalty);
       
       // Update compliance rate to reflect reports penalty (but don't go below 0)
@@ -1966,7 +2043,8 @@ router.get('/:groupId', authenticate, async (req, res) => {
     group.health_rating = healthRating;
     group.health_text = healthText;
     group.pending_reports = pendingReports;
-    group.reviewed_reports = reviewedReports;
+    group.resolved_reports = resolvedReports;
+    group.total_valid_reports = totalValidReports;
     group.total_reports = totalReports;
 
     res.json({ group });
