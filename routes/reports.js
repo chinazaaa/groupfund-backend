@@ -213,9 +213,17 @@ router.post('/group/:groupId/public', [
     const reportResult = await pool.query(
       `INSERT INTO reports (reporter_id, reported_group_id, report_type, reason, description)
        VALUES ($1, $2, 'group', $3, $4)
-       RETURNING id, created_at`,
+       RETURNING id, created_at, status`,
       [reporterId, groupId, reason, description || null]
     );
+
+    console.log('Public group report created:', {
+      reportId: reportResult.rows[0].id,
+      groupId,
+      reporterId: reporterId || 'anonymous',
+      reason,
+      status: reportResult.rows[0].status
+    });
 
     // Update group health based on reports
     await updateGroupHealthFromReports(groupId);
@@ -224,12 +232,13 @@ router.post('/group/:groupId/public', [
       message: 'Report submitted successfully',
       report: {
         id: reportResult.rows[0].id,
-        created_at: reportResult.rows[0].created_at
+        created_at: reportResult.rows[0].created_at,
+        status: reportResult.rows[0].status
       }
     });
   } catch (error) {
     console.error('Public report group error:', error);
-    res.status(500).json({ error: 'Server error submitting report' });
+    res.status(500).json({ error: 'Server error submitting report', details: error.message });
   }
 });
 
@@ -401,9 +410,18 @@ router.post('/member/:userId/public', [
     const reportResult = await pool.query(
       `INSERT INTO reports (reporter_id, reported_user_id, reported_group_id, report_type, reason, description)
        VALUES ($1, $2, $3, 'member', $4, $5)
-       RETURNING id, created_at`,
+       RETURNING id, created_at, status`,
       [reporterId, userId, groupId, reason, description || null]
     );
+
+    console.log('Public member report created:', {
+      reportId: reportResult.rows[0].id,
+      userId,
+      groupId,
+      reporterId: reporterId || 'anonymous',
+      reason,
+      status: reportResult.rows[0].status
+    });
 
     // Update user status based on reports
     await updateUserStatusFromReports(userId);
@@ -422,12 +440,13 @@ router.post('/member/:userId/public', [
       message: 'Report submitted successfully',
       report: {
         id: reportResult.rows[0].id,
-        created_at: reportResult.rows[0].created_at
+        created_at: reportResult.rows[0].created_at,
+        status: reportResult.rows[0].status
       }
     });
   } catch (error) {
     console.error('Public report member error:', error);
-    res.status(500).json({ error: 'Server error submitting report' });
+    res.status(500).json({ error: 'Server error submitting report', details: error.message });
   }
 });
 

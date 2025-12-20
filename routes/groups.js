@@ -1266,7 +1266,7 @@ async function calculateSubscriptionGroupHealth(groupId) {
     const reviewedReports = parseInt(reportsResult.rows[0]?.reviewed_reports || 0);
     const totalReports = parseInt(reportsResult.rows[0]?.total_reports || 0);
 
-    // Calculate health score
+    // Calculate base health score from contributions
     let healthScore = 100;
     let complianceRate = 100;
 
@@ -1279,6 +1279,10 @@ async function calculateSubscriptionGroupHealth(groupId) {
     // Each pending report reduces score by 5 points, each reviewed report by 2 points
     const reportPenalty = (pendingReports * 5) + (reviewedReports * 2);
     healthScore = Math.max(0, healthScore - reportPenalty);
+    
+    // Update compliance rate to reflect reports penalty
+    // Compliance rate should also be reduced by reports
+    complianceRate = Math.max(0, complianceRate - reportPenalty);
 
     // If group has 3+ pending reports, consider closing it
     if (pendingReports >= 3) {
@@ -1299,12 +1303,12 @@ async function calculateSubscriptionGroupHealth(groupId) {
     } else if (pendingReports >= 3) {
       healthText = `Reported - ${pendingReports} pending report${pendingReports > 1 ? 's' : ''}. Group has been closed.`;
       healthRating = 'reported';
-    } else if (totalReports > 0 && healthScore < 50) {
-      healthText = `Unhealthy - ${totalReports} report${totalReports > 1 ? 's' : ''} and ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
-      healthRating = 'unhealthy';
     } else if (membersWithOverdueCount === 0 && totalReports === 0) {
       healthText = 'Healthy - All contributions up to date';
       healthRating = 'healthy';
+    } else if (totalReports > 0 && healthScore < 50) {
+      healthText = `Unhealthy - ${totalReports} report${totalReports > 1 ? 's' : ''} and ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthRating = 'unhealthy';
     } else if (healthScore >= 90) {
       healthText = `Mostly healthy - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions${totalReports > 0 ? `, ${totalReports} report${totalReports > 1 ? 's' : ''}` : ''}`;
       healthRating = 'mostly_healthy';
@@ -1327,7 +1331,8 @@ async function calculateSubscriptionGroupHealth(groupId) {
         health_score: healthScore,
         pending_reports: pendingReports,
         reviewed_reports: reviewedReports,
-        total_reports: totalReports
+        total_reports: totalReports,
+        report_penalty: reportPenalty
       },
       health: {
         text: healthText,
@@ -1513,7 +1518,7 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
     const reviewedReports = parseInt(reportsResult.rows[0]?.reviewed_reports || 0);
     const totalReports = parseInt(reportsResult.rows[0]?.total_reports || 0);
 
-    // Calculate health score (0-100)
+    // Calculate base health score from contributions
     // Formula: (on-time contributions / total expected contributions) * 100
     let healthScore = 100; // Default perfect score
     let complianceRate = 100;
@@ -1527,6 +1532,10 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
     // Each pending report reduces score by 5 points, each reviewed report by 2 points
     const reportPenalty = (pendingReports * 5) + (reviewedReports * 2);
     healthScore = Math.max(0, healthScore - reportPenalty);
+    
+    // Update compliance rate to reflect reports penalty
+    // Compliance rate should also be reduced by reports
+    complianceRate = Math.max(0, complianceRate - reportPenalty);
 
     // If group has 3+ pending reports, consider closing it
     if (pendingReports >= 3) {
@@ -1547,12 +1556,12 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
     } else if (pendingReports >= 3) {
       healthText = `Reported - ${pendingReports} pending report${pendingReports > 1 ? 's' : ''}. Group has been closed.`;
       healthRating = 'reported';
-    } else if (totalReports > 0 && healthScore < 50) {
-      healthText = `Unhealthy - ${totalReports} report${totalReports > 1 ? 's' : ''} and ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
-      healthRating = 'unhealthy';
     } else if (membersWithOverdueCount === 0 && totalReports === 0) {
       healthText = 'Healthy - All contributions up to date';
       healthRating = 'healthy';
+    } else if (totalReports > 0 && healthScore < 50) {
+      healthText = `Unhealthy - ${totalReports} report${totalReports > 1 ? 's' : ''} and ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthRating = 'unhealthy';
     } else if (healthScore >= 90) {
       healthText = `Mostly healthy - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions${totalReports > 0 ? `, ${totalReports} report${totalReports > 1 ? 's' : ''}` : ''}`;
       healthRating = 'mostly_healthy';
@@ -1581,7 +1590,8 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
         health_score: healthScore,
         pending_reports: pendingReports,
         reviewed_reports: reviewedReports,
-        total_reports: totalReports
+        total_reports: totalReports,
+        report_penalty: reportPenalty
       },
       health: {
         text: healthText,
@@ -1813,7 +1823,7 @@ router.get('/:groupId', authenticate, async (req, res) => {
     const reviewedReports = parseInt(reportsResult.rows[0]?.reviewed_reports || 0);
     const totalReports = parseInt(reportsResult.rows[0]?.total_reports || 0);
 
-    // Calculate health score (0-100)
+    // Calculate base health score from contributions
     // Formula: (on-time contributions / total expected contributions) * 100
     let healthScore = 100; // Default perfect score
     let complianceRate = 100;
@@ -1827,6 +1837,10 @@ router.get('/:groupId', authenticate, async (req, res) => {
     // Each pending report reduces score by 5 points, each reviewed report by 2 points
     const reportPenalty = (pendingReports * 5) + (reviewedReports * 2);
     healthScore = Math.max(0, healthScore - reportPenalty);
+    
+    // Update compliance rate to reflect reports penalty
+    // Compliance rate should also be reduced by reports
+    complianceRate = Math.max(0, complianceRate - reportPenalty);
 
     // If group has 3+ pending reports, consider closing it
     if (pendingReports >= 3) {
@@ -1847,12 +1861,12 @@ router.get('/:groupId', authenticate, async (req, res) => {
     } else if (pendingReports >= 3) {
       healthText = `Reported - ${pendingReports} pending report${pendingReports > 1 ? 's' : ''}. Group has been closed.`;
       healthRating = 'reported';
-    } else if (totalReports > 0 && healthScore < 50) {
-      healthText = `Unhealthy - ${totalReports} report${totalReports > 1 ? 's' : ''} and ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
-      healthRating = 'unhealthy';
     } else if (membersWithOverdueCount === 0 && totalReports === 0) {
       healthText = 'Healthy - All contributions up to date';
       healthRating = 'healthy';
+    } else if (totalReports > 0 && healthScore < 50) {
+      healthText = `Unhealthy - ${totalReports} report${totalReports > 1 ? 's' : ''} and ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthRating = 'unhealthy';
     } else if (healthScore >= 90) {
       healthText = `Mostly healthy - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions${totalReports > 0 ? `, ${totalReports} report${totalReports > 1 ? 's' : ''}` : ''}`;
       healthRating = 'mostly_healthy';

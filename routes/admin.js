@@ -1834,7 +1834,10 @@ router.get('/reports', async (req, res) => {
           id: report.reporter_id,
           name: report.reporter_name,
           email: report.reporter_email
-        } : null,
+        } : {
+          anonymous: true,
+          note: 'Report submitted anonymously (public/website)'
+        },
         reported_group: report.reported_group_id ? {
           id: report.reported_group_id,
           name: report.reported_group_name,
@@ -1908,7 +1911,10 @@ router.get('/reports/:reportId', async (req, res) => {
         id: report.reporter_id,
         name: report.reporter_name,
         email: report.reporter_email
-      } : null,
+      } : {
+        anonymous: true,
+        note: 'Report submitted anonymously (public/website)'
+      },
       reported_group: report.reported_group_id ? {
         id: report.reported_group_id,
         name: report.reported_group_name,
@@ -2035,7 +2041,10 @@ router.put('/reports/:reportId', [
           id: updatedReport.rows[0].reporter_id,
           name: updatedReport.rows[0].reporter_name,
           email: updatedReport.rows[0].reporter_email
-        } : null,
+        } : {
+          anonymous: true,
+          note: 'Report submitted anonymously (public/website)'
+        },
         reported_group: updatedReport.rows[0].reported_group_id ? {
           id: updatedReport.rows[0].reported_group_id,
           name: updatedReport.rows[0].reported_group_name

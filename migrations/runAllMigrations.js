@@ -29,7 +29,8 @@ const migrations = [
   'add_general_contributions.sql',
   'add_is_public_to_groups.sql',
   'add_notes_to_groups.sql',
-  'add_reports.sql'
+  'add_reports.sql',
+  'fix_reports_constraint.sql'
 ];
 
 async function runAllMigrations() {

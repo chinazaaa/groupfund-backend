@@ -15,10 +15,11 @@ CREATE TABLE IF NOT EXISTS reports (
   admin_notes TEXT, -- Admin's notes on the report
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  -- Ensure either group or user is reported, but not both
+  -- Ensure at least one of group or user is reported
+  -- For member reports, both can be set (group provides context)
+  -- For group reports, only group_id should be set
   CHECK (
-    (reported_group_id IS NOT NULL AND reported_user_id IS NULL) OR
-    (reported_group_id IS NULL AND reported_user_id IS NOT NULL)
+    (reported_group_id IS NOT NULL) OR (reported_user_id IS NOT NULL)
   )
 );
 
