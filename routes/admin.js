@@ -1218,8 +1218,12 @@ router.post('/contributions/send-monthly-newsletter', async (req, res) => {
           }
         }
         
+        // Check if user has any groups at all
+        const hasGroups = groupsResult.rows.length > 0;
+        const hasUpcomingItems = groupsWithBirthdays.length > 0 || subscriptionGroups.length > 0 || generalGroups.length > 0;
+        
         // Only send if user has at least one group with upcoming items this month
-        if (groupsWithBirthdays.length > 0 || subscriptionGroups.length > 0 || generalGroups.length > 0) {
+        if (hasUpcomingItems) {
           // Send email
           let emailSent = false;
           if (user.email) {
@@ -1285,7 +1289,8 @@ router.post('/contributions/send-monthly-newsletter', async (req, res) => {
             user_name: user.name,
             email: user.email,
             status: 'skipped',
-            reason: 'No upcoming items in current month'
+            reason: hasGroups ? 'No upcoming items in current month' : 'User has no groups',
+            groups_count: groupsResult.rows.length
           });
         }
       } catch (error) {
