@@ -157,9 +157,18 @@ router.get('/profile', authenticate, async (req, res) => {
     let reliabilityScore = 100; // Start at 100% (excellent)
     let onTimeRate = 100;
 
+    // Calculate total expected contributions (confirmed + overdue)
+    // This ensures we account for overdue contributions even when there are no confirmed ones yet
+    const totalExpected = totalContributions + totalOverdue;
+
     // Only reduce reliability if there are overdue contributions
     // If deadlines haven't passed yet, reliability remains at 100%
-    if (totalOverdue > 0 && totalContributions > 0) {
+    if (totalOverdue > 0 && totalExpected > 0) {
+      // Calculate on-time rate based on on-time vs total expected (confirmed + overdue)
+      onTimeRate = (totalOnTime / totalExpected) * 100;
+      reliabilityScore = Math.round(onTimeRate);
+    } else if (totalOverdue === 0 && totalContributions > 0) {
+      // If no overdue but there are confirmed contributions, calculate based on on-time rate
       onTimeRate = (totalOnTime / totalContributions) * 100;
       reliabilityScore = Math.round(onTimeRate);
     }
