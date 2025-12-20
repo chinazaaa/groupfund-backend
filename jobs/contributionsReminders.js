@@ -2,6 +2,23 @@ const pool = require('../config/database');
 const { createNotification } = require('../utils/notifications');
 const { sendBirthdayEmail } = require('../utils/email');
 
+// Helper function to throttle email sends (Resend allows 2 requests per second)
+// This ensures we don't exceed the rate limit
+let lastEmailSendTime = 0;
+const MIN_EMAIL_INTERVAL_MS = 600; // 600ms = ~1.67 requests/second (slightly under 2/sec to be safe)
+
+async function throttleEmailSend() {
+  const now = Date.now();
+  const timeSinceLastEmail = now - lastEmailSendTime;
+  
+  if (timeSinceLastEmail < MIN_EMAIL_INTERVAL_MS) {
+    const waitTime = MIN_EMAIL_INTERVAL_MS - timeSinceLastEmail;
+    await new Promise(resolve => setTimeout(resolve, waitTime));
+  }
+  
+  lastEmailSendTime = Date.now();
+}
+
 /**
  * Check for upcoming deadlines (birthdays, subscriptions, general groups) and send reminder notifications
  * NOTE: This job is currently disabled. Use the admin endpoints instead:
@@ -85,6 +102,7 @@ async function checkContributionsReminders() {
       // Send birthday email to the celebrant (only if not already sent)
       if (user.email && !user.email_sent) {
         try {
+          await throttleEmailSend(); // Throttle to respect Resend rate limits
           await sendBirthdayEmail(user.email, user.name);
           // Log email send in birthday_email_log
           await pool.query(
@@ -97,6 +115,11 @@ async function checkContributionsReminders() {
           console.log(`Birthday email sent successfully to ${user.email}`);
         } catch (err) {
           console.error(`Error sending birthday email to ${user.email}:`, err);
+          // If rate limited, wait a bit longer before continuing
+          if (err.statusCode === 429) {
+            console.log('Rate limited by Resend, waiting 2 seconds before continuing...');
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
           // Don't throw - email is non-critical, continue with other users
         }
       } else if (user.email && user.email_sent) {
@@ -426,6 +449,7 @@ async function checkContributionsReminders() {
         // Send comprehensive email with all groups
         if (user.email) {
           try {
+            await throttleEmailSend(); // Throttle to respect Resend rate limits
             const { sendComprehensiveReminderEmail } = require('../utils/email');
             await sendComprehensiveReminderEmail(
               user.email,
@@ -435,6 +459,11 @@ async function checkContributionsReminders() {
             );
           } catch (err) {
             console.error(`Error sending comprehensive reminder email to ${user.email}:`, err);
+            // If rate limited, wait a bit longer before continuing
+            if (err.statusCode === 429) {
+              console.log('Rate limited by Resend, waiting 2 seconds before continuing...');
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
           }
         }
       }
@@ -812,6 +841,7 @@ async function checkOverdueContributions() {
         // Send comprehensive email if user has email
         if (user.email && overdueList.length > 0) {
           try {
+            await throttleEmailSend(); // Throttle to respect Resend rate limits
             const { sendOverdueContributionEmail } = require('../utils/email');
             await sendOverdueContributionEmail(
               user.email,
@@ -830,6 +860,11 @@ async function checkOverdueContributions() {
             );
           } catch (err) {
             console.error(`Error sending overdue contribution email to ${user.email}:`, err);
+            // If rate limited, wait a bit longer before continuing
+            if (err.statusCode === 429) {
+              console.log('Rate limited by Resend, waiting 2 seconds before continuing...');
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
           }
         }
       }
@@ -875,6 +910,7 @@ async function checkOverdueContributions() {
 
           // Send email to admin
           try {
+            await throttleEmailSend(); // Throttle to respect Resend rate limits
             const { sendAdminOverdueNotificationEmail } = require('../utils/email');
             await sendAdminOverdueNotificationEmail(
               admin.email,
@@ -910,6 +946,11 @@ async function checkOverdueContributions() {
             console.log(`Admin overdue notification sent to ${admin.name} (${admin.email}) for group ${groupData.groupName} - ${daysNum} days overdue`);
           } catch (err) {
             console.error(`Error sending admin overdue notification to ${admin.email} for group ${groupData.groupName}:`, err);
+            // If rate limited, wait a bit longer before continuing
+            if (err.statusCode === 429) {
+              console.log('Rate limited by Resend, waiting 2 seconds before continuing...');
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
           }
         }
       }
