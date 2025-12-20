@@ -149,7 +149,8 @@ router.post('/group/:groupId', authenticate, [
 });
 
 // Report a group (public endpoint - no authentication required, for website)
-router.post('/group/:groupId/public', [
+// Accepts group UUID, invite code, or name
+router.post('/group/:groupIdentifier/public', [
   body('reason').isIn(['spam', 'inappropriate', 'fraud', 'harassment', 'other']).withMessage('Invalid reason'),
   body('description').optional().trim(),
   body('email').optional().isEmail().withMessage('Invalid email format'),
@@ -160,18 +161,31 @@ router.post('/group/:groupId/public', [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { groupId } = req.params;
+    const { groupIdentifier } = req.params;
     const { reason, description, email } = req.body;
 
-    // Check if group exists
-    const groupCheck = await pool.query(
-      'SELECT id, name FROM groups WHERE id = $1',
-      [groupId]
-    );
+    // Try to find group by UUID, invite code, or name
+    let groupCheck;
+    // Check if it's a UUID format
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (uuidRegex.test(groupIdentifier)) {
+      groupCheck = await pool.query(
+        'SELECT id, name FROM groups WHERE id = $1',
+        [groupIdentifier]
+      );
+    } else {
+      // Try invite code first (shorter, uppercase), then name
+      groupCheck = await pool.query(
+        'SELECT id, name FROM groups WHERE invite_code = $1 OR LOWER(name) = LOWER($1)',
+        [groupIdentifier.trim()]
+      );
+    }
 
     if (groupCheck.rows.length === 0) {
-      return res.status(404).json({ error: 'Group not found' });
+      return res.status(404).json({ error: 'Group not found. Please check the group name, invite code, or ID.' });
     }
+
+    const groupId = groupCheck.rows[0].id;
 
     // Try to find reporter by email if provided
     let reporterId = null;
@@ -220,13 +234,19 @@ router.post('/group/:groupId/public', [
     console.log('Public group report created:', {
       reportId: reportResult.rows[0].id,
       groupId,
+      groupName: groupCheck.rows[0].name,
       reporterId: reporterId || 'anonymous',
       reason,
       status: reportResult.rows[0].status
     });
 
     // Update group health based on reports
-    await updateGroupHealthFromReports(groupId);
+    const healthUpdate = await updateGroupHealthFromReports(groupId);
+    console.log('Group health update result:', {
+      groupId,
+      pendingReports: healthUpdate?.pending_reports || 0,
+      totalReports: healthUpdate?.total_reports || 0
+    });
 
     res.status(201).json({
       message: 'Report submitted successfully',
@@ -334,7 +354,8 @@ router.post('/member/:memberId', authenticate, [
 });
 
 // Report a member (public endpoint - no authentication required, for website)
-router.post('/member/:userId/public', [
+// Accepts user UUID or name, and group UUID, invite code, or name
+router.post('/member/:userIdentifier/public', [
   body('groupId').notEmpty().withMessage('Group ID is required'),
   body('reason').isIn(['spam', 'inappropriate', 'fraud', 'harassment', 'other']).withMessage('Invalid reason'),
   body('description').optional().trim(),
@@ -346,28 +367,49 @@ router.post('/member/:userId/public', [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { userId } = req.params;
+    const { userIdentifier } = req.params;
     const { groupId, reason, description, email } = req.body;
 
-    // Check if user exists
-    const userCheck = await pool.query(
-      'SELECT id, name FROM users WHERE id = $1',
-      [userId]
-    );
+    // Try to find user by UUID or name
+    let userCheck;
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (uuidRegex.test(userIdentifier)) {
+      userCheck = await pool.query(
+        'SELECT id, name FROM users WHERE id = $1',
+        [userIdentifier]
+      );
+    } else {
+      userCheck = await pool.query(
+        'SELECT id, name FROM users WHERE LOWER(name) = LOWER($1)',
+        [userIdentifier.trim()]
+      );
+    }
 
     if (userCheck.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(404).json({ error: 'User not found. Please check the member name or ID.' });
     }
 
-    // Check if group exists
-    const groupCheck = await pool.query(
-      'SELECT id, name FROM groups WHERE id = $1',
-      [groupId]
-    );
+    const userId = userCheck.rows[0].id;
+
+    // Try to find group by UUID, invite code, or name
+    let groupCheck;
+    if (uuidRegex.test(groupId)) {
+      groupCheck = await pool.query(
+        'SELECT id, name FROM groups WHERE id = $1',
+        [groupId]
+      );
+    } else {
+      groupCheck = await pool.query(
+        'SELECT id, name FROM groups WHERE invite_code = $1 OR LOWER(name) = LOWER($1)',
+        [groupId.trim()]
+      );
+    }
 
     if (groupCheck.rows.length === 0) {
-      return res.status(404).json({ error: 'Group not found' });
+      return res.status(404).json({ error: 'Group not found. Please check the group name, invite code, or ID.' });
     }
+
+    const actualGroupId = groupCheck.rows[0].id;
 
     // Try to find reporter by email if provided
     let reporterId = null;
@@ -386,7 +428,7 @@ router.post('/member/:userId/public', [
       const existingReport = await pool.query(
         `SELECT id FROM reports 
          WHERE reporter_id = $1 AND reported_user_id = $2 AND reported_group_id = $3 AND status = $4 AND created_at > NOW() - INTERVAL '24 hours'`,
-        [reporterId, userId, groupId, 'pending']
+        [reporterId, userId, actualGroupId, 'pending']
       );
 
       if (existingReport.rows.length > 0) {
@@ -398,7 +440,7 @@ router.post('/member/:userId/public', [
         `SELECT id FROM reports r
          LEFT JOIN users u ON r.reporter_id = u.id
          WHERE u.email = $1 AND r.reported_user_id = $2 AND r.reported_group_id = $3 AND r.status = $4 AND r.created_at > NOW() - INTERVAL '24 hours'`,
-        [email, userId, groupId, 'pending']
+        [email, userId, actualGroupId, 'pending']
       );
 
       if (existingReport.rows.length > 0) {
@@ -411,13 +453,13 @@ router.post('/member/:userId/public', [
       `INSERT INTO reports (reporter_id, reported_user_id, reported_group_id, report_type, reason, description)
        VALUES ($1, $2, $3, 'member', $4, $5)
        RETURNING id, created_at, status`,
-      [reporterId, userId, groupId, reason, description || null]
+      [reporterId, userId, actualGroupId, reason, description || null]
     );
 
     console.log('Public member report created:', {
       reportId: reportResult.rows[0].id,
       userId,
-      groupId,
+      groupId: actualGroupId,
       reporterId: reporterId || 'anonymous',
       reason,
       status: reportResult.rows[0].status
@@ -429,11 +471,11 @@ router.post('/member/:userId/public', [
     // Check if reported user is an admin - if so, also update group health
     const adminCheck = await pool.query(
       'SELECT admin_id FROM groups WHERE id = $1 AND admin_id = $2',
-      [groupId, userId]
+      [actualGroupId, userId]
     );
 
     if (adminCheck.rows.length > 0) {
-      await updateGroupHealthFromReports(groupId);
+      await updateGroupHealthFromReports(actualGroupId);
     }
 
     res.status(201).json({

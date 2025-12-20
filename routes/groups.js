@@ -1266,6 +1266,16 @@ async function calculateSubscriptionGroupHealth(groupId) {
     const reviewedReports = parseInt(reportsResult.rows[0]?.reviewed_reports || 0);
     const totalReports = parseInt(reportsResult.rows[0]?.total_reports || 0);
 
+    // Debug logging
+    if (totalReports > 0) {
+      console.log('Group health calculation - reports found:', {
+        groupId,
+        pendingReports,
+        reviewedReports,
+        totalReports
+      });
+    }
+
     // Calculate base health score from contributions
     let healthScore = 100;
     let complianceRate = 100;
@@ -1517,6 +1527,16 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
     const pendingReports = parseInt(reportsResult.rows[0]?.pending_reports || 0);
     const reviewedReports = parseInt(reportsResult.rows[0]?.reviewed_reports || 0);
     const totalReports = parseInt(reportsResult.rows[0]?.total_reports || 0);
+
+    // Debug logging
+    if (totalReports > 0) {
+      console.log('Group health calculation - reports found:', {
+        groupId,
+        pendingReports,
+        reviewedReports,
+        totalReports
+      });
+    }
 
     // Calculate base health score from contributions
     // Formula: (on-time contributions / total expected contributions) * 100
@@ -1822,6 +1842,16 @@ router.get('/:groupId', authenticate, async (req, res) => {
     const pendingReports = parseInt(reportsResult.rows[0]?.pending_reports || 0);
     const reviewedReports = parseInt(reportsResult.rows[0]?.reviewed_reports || 0);
     const totalReports = parseInt(reportsResult.rows[0]?.total_reports || 0);
+
+    // Debug logging
+    if (totalReports > 0) {
+      console.log('Group health calculation - reports found:', {
+        groupId,
+        pendingReports,
+        reviewedReports,
+        totalReports
+      });
+    }
 
     // Calculate base health score from contributions
     // Formula: (on-time contributions / total expected contributions) * 100
