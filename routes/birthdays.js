@@ -429,6 +429,7 @@ router.get('/calendar/:year/:month', authenticate, async (req, res) => {
        WHERE gm1.user_id = $1
          AND gm1.status = 'active'
          AND gm2.status = 'active'
+         AND g.group_type = 'birthday'
          AND u.birthday IS NOT NULL
          AND EXTRACT(MONTH FROM u.birthday) = $2
          AND EXTRACT(YEAR FROM u.birthday) <= $3
