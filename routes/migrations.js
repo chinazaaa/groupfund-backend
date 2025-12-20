@@ -30,7 +30,8 @@ const migrations = [
   'add_subscription_contributions.sql',
   'add_general_contributions.sql',
   'add_is_public_to_groups.sql',
-  'add_notes_to_groups.sql'
+  'add_notes_to_groups.sql',
+  'add_reports.sql'
 ];
 
 // Migration endpoint - SECURE THIS IN PRODUCTION!

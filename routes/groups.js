@@ -1251,6 +1251,21 @@ async function calculateSubscriptionGroupHealth(groupId) {
       }
     }
 
+    // Get reports count for this group
+    const reportsResult = await pool.query(
+      `SELECT 
+        COUNT(*) FILTER (WHERE status = 'pending') as pending_reports,
+        COUNT(*) FILTER (WHERE status = 'reviewed') as reviewed_reports,
+        COUNT(*) as total_reports
+       FROM reports 
+       WHERE reported_group_id = $1`,
+      [groupId]
+    );
+
+    const pendingReports = parseInt(reportsResult.rows[0]?.pending_reports || 0);
+    const reviewedReports = parseInt(reportsResult.rows[0]?.reviewed_reports || 0);
+    const totalReports = parseInt(reportsResult.rows[0]?.total_reports || 0);
+
     // Calculate health score
     let healthScore = 100;
     let complianceRate = 100;
@@ -1260,25 +1275,44 @@ async function calculateSubscriptionGroupHealth(groupId) {
       healthScore = Math.round(complianceRate);
     }
 
+    // Reduce health score based on reports
+    // Each pending report reduces score by 5 points, each reviewed report by 2 points
+    const reportPenalty = (pendingReports * 5) + (reviewedReports * 2);
+    healthScore = Math.max(0, healthScore - reportPenalty);
+
+    // If group has 3+ pending reports, consider closing it
+    if (pendingReports >= 3) {
+      await pool.query(
+        'UPDATE groups SET status = $1 WHERE id = $2 AND status != $1',
+        ['closed', groupId]
+      );
+    }
+
     // Generate health summary
     let healthText = '';
     let healthRating = 'healthy';
     const membersWithOverdueCount = membersWithOverdue.size;
 
-    if (totalExpectedContributions === 0) {
+    if (totalExpectedContributions === 0 && totalReports === 0) {
       healthText = 'New group - No contribution history yet';
       healthRating = 'new';
-    } else if (membersWithOverdueCount === 0) {
+    } else if (pendingReports >= 3) {
+      healthText = `Reported - ${pendingReports} pending report${pendingReports > 1 ? 's' : ''}. Group has been closed.`;
+      healthRating = 'reported';
+    } else if (totalReports > 0 && healthScore < 50) {
+      healthText = `Unhealthy - ${totalReports} report${totalReports > 1 ? 's' : ''} and ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthRating = 'unhealthy';
+    } else if (membersWithOverdueCount === 0 && totalReports === 0) {
       healthText = 'Healthy - All contributions up to date';
       healthRating = 'healthy';
     } else if (healthScore >= 90) {
-      healthText = `Mostly healthy - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthText = `Mostly healthy - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions${totalReports > 0 ? `, ${totalReports} report${totalReports > 1 ? 's' : ''}` : ''}`;
       healthRating = 'mostly_healthy';
     } else if (healthScore >= 75) {
-      healthText = `Moderate - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthText = `Moderate - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions${totalReports > 0 ? `, ${totalReports} report${totalReports > 1 ? 's' : ''}` : ''}`;
       healthRating = 'moderate';
     } else {
-      healthText = `Unhealthy - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthText = `Unhealthy - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions${totalReports > 0 ? `, ${totalReports} report${totalReports > 1 ? 's' : ''}` : ''}`;
       healthRating = 'unhealthy';
     }
 
@@ -1290,7 +1324,10 @@ async function calculateSubscriptionGroupHealth(groupId) {
         total_overdue: totalOverdueContributions,
         members_with_overdue: membersWithOverdueCount,
         compliance_rate: Math.round(complianceRate * 10) / 10,
-        health_score: healthScore
+        health_score: healthScore,
+        pending_reports: pendingReports,
+        reviewed_reports: reviewedReports,
+        total_reports: totalReports
       },
       health: {
         text: healthText,
@@ -1461,6 +1498,21 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
       }
     }
 
+    // Get reports count for this group
+    const reportsResult = await pool.query(
+      `SELECT 
+        COUNT(*) FILTER (WHERE status = 'pending') as pending_reports,
+        COUNT(*) FILTER (WHERE status = 'reviewed') as reviewed_reports,
+        COUNT(*) as total_reports
+       FROM reports 
+       WHERE reported_group_id = $1`,
+      [groupId]
+    );
+
+    const pendingReports = parseInt(reportsResult.rows[0]?.pending_reports || 0);
+    const reviewedReports = parseInt(reportsResult.rows[0]?.reviewed_reports || 0);
+    const totalReports = parseInt(reportsResult.rows[0]?.total_reports || 0);
+
     // Calculate health score (0-100)
     // Formula: (on-time contributions / total expected contributions) * 100
     let healthScore = 100; // Default perfect score
@@ -1471,25 +1523,44 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
       healthScore = Math.round(complianceRate);
     }
 
+    // Reduce health score based on reports
+    // Each pending report reduces score by 5 points, each reviewed report by 2 points
+    const reportPenalty = (pendingReports * 5) + (reviewedReports * 2);
+    healthScore = Math.max(0, healthScore - reportPenalty);
+
+    // If group has 3+ pending reports, consider closing it
+    if (pendingReports >= 3) {
+      await pool.query(
+        'UPDATE groups SET status = $1 WHERE id = $2 AND status != $1',
+        ['closed', groupId]
+      );
+    }
+
     // Generate health summary
     let healthText = '';
     let healthRating = 'healthy';
     const membersWithOverdueCount = membersWithOverdue.size;
 
-    if (totalExpectedContributions === 0) {
+    if (totalExpectedContributions === 0 && totalReports === 0) {
       healthText = 'New group - No contribution history yet';
       healthRating = 'new';
-    } else if (membersWithOverdueCount === 0) {
+    } else if (pendingReports >= 3) {
+      healthText = `Reported - ${pendingReports} pending report${pendingReports > 1 ? 's' : ''}. Group has been closed.`;
+      healthRating = 'reported';
+    } else if (totalReports > 0 && healthScore < 50) {
+      healthText = `Unhealthy - ${totalReports} report${totalReports > 1 ? 's' : ''} and ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthRating = 'unhealthy';
+    } else if (membersWithOverdueCount === 0 && totalReports === 0) {
       healthText = 'Healthy - All contributions up to date';
       healthRating = 'healthy';
     } else if (healthScore >= 90) {
-      healthText = `Mostly healthy - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthText = `Mostly healthy - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions${totalReports > 0 ? `, ${totalReports} report${totalReports > 1 ? 's' : ''}` : ''}`;
       healthRating = 'mostly_healthy';
     } else if (healthScore >= 75) {
-      healthText = `Moderate - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthText = `Moderate - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions${totalReports > 0 ? `, ${totalReports} report${totalReports > 1 ? 's' : ''}` : ''}`;
       healthRating = 'moderate';
     } else {
-      healthText = `Unhealthy - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthText = `Unhealthy - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions${totalReports > 0 ? `, ${totalReports} report${totalReports > 1 ? 's' : ''}` : ''}`;
       healthRating = 'unhealthy';
     }
 
@@ -1507,11 +1578,14 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
         total_overdue: totalOverdueContributions,
         members_with_overdue: membersWithOverdueCount,
         compliance_rate: Math.round(complianceRate * 10) / 10, // Round to 1 decimal
-        health_score: healthScore
+        health_score: healthScore,
+        pending_reports: pendingReports,
+        reviewed_reports: reviewedReports,
+        total_reports: totalReports
       },
       health: {
         text: healthText,
-        rating: healthRating // 'new', 'healthy', 'mostly_healthy', 'moderate', 'unhealthy'
+        rating: healthRating // 'new', 'healthy', 'mostly_healthy', 'moderate', 'unhealthy', 'reported'
       }
     });
   } catch (error) {
@@ -1724,6 +1798,21 @@ router.get('/:groupId', authenticate, async (req, res) => {
       }
     }
 
+    // Get reports count for this group
+    const reportsResult = await pool.query(
+      `SELECT 
+        COUNT(*) FILTER (WHERE status = 'pending') as pending_reports,
+        COUNT(*) FILTER (WHERE status = 'reviewed') as reviewed_reports,
+        COUNT(*) as total_reports
+       FROM reports 
+       WHERE reported_group_id = $1`,
+      [groupId]
+    );
+
+    const pendingReports = parseInt(reportsResult.rows[0]?.pending_reports || 0);
+    const reviewedReports = parseInt(reportsResult.rows[0]?.reviewed_reports || 0);
+    const totalReports = parseInt(reportsResult.rows[0]?.total_reports || 0);
+
     // Calculate health score (0-100)
     // Formula: (on-time contributions / total expected contributions) * 100
     let healthScore = 100; // Default perfect score
@@ -1734,25 +1823,44 @@ router.get('/:groupId', authenticate, async (req, res) => {
       healthScore = Math.round(complianceRate);
     }
 
+    // Reduce health score based on reports
+    // Each pending report reduces score by 5 points, each reviewed report by 2 points
+    const reportPenalty = (pendingReports * 5) + (reviewedReports * 2);
+    healthScore = Math.max(0, healthScore - reportPenalty);
+
+    // If group has 3+ pending reports, consider closing it
+    if (pendingReports >= 3) {
+      await pool.query(
+        'UPDATE groups SET status = $1 WHERE id = $2 AND status != $1',
+        ['closed', groupId]
+      );
+    }
+
     // Generate health summary
     let healthText = '';
     let healthRating = 'healthy';
     const membersWithOverdueCount = membersWithOverdue.size;
 
-    if (totalExpectedContributions === 0) {
+    if (totalExpectedContributions === 0 && totalReports === 0) {
       healthText = 'New group - No contribution history yet';
       healthRating = 'new';
-    } else if (membersWithOverdueCount === 0) {
+    } else if (pendingReports >= 3) {
+      healthText = `Reported - ${pendingReports} pending report${pendingReports > 1 ? 's' : ''}. Group has been closed.`;
+      healthRating = 'reported';
+    } else if (totalReports > 0 && healthScore < 50) {
+      healthText = `Unhealthy - ${totalReports} report${totalReports > 1 ? 's' : ''} and ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthRating = 'unhealthy';
+    } else if (membersWithOverdueCount === 0 && totalReports === 0) {
       healthText = 'Healthy - All contributions up to date';
       healthRating = 'healthy';
     } else if (healthScore >= 90) {
-      healthText = `Mostly healthy - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthText = `Mostly healthy - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions${totalReports > 0 ? `, ${totalReports} report${totalReports > 1 ? 's' : ''}` : ''}`;
       healthRating = 'mostly_healthy';
     } else if (healthScore >= 75) {
-      healthText = `Moderate - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthText = `Moderate - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions${totalReports > 0 ? `, ${totalReports} report${totalReports > 1 ? 's' : ''}` : ''}`;
       healthRating = 'moderate';
     } else {
-      healthText = `Unhealthy - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthText = `Unhealthy - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions${totalReports > 0 ? `, ${totalReports} report${totalReports > 1 ? 's' : ''}` : ''}`;
       healthRating = 'unhealthy';
     }
 
@@ -1760,6 +1868,9 @@ router.get('/:groupId', authenticate, async (req, res) => {
     group.health_score = healthScore;
     group.health_rating = healthRating;
     group.health_text = healthText;
+    group.pending_reports = pendingReports;
+    group.reviewed_reports = reviewedReports;
+    group.total_reports = totalReports;
 
     res.json({ group });
   } catch (error) {
