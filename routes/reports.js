@@ -26,8 +26,8 @@ async function updateGroupHealthFromReports(groupId) {
     // If group has 3+ pending reports, automatically close it
     if (pendingCount >= 3) {
       await pool.query(
-        'UPDATE groups SET status = $1 WHERE id = $2 AND status != $1',
-        ['closed', groupId]
+        'UPDATE groups SET status = $1, closed_reason = $2 WHERE id = $3 AND status != $1',
+        ['closed', 'reports', groupId]
       );
     }
 

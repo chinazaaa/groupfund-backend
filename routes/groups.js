@@ -2704,10 +2704,13 @@ router.put('/:groupId/close', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Group is already closed' });
     }
 
+    // Set closed_reason based on who is closing it
+    const closedReason = isSystemAdmin ? 'admin' : null; // null means user/admin closed it themselves
+
     // Close the group
     const result = await pool.query(
-      'UPDATE groups SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING id, name, status',
-      ['closed', groupId]
+      'UPDATE groups SET status = $1, closed_reason = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3 RETURNING id, name, status',
+      ['closed', closedReason, groupId]
     );
 
     res.json({
@@ -2727,9 +2730,9 @@ router.put('/:groupId/reopen', authenticate, async (req, res) => {
     const userId = req.user.id;
     const isSystemAdmin = req.user.is_admin;
 
-    // Get group details
+    // Get group details including closed_reason
     const groupResult = await pool.query(
-      'SELECT id, admin_id, status FROM groups WHERE id = $1',
+      'SELECT id, admin_id, status, closed_reason FROM groups WHERE id = $1',
       [groupId]
     );
 
@@ -2749,9 +2752,22 @@ router.put('/:groupId/reopen', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Group is already open' });
     }
 
-    // Reopen the group
+    // Prevent reopening if closed due to reports or by system admin
+    if (group.closed_reason === 'reports') {
+      return res.status(403).json({ 
+        error: 'This group cannot be reopened. It was automatically closed due to multiple pending reports. Please contact support if you believe this is an error.' 
+      });
+    }
+
+    if (group.closed_reason === 'admin') {
+      return res.status(403).json({ 
+        error: 'This group cannot be reopened. It was closed by a GroupFund administrator. Please contact support if you have questions.' 
+      });
+    }
+
+    // Reopen the group (clear closed_reason when reopening)
     const result = await pool.query(
-      'UPDATE groups SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING id, name, status',
+      'UPDATE groups SET status = $1, closed_reason = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING id, name, status',
       ['active', groupId]
     );
 

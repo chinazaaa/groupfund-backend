@@ -32,7 +32,8 @@ const migrations = [
   'add_is_public_to_groups.sql',
   'add_notes_to_groups.sql',
   'add_reports.sql',
-  'fix_reports_constraint.sql'
+  'fix_reports_constraint.sql',
+  'add_closed_reason_to_groups.sql'
 ];
 
 // Migration endpoint - SECURE THIS IN PRODUCTION!
