@@ -12,7 +12,7 @@ const { sendBirthdayEmail } = require('../utils/email');
  * 
  * This function is kept for reference but should not be run automatically.
  */
-async function checkBirthdayReminders() {
+async function checkContributionsReminders() {
   try {
     const today = new Date();
     const todayDate = today.toISOString().split('T')[0];
@@ -579,22 +579,22 @@ async function checkBirthdayReminders() {
       }
     }
     
-    console.log('Birthday reminders check completed');
+    console.log('Contributions reminders check completed');
   } catch (error) {
-    console.error('Error checking birthday reminders:', error);
+    console.error('Error checking contributions reminders:', error);
   }
 }
 
 // Run if called directly (for testing)
 // COMMENTED OUT: Use admin endpoints instead for manual triggering
 // if (require.main === module) {
-//   checkBirthdayReminders()
+//   checkContributionsReminders()
 //     .then(() => {
-//       console.log('Birthday reminders job completed');
+//       console.log('Contributions reminders job completed');
 //       process.exit(0);
 //     })
 //     .catch((error) => {
-//       console.error('Birthday reminders job failed:', error);
+//       console.error('Contributions reminders job failed:', error);
 //       process.exit(1);
 //     });
 // }
@@ -1060,4 +1060,4 @@ async function checkOverdueContributions() {
   }
 }
 
-module.exports = { checkBirthdayReminders, checkOverdueContributions };
+module.exports = { checkContributionsReminders, checkOverdueContributions };
