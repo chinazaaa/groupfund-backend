@@ -88,7 +88,7 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
 
     // Get all groups the user is/was a member of (active or past)
     const groupsResult = await pool.query(
-      `SELECT g.id, g.name, gm.joined_at, gm.status
+      `SELECT g.id, g.name, g.group_type, g.subscription_frequency, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline, gm.joined_at, gm.status
        FROM group_members gm
        JOIN groups g ON gm.group_id = g.id
        WHERE gm.user_id = $1 AND gm.status IN ('active', 'inactive')
@@ -142,6 +142,12 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
             let contributionDate = null;
             let paidOnTime = false;
 
+            // Count all birthdays that have passed (or are today) as expected contributions
+            // This ensures we have a proper denominator for reliability calculation
+            if (isPastOrToday) {
+              totalContributions++;
+            }
+
             if (contributionCheck.rows.length > 0) {
               status = contributionCheck.rows[0].status;
               contributionDate = contributionCheck.rows[0].contribution_date ? new Date(contributionCheck.rows[0].contribution_date) : null;
@@ -151,11 +157,6 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
               if (isFullyPaid && contributionDate) {
                 contributionDate.setHours(0, 0, 0, 0);
                 paidOnTime = contributionDate <= thisYearBirthday;
-              }
-              
-              // Total contributions = only confirmed contributions
-              if (isFullyPaid) {
-                totalContributions++;
               }
             }
 
@@ -190,6 +191,112 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
       }
     }
 
+    // Calculate metrics for subscription groups
+    for (const group of groupsResult.rows.filter(g => g.group_type === 'subscription')) {
+      const userJoinDate = new Date(group.joined_at);
+      userJoinDate.setHours(0, 0, 0, 0);
+      
+      const currentMonth = today.getMonth() + 1;
+      let periodStart;
+      if (group.subscription_frequency === 'monthly') {
+        periodStart = new Date(currentYear, currentMonth - 1, 1);
+      } else {
+        periodStart = new Date(currentYear, 0, 1);
+      }
+      periodStart.setHours(0, 0, 0, 0);
+
+      let deadlineDate;
+      if (group.subscription_frequency === 'monthly') {
+        deadlineDate = new Date(currentYear, currentMonth - 1, group.subscription_deadline_day || 1);
+      } else {
+        deadlineDate = new Date(currentYear, (group.subscription_deadline_month || 1) - 1, group.subscription_deadline_day || 1);
+      }
+      deadlineDate.setHours(0, 0, 0, 0);
+      const isDeadlinePassed = deadlineDate < today;
+
+      // Only count if user was a member when deadline occurred
+      if (userJoinDate <= deadlineDate && isDeadlinePassed) {
+        const contributionCheck = await pool.query(
+          `SELECT status, contribution_date 
+           FROM subscription_contributions 
+           WHERE group_id = $1 AND contributor_id = $2 AND subscription_period_start = $3
+           ORDER BY contribution_date DESC
+           LIMIT 1`,
+          [group.id, userId, periodStart]
+        );
+
+        totalContributions++;
+
+        if (contributionCheck.rows.length > 0) {
+          const status = contributionCheck.rows[0].status;
+          const contributionDate = contributionCheck.rows[0].contribution_date ? new Date(contributionCheck.rows[0].contribution_date) : null;
+          const isFullyPaid = (status === 'confirmed');
+          
+          if (isFullyPaid && contributionDate) {
+            contributionDate.setHours(0, 0, 0, 0);
+            const paidOnTime = contributionDate <= deadlineDate;
+            if (paidOnTime) {
+              totalOnTime++;
+            } else {
+              totalOverdue++;
+            }
+          } else if (status === 'not_paid' || status === 'not_received' || status === 'paid') {
+            totalOverdue++;
+          }
+        } else {
+          totalOverdue++;
+        }
+      }
+    }
+
+    // Calculate metrics for general groups
+    for (const group of groupsResult.rows.filter(g => g.group_type === 'general')) {
+      if (!group.deadline) {
+        continue; // Skip groups without deadlines
+      }
+
+      const userJoinDate = new Date(group.joined_at);
+      userJoinDate.setHours(0, 0, 0, 0);
+      
+      const deadlineDate = new Date(group.deadline);
+      deadlineDate.setHours(0, 0, 0, 0);
+      const isDeadlinePassed = deadlineDate < today;
+
+      // Only count if user was a member when deadline occurred
+      if (userJoinDate <= deadlineDate && isDeadlinePassed) {
+        const contributionCheck = await pool.query(
+          `SELECT status, contribution_date 
+           FROM general_contributions 
+           WHERE group_id = $1 AND contributor_id = $2
+           ORDER BY contribution_date DESC
+           LIMIT 1`,
+          [group.id, userId]
+        );
+
+        totalContributions++;
+
+        if (contributionCheck.rows.length > 0) {
+          const status = contributionCheck.rows[0].status;
+          const contributionDate = contributionCheck.rows[0].contribution_date ? new Date(contributionCheck.rows[0].contribution_date) : null;
+          const isFullyPaid = (status === 'confirmed');
+          
+          if (isFullyPaid && contributionDate) {
+            contributionDate.setHours(0, 0, 0, 0);
+            const paidOnTime = contributionDate <= deadlineDate;
+            if (paidOnTime) {
+              totalOnTime++;
+            } else {
+              totalOverdue++;
+            }
+          } else if (status === 'not_paid' || status === 'not_received' || status === 'paid') {
+            totalOverdue++;
+          }
+        } else {
+          totalOverdue++;
+        }
+      }
+    }
+
     // Get reports count for this user
     const reportsResult = await pool.query(
       `SELECT 
@@ -209,20 +316,22 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
     let reliabilityScore = 100; // Start at 100% (excellent)
     let onTimeRate = 100;
 
-    // Calculate total expected contributions (confirmed + overdue)
-    // This ensures we account for overdue contributions even when there are no confirmed ones yet
-    const totalExpected = totalContributions + totalOverdue;
+    // totalContributions now represents all birthdays that have passed (or are today)
+    // totalOverdue represents contributions that are overdue (which are a subset of totalContributions)
+    // So we should use totalContributions as the denominator, not totalContributions + totalOverdue
+    const totalExpected = totalContributions;
 
     // Only reduce reliability if there are overdue contributions
-    // If deadlines haven't passed yet, reliability remains at 100%
+    // If no overdue contributions, reliability stays at 100%
     if (totalOverdue > 0 && totalExpected > 0) {
-      // Calculate on-time rate based on on-time vs total expected (confirmed + overdue)
+      // Calculate on-time rate based on on-time vs total expected contributions
+      // This reduces from 100% based on how many are overdue
       onTimeRate = (totalOnTime / totalExpected) * 100;
       reliabilityScore = Math.round(onTimeRate);
-    } else if (totalOverdue === 0 && totalContributions > 0) {
-      // If no overdue but there are confirmed contributions, calculate based on on-time rate
-      onTimeRate = (totalOnTime / totalContributions) * 100;
-      reliabilityScore = Math.round(onTimeRate);
+    } else if (totalOverdue === 0 && totalExpected > 0) {
+      // If no overdue contributions, keep at 100%
+      onTimeRate = 100;
+      reliabilityScore = 100;
     }
 
     // Reduce reliability based on reports
