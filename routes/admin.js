@@ -419,75 +419,171 @@ router.get('/transactions', async (req, res) => {
   }
 });
 
-// Get all contributions
+// Get all contributions (birthday, subscription, and general)
 router.get('/contributions', async (req, res) => {
   try {
-    const { page = 1, limit = 50, status, groupId, userId } = req.query;
+    const { page = 1, limit = 50, status, groupId, userId, contributionType } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
-    let query = `
-      SELECT 
-        bc.id, bc.amount, bc.contribution_date, bc.status, bc.note, bc.created_at,
-        g.id as group_id, g.name as group_name, g.currency,
-        u1.id as birthday_user_id, u1.name as birthday_user_name,
-        u2.id as contributor_id, u2.name as contributor_name,
-        t.type as transaction_type
-      FROM birthday_contributions bc
-      LEFT JOIN groups g ON bc.group_id = g.id
-      LEFT JOIN users u1 ON bc.birthday_user_id = u1.id
-      LEFT JOIN users u2 ON bc.contributor_id = u2.id
-      LEFT JOIN transactions t ON bc.transaction_id = t.id
-      WHERE 1=1
-    `;
+    // Build WHERE conditions
+    const whereConditions = [];
     const params = [];
     let paramCount = 1;
 
     if (status) {
-      query += ` AND bc.status = $${paramCount++}`;
+      whereConditions.push(`status = $${paramCount++}`);
       params.push(status);
     }
 
     if (groupId) {
-      query += ` AND bc.group_id = $${paramCount++}`;
+      whereConditions.push(`group_id = $${paramCount++}`);
       params.push(groupId);
     }
 
+    // Build UNION query for all contribution types
+    let birthdayWhere = whereConditions.length > 0 ? ` AND ${whereConditions.join(' AND ')}` : '';
+    let subscriptionWhere = whereConditions.length > 0 ? ` AND ${whereConditions.join(' AND ')}` : '';
+    let generalWhere = whereConditions.length > 0 ? ` AND ${whereConditions.join(' AND ')}` : '';
+
+    // Add userId filter for each type
     if (userId) {
-      query += ` AND (bc.birthday_user_id = $${paramCount} OR bc.contributor_id = $${paramCount})`;
+      const userIdParam = `$${paramCount++}`;
       params.push(userId);
-      paramCount++;
+      birthdayWhere += ` AND (birthday_user_id = ${userIdParam} OR contributor_id = ${userIdParam})`;
+      subscriptionWhere += ` AND contributor_id = ${userIdParam}`;
+      generalWhere += ` AND contributor_id = ${userIdParam}`;
     }
 
-    // Get total count - build a proper count query
-    let countQuery = `
-      SELECT COUNT(*) as total
-      FROM birthday_contributions bc
-      WHERE 1=1
+    // Filter by contribution type if specified
+    if (contributionType === 'birthday') {
+      subscriptionWhere = ' AND 1=0'; // Exclude subscription
+      generalWhere = ' AND 1=0'; // Exclude general
+    } else if (contributionType === 'subscription') {
+      birthdayWhere = ' AND 1=0'; // Exclude birthday
+      generalWhere = ' AND 1=0'; // Exclude general
+    } else if (contributionType === 'general') {
+      birthdayWhere = ' AND 1=0'; // Exclude birthday
+      subscriptionWhere = ' AND 1=0'; // Exclude subscription
+    }
+
+    // Build the UNION query
+    const query = `
+      SELECT 
+        id, amount, contribution_date, status, note, created_at,
+        group_id, group_name, currency,
+        birthday_user_id, birthday_user_name,
+        contributor_id, contributor_name,
+        transaction_type, contribution_type,
+        subscription_period_start, subscription_period_end
+      FROM (
+        -- Birthday contributions
+        SELECT 
+          bc.id, bc.amount, bc.contribution_date, bc.status, bc.note, bc.created_at,
+          g.id as group_id, g.name as group_name, g.currency,
+          u1.id as birthday_user_id, u1.name as birthday_user_name,
+          u2.id as contributor_id, u2.name as contributor_name,
+          t.type as transaction_type,
+          'birthday' as contribution_type,
+          NULL::DATE as subscription_period_start,
+          NULL::DATE as subscription_period_end
+        FROM birthday_contributions bc
+        LEFT JOIN groups g ON bc.group_id = g.id
+        LEFT JOIN users u1 ON bc.birthday_user_id = u1.id
+        LEFT JOIN users u2 ON bc.contributor_id = u2.id
+        LEFT JOIN transactions t ON bc.transaction_id = t.id
+        WHERE 1=1 ${birthdayWhere}
+        
+        UNION ALL
+        
+        -- Subscription contributions
+        SELECT 
+          sc.id, sc.amount, sc.contribution_date, sc.status, sc.note, sc.created_at,
+          g.id as group_id, g.name as group_name, g.currency,
+          NULL::UUID as birthday_user_id, NULL::TEXT as birthday_user_name,
+          u.id as contributor_id, u.name as contributor_name,
+          t.type as transaction_type,
+          'subscription' as contribution_type,
+          sc.subscription_period_start,
+          sc.subscription_period_end
+        FROM subscription_contributions sc
+        LEFT JOIN groups g ON sc.group_id = g.id
+        LEFT JOIN users u ON sc.contributor_id = u.id
+        LEFT JOIN transactions t ON sc.transaction_id = t.id
+        WHERE 1=1 ${subscriptionWhere}
+        
+        UNION ALL
+        
+        -- General contributions
+        SELECT 
+          gc.id, gc.amount, gc.contribution_date, gc.status, gc.note, gc.created_at,
+          g.id as group_id, g.name as group_name, g.currency,
+          NULL::UUID as birthday_user_id, NULL::TEXT as birthday_user_name,
+          u.id as contributor_id, u.name as contributor_name,
+          t.type as transaction_type,
+          'general' as contribution_type,
+          NULL::DATE as subscription_period_start,
+          NULL::DATE as subscription_period_end
+        FROM general_contributions gc
+        LEFT JOIN groups g ON gc.group_id = g.id
+        LEFT JOIN users u ON gc.contributor_id = u.id
+        LEFT JOIN transactions t ON gc.transaction_id = t.id
+        WHERE 1=1 ${generalWhere}
+      ) all_contributions
+      ORDER BY created_at DESC
+      LIMIT $${paramCount++} OFFSET $${paramCount++}
     `;
+    params.push(parseInt(limit), offset);
+
+    // Build count query
     const countParams = [];
     let countParamCount = 1;
+    const countWhereConditions = [];
 
     if (status) {
-      countQuery += ` AND bc.status = $${countParamCount++}`;
+      countWhereConditions.push(`status = $${countParamCount++}`);
       countParams.push(status);
     }
 
     if (groupId) {
-      countQuery += ` AND bc.group_id = $${countParamCount++}`;
+      countWhereConditions.push(`group_id = $${countParamCount++}`);
       countParams.push(groupId);
     }
 
+    let birthdayCountWhere = countWhereConditions.length > 0 ? ` AND ${countWhereConditions.join(' AND ')}` : '';
+    let subscriptionCountWhere = countWhereConditions.length > 0 ? ` AND ${countWhereConditions.join(' AND ')}` : '';
+    let generalCountWhere = countWhereConditions.length > 0 ? ` AND ${countWhereConditions.join(' AND ')}` : '';
+
     if (userId) {
-      countQuery += ` AND (bc.birthday_user_id = $${countParamCount} OR bc.contributor_id = $${countParamCount})`;
+      const userIdParam = `$${countParamCount++}`;
       countParams.push(userId);
-      countParamCount++;
+      birthdayCountWhere += ` AND (birthday_user_id = ${userIdParam} OR contributor_id = ${userIdParam})`;
+      subscriptionCountWhere += ` AND contributor_id = ${userIdParam}`;
+      generalCountWhere += ` AND contributor_id = ${userIdParam}`;
     }
+
+    if (contributionType === 'birthday') {
+      subscriptionCountWhere = ' AND 1=0';
+      generalCountWhere = ' AND 1=0';
+    } else if (contributionType === 'subscription') {
+      birthdayCountWhere = ' AND 1=0';
+      generalCountWhere = ' AND 1=0';
+    } else if (contributionType === 'general') {
+      birthdayCountWhere = ' AND 1=0';
+      subscriptionCountWhere = ' AND 1=0';
+    }
+
+    const countQuery = `
+      SELECT COUNT(*) as total FROM (
+        SELECT id FROM birthday_contributions WHERE 1=1 ${birthdayCountWhere}
+        UNION ALL
+        SELECT id FROM subscription_contributions WHERE 1=1 ${subscriptionCountWhere}
+        UNION ALL
+        SELECT id FROM general_contributions WHERE 1=1 ${generalCountWhere}
+      ) all_contributions
+    `;
 
     const countResult = await pool.query(countQuery, countParams);
     const total = parseInt(countResult.rows[0].total);
-
-    query += ` ORDER BY bc.created_at DESC LIMIT $${paramCount++} OFFSET $${paramCount++}`;
-    params.push(parseInt(limit), offset);
 
     const result = await pool.query(query, params);
 
@@ -551,17 +647,31 @@ router.get('/stats', async (req, res) => {
     // Total wallet balance
     const totalWalletBalance = await pool.query('SELECT COALESCE(SUM(balance), 0) as total FROM wallets');
     
-    // Total contributions
-    const totalContributions = await pool.query('SELECT COUNT(*) as count FROM birthday_contributions');
+    // Total contributions (all types)
+    const totalContributions = await pool.query(`
+      SELECT COUNT(*) as count FROM (
+        SELECT id FROM birthday_contributions
+        UNION ALL
+        SELECT id FROM subscription_contributions
+        UNION ALL
+        SELECT id FROM general_contributions
+      ) all_contributions
+    `);
     
-    // Contribution status counts
+    // Contribution status counts (all types)
     const contributionStatusCounts = await pool.query(`
       SELECT 
         COUNT(*) FILTER (WHERE status = 'not_paid') as not_paid,
         COUNT(*) FILTER (WHERE status = 'paid') as paid,
         COUNT(*) FILTER (WHERE status = 'confirmed') as confirmed,
         COUNT(*) FILTER (WHERE status = 'not_received') as not_received
-      FROM birthday_contributions
+      FROM (
+        SELECT status FROM birthday_contributions
+        UNION ALL
+        SELECT status FROM subscription_contributions
+        UNION ALL
+        SELECT status FROM general_contributions
+      ) all_contributions
     `);
     
     // Users registered in last 30 days
