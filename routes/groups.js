@@ -1327,9 +1327,9 @@ router.put('/:groupId', authenticate, [
       subscriptionDeadlineMonth
     } = req.body;
 
-    // Get current group details before updating (to check if contribution amount changed)
+    // Get current group details before updating (to check if contribution amount, deadline, or max_members changed)
     const currentGroupResult = await pool.query(
-      'SELECT contribution_amount, name, currency FROM groups WHERE id = $1',
+      'SELECT contribution_amount, name, currency, deadline, subscription_deadline_day, subscription_deadline_month, subscription_frequency, max_members FROM groups WHERE id = $1',
       [groupId]
     );
 
@@ -1341,6 +1341,46 @@ router.put('/:groupId', authenticate, [
     const oldContributionAmount = parseFloat(currentGroup.contribution_amount);
     const isContributionAmountChanging = contributionAmount !== undefined && 
                                          parseFloat(contributionAmount) !== oldContributionAmount;
+    
+    // Check if max_members is changing (only for birthday groups)
+    let isMaxMembersChanging = false;
+    let oldMaxMembers = null;
+    let newMaxMembers = null;
+    
+    if (groupType === 'birthday' && maxMembers !== undefined) {
+      oldMaxMembers = currentGroup.max_members;
+      newMaxMembers = maxMembers;
+      if (oldMaxMembers !== newMaxMembers) {
+        isMaxMembersChanging = true;
+      }
+    }
+    
+    // Check if deadline is changing
+    let isDeadlineChanging = false;
+    let oldDeadline = null;
+    let newDeadline = null;
+    
+    if (groupType === 'general' && deadline !== undefined) {
+      const oldDate = currentGroup.deadline ? new Date(currentGroup.deadline).toISOString().split('T')[0] : null;
+      const newDate = new Date(deadline).toISOString().split('T')[0];
+      if (oldDate !== newDate) {
+        isDeadlineChanging = true;
+        oldDeadline = oldDate;
+        newDeadline = newDate;
+      }
+    } else if (groupType === 'subscription') {
+      const oldDay = currentGroup.subscription_deadline_day;
+      const oldMonth = currentGroup.subscription_deadline_month;
+      const newDay = subscriptionDeadlineDay !== undefined ? subscriptionDeadlineDay : oldDay;
+      const newMonth = subscriptionDeadlineMonth !== undefined ? subscriptionDeadlineMonth : oldMonth;
+      
+      if ((subscriptionDeadlineDay !== undefined && subscriptionDeadlineDay !== oldDay) ||
+          (subscriptionDeadlineMonth !== undefined && subscriptionDeadlineMonth !== oldMonth)) {
+        isDeadlineChanging = true;
+        oldDeadline = { day: oldDay, month: oldMonth };
+        newDeadline = { day: newDay, month: newMonth };
+      }
+    }
 
     // Validate deadline fields based on group type
     if (groupType === 'general' && deadline) {
@@ -1459,7 +1499,7 @@ router.put('/:groupId', authenticate, [
               member.id,
               'contribution_amount_updated',
               'Contribution Amount Updated',
-              'Group admin has updated the contribution amount. Check your email for more information.',
+              `Group Admin has updated the contribution amount for "${groupName}". Check your email for more information.`,
               groupId,
               null
             );
@@ -1469,6 +1509,145 @@ router.put('/:groupId', authenticate, [
         }
       } catch (error) {
         console.error('Error sending contribution amount update notifications:', error);
+        // Don't fail the request if notifications fail
+      }
+    }
+
+    // If deadline changed, notify all members
+    if (isDeadlineChanging) {
+      try {
+        // Get all active members (excluding the admin who made the change)
+        const membersResult = await pool.query(
+          `SELECT u.id, u.name, u.email, u.expo_push_token
+           FROM users u
+           JOIN group_members gm ON u.id = gm.user_id
+           WHERE gm.group_id = $1 AND gm.status = 'active' AND u.id != $2`,
+          [groupId, userId]
+        );
+
+        const groupName = updatedGroup.name || currentGroup.name;
+
+        // Get admin name for email
+        const adminResult = await pool.query(
+          'SELECT name FROM users WHERE id = $1',
+          [userId]
+        );
+        const adminName = adminResult.rows[0]?.name || 'Group Admin';
+
+        // Send notifications to all members
+        const { createNotification } = require('../utils/notifications');
+        const { sendDeadlineUpdateEmail } = require('../utils/email');
+
+        for (const member of membersResult.rows) {
+          // Send email
+          if (member.email) {
+            try {
+              if (groupType === 'general') {
+                await sendDeadlineUpdateEmail(
+                  member.email,
+                  member.name,
+                  groupName,
+                  'general',
+                  oldDeadline,
+                  newDeadline,
+                  null,
+                  adminName
+                );
+              } else if (groupType === 'subscription') {
+                await sendDeadlineUpdateEmail(
+                  member.email,
+                  member.name,
+                  groupName,
+                  'subscription',
+                  oldDeadline,
+                  newDeadline,
+                  currentGroup.subscription_frequency,
+                  adminName
+                );
+              }
+            } catch (err) {
+              console.error(`Error sending deadline update email to ${member.email}:`, err);
+            }
+          }
+
+          // Send in-app and push notifications
+          try {
+            await createNotification(
+              member.id,
+              'deadline_updated',
+              'Deadline Updated',
+              `Group Admin has updated the deadline for "${groupName}". Check your email for more information.`,
+              groupId,
+              null
+            );
+          } catch (err) {
+            console.error(`Error sending notification to user ${member.id}:`, err);
+          }
+        }
+      } catch (error) {
+        console.error('Error sending deadline update notifications:', error);
+        // Don't fail the request if notifications fail
+      }
+    }
+
+    // If max_members changed for birthday groups, notify all members
+    if (isMaxMembersChanging && groupType === 'birthday') {
+      try {
+        // Get all active members (excluding the admin who made the change)
+        const membersResult = await pool.query(
+          `SELECT u.id, u.name, u.email, u.expo_push_token
+           FROM users u
+           JOIN group_members gm ON u.id = gm.user_id
+           WHERE gm.group_id = $1 AND gm.status = 'active' AND u.id != $2`,
+          [groupId, userId]
+        );
+
+        const groupName = updatedGroup.name || currentGroup.name;
+
+        // Get admin name for email
+        const adminResult = await pool.query(
+          'SELECT name FROM users WHERE id = $1',
+          [userId]
+        );
+        const adminName = adminResult.rows[0]?.name || 'Group Admin';
+
+        // Send notifications to all members
+        const { createNotification } = require('../utils/notifications');
+        const { sendMaxMembersUpdateEmail } = require('../utils/email');
+
+        for (const member of membersResult.rows) {
+          // Send email
+          if (member.email) {
+            try {
+              await sendMaxMembersUpdateEmail(
+                member.email,
+                member.name,
+                groupName,
+                oldMaxMembers,
+                newMaxMembers,
+                adminName
+              );
+            } catch (err) {
+              console.error(`Error sending max members update email to ${member.email}:`, err);
+            }
+          }
+
+          // Send in-app and push notifications
+          try {
+            await createNotification(
+              member.id,
+              'max_members_updated',
+              'Max Members Updated',
+              `Group Admin has updated the max members for "${groupName}". Check your email for more information.`,
+              groupId,
+              null
+            );
+          } catch (err) {
+            console.error(`Error sending notification to user ${member.id}:`, err);
+          }
+        }
+      } catch (error) {
+        console.error('Error sending max members update notifications:', error);
         // Don't fail the request if notifications fail
       }
     }
