@@ -895,6 +895,7 @@ router.get('/discover', authenticate, async (req, res) => {
         return {
           id: group.id,
           name: group.name,
+          invite_code: group.invite_code,
           subscription_platform: group.subscription_platform,
           contribution_amount: parseFloat(group.contribution_amount),
           currency: group.currency || 'NGN',
