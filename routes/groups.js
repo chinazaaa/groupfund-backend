@@ -2753,16 +2753,19 @@ router.put('/:groupId/reopen', authenticate, async (req, res) => {
     }
 
     // Prevent reopening if closed due to reports or by system admin
-    if (group.closed_reason === 'reports') {
-      return res.status(403).json({ 
-        error: 'This group cannot be reopened. It was automatically closed due to multiple pending reports. Please contact support if you believe this is an error.' 
-      });
-    }
+    // Only system admins can override these restrictions
+    if (!isSystemAdmin) {
+      if (group.closed_reason === 'reports') {
+        return res.status(403).json({ 
+          error: 'This group cannot be reopened. It was automatically closed due to multiple pending reports. Please contact support if you believe this is an error.' 
+        });
+      }
 
-    if (group.closed_reason === 'admin') {
-      return res.status(403).json({ 
-        error: 'This group cannot be reopened. It was closed by a GroupFund administrator. Please contact support if you have questions.' 
-      });
+      if (group.closed_reason === 'admin') {
+        return res.status(403).json({ 
+          error: 'This group cannot be reopened. It was closed by a GroupFund administrator. Please contact support if you have questions.' 
+        });
+      }
     }
 
     // Reopen the group (clear closed_reason when reopening)
