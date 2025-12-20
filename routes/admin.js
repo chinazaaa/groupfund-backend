@@ -1765,8 +1765,8 @@ router.get('/reports', async (req, res) => {
         r.reviewed_at, r.admin_notes,
         r.reported_group_id, r.reported_user_id,
         reporter.id as reporter_id, reporter.name as reporter_name, reporter.email as reporter_email,
-        reported_group.id as group_id, reported_group.name as group_name, reported_group.group_type as group_type,
-        reported_user.id as reported_user_id, reported_user.name as reported_user_name, reported_user.email as reported_user_email,
+        reported_group.id as reported_group_db_id, reported_group.name as reported_group_name, reported_group.group_type as reported_group_type,
+        reported_user.id as reported_user_db_id, reported_user.name as reported_user_name, reported_user.email as reported_user_email,
         reviewer.id as reviewer_id, reviewer.name as reviewer_name
       FROM reports r
       LEFT JOIN users reporter ON r.reporter_id = reporter.id
@@ -1835,10 +1835,10 @@ router.get('/reports', async (req, res) => {
           name: report.reporter_name,
           email: report.reporter_email
         } : null,
-        reported_group: report.group_id ? {
-          id: report.group_id,
-          name: report.group_name,
-          group_type: report.group_type
+        reported_group: report.reported_group_id ? {
+          id: report.reported_group_id,
+          name: report.reported_group_name,
+          group_type: report.reported_group_type
         } : null,
         reported_user: report.reported_user_id ? {
           id: report.reported_user_id,
@@ -1874,9 +1874,9 @@ router.get('/reports/:reportId', async (req, res) => {
         r.reviewed_at, r.admin_notes,
         r.reported_group_id, r.reported_user_id,
         reporter.id as reporter_id, reporter.name as reporter_name, reporter.email as reporter_email,
-        reported_group.id as group_id, reported_group.name as group_name, reported_group.group_type as group_type,
-        reported_group.status as group_status,
-        reported_user.id as reported_user_id, reported_user.name as reported_user_name, 
+        reported_group.id as reported_group_db_id, reported_group.name as reported_group_name, 
+        reported_group.group_type as reported_group_type, reported_group.status as reported_group_status,
+        reported_user.id as reported_user_db_id, reported_user.name as reported_user_name, 
         reported_user.email as reported_user_email, reported_user.is_active as reported_user_is_active,
         reviewer.id as reviewer_id, reviewer.name as reviewer_name
        FROM reports r
@@ -1909,11 +1909,11 @@ router.get('/reports/:reportId', async (req, res) => {
         name: report.reporter_name,
         email: report.reporter_email
       } : null,
-      reported_group: report.group_id ? {
-        id: report.group_id,
-        name: report.group_name,
-        group_type: report.group_type,
-        status: report.group_status
+      reported_group: report.reported_group_id ? {
+        id: report.reported_group_id,
+        name: report.reported_group_name,
+        group_type: report.reported_group_type,
+        status: report.reported_group_status
       } : null,
       reported_user: report.reported_user_id ? {
         id: report.reported_user_id,
@@ -1986,8 +1986,8 @@ router.put('/reports/:reportId', [
         r.reviewed_at, r.admin_notes,
         r.reported_group_id, r.reported_user_id,
         reporter.id as reporter_id, reporter.name as reporter_name, reporter.email as reporter_email,
-        reported_group.id as group_id, reported_group.name as group_name,
-        reported_user.id as reported_user_id, reported_user.name as reported_user_name,
+        reported_group.id as reported_group_db_id, reported_group.name as reported_group_name,
+        reported_user.id as reported_user_db_id, reported_user.name as reported_user_name,
         reviewer.id as reviewer_id, reviewer.name as reviewer_name
        FROM reports r
        LEFT JOIN users reporter ON r.reporter_id = reporter.id
@@ -2036,9 +2036,9 @@ router.put('/reports/:reportId', [
           name: updatedReport.rows[0].reporter_name,
           email: updatedReport.rows[0].reporter_email
         } : null,
-        reported_group: updatedReport.rows[0].group_id ? {
-          id: updatedReport.rows[0].group_id,
-          name: updatedReport.rows[0].group_name
+        reported_group: updatedReport.rows[0].reported_group_id ? {
+          id: updatedReport.rows[0].reported_group_id,
+          name: updatedReport.rows[0].reported_group_name
         } : null,
         reported_user: updatedReport.rows[0].reported_user_id ? {
           id: updatedReport.rows[0].reported_user_id,
