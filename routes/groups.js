@@ -1277,12 +1277,23 @@ async function calculateSubscriptionGroupHealth(groupId) {
     }
 
     // Calculate base health score from contributions
+    // Health starts at 100% and only reduces for overdue contributions and reports
     let healthScore = 100;
     let complianceRate = 100;
 
+    // Only reduce health if there are overdue contributions
+    // If deadline hasn't passed yet, health remains at 100%
+    if (totalOverdueContributions > 0 && membersResult.rows.length > 0) {
+      // Calculate penalty based on overdue rate
+      const overdueRate = (totalOverdueContributions / membersResult.rows.length) * 100;
+      healthScore = Math.max(0, 100 - Math.round(overdueRate));
+      complianceRate = Math.max(0, 100 - overdueRate);
+    }
+
+    // Calculate compliance rate based on on-time vs expected (for display purposes)
     if (totalExpectedContributions > 0) {
-      complianceRate = (totalOnTime / totalExpectedContributions) * 100;
-      healthScore = Math.round(complianceRate);
+      const onTimeRate = (totalOnTime / totalExpectedContributions) * 100;
+      complianceRate = Math.round(onTimeRate * 10) / 10;
     }
 
     // Reduce health score based on reports
@@ -1290,8 +1301,7 @@ async function calculateSubscriptionGroupHealth(groupId) {
     const reportPenalty = (pendingReports * 5) + (reviewedReports * 2);
     healthScore = Math.max(0, healthScore - reportPenalty);
     
-    // Update compliance rate to reflect reports penalty
-    // Compliance rate should also be reduced by reports
+    // Update compliance rate to reflect reports penalty (but don't go below 0)
     complianceRate = Math.max(0, complianceRate - reportPenalty);
 
     // If group has 3+ pending reports, consider closing it
@@ -1313,7 +1323,7 @@ async function calculateSubscriptionGroupHealth(groupId) {
     } else if (pendingReports >= 3) {
       healthText = `Reported - ${pendingReports} pending report${pendingReports > 1 ? 's' : ''}. Group has been closed.`;
       healthRating = 'reported';
-    } else if (membersWithOverdueCount === 0 && totalReports === 0) {
+    } else if (healthScore === 100 && totalReports === 0 && membersWithOverdueCount === 0) {
       healthText = 'Healthy - All contributions up to date';
       healthRating = 'healthy';
     } else if (totalReports > 0 && healthScore < 50) {
@@ -1539,13 +1549,24 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
     }
 
     // Calculate base health score from contributions
-    // Formula: (on-time contributions / total expected contributions) * 100
-    let healthScore = 100; // Default perfect score
+    // Health starts at 100% and only reduces for overdue contributions and reports
+    let healthScore = 100;
     let complianceRate = 100;
 
-    if (totalExpectedContributions > 0) {
-      complianceRate = (totalOnTime / totalExpectedContributions) * 100;
-      healthScore = Math.round(complianceRate);
+    // Only reduce health if there are overdue contributions
+    // If deadline hasn't passed yet, health remains at 100%
+    if (totalOverdueContributions > 0 && membersResult.rows.length > 0) {
+      // Calculate penalty based on overdue rate
+      const overdueRate = (totalOverdueContributions / membersResult.rows.length) * 100;
+      healthScore = Math.max(0, 100 - Math.round(overdueRate));
+      complianceRate = Math.max(0, 100 - overdueRate);
+    }
+
+    // Calculate compliance rate based on on-time vs expected (for display purposes)
+    // But if nothing is overdue yet, keep compliance at 100%
+    if (totalExpectedContributions > 0 && totalOverdueContributions > 0) {
+      const onTimeRate = (totalOnTime / totalExpectedContributions) * 100;
+      complianceRate = Math.round(onTimeRate * 10) / 10;
     }
 
     // Reduce health score based on reports
@@ -1553,8 +1574,7 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
     const reportPenalty = (pendingReports * 5) + (reviewedReports * 2);
     healthScore = Math.max(0, healthScore - reportPenalty);
     
-    // Update compliance rate to reflect reports penalty
-    // Compliance rate should also be reduced by reports
+    // Update compliance rate to reflect reports penalty (but don't go below 0)
     complianceRate = Math.max(0, complianceRate - reportPenalty);
 
     // If group has 3+ pending reports, consider closing it
@@ -1878,13 +1898,24 @@ router.get('/:groupId', authenticate, async (req, res) => {
       }
 
       // Calculate base health score from contributions
-      // Formula: (on-time contributions / total expected contributions) * 100
-      healthScore = 100; // Default perfect score
+      // Health starts at 100% and only reduces for overdue contributions and reports
+      healthScore = 100;
       complianceRate = 100;
 
-      if (totalExpectedContributions > 0) {
-        complianceRate = (totalOnTime / totalExpectedContributions) * 100;
-        healthScore = Math.round(complianceRate);
+      // Only reduce health if there are overdue contributions
+      // If deadline hasn't passed yet, health remains at 100%
+      if (totalOverdueContributions > 0 && membersResult.rows.length > 0) {
+        // Calculate penalty based on overdue rate
+        const overdueRate = (totalOverdueContributions / membersResult.rows.length) * 100;
+        healthScore = Math.max(0, 100 - Math.round(overdueRate));
+        complianceRate = Math.max(0, 100 - overdueRate);
+      }
+
+      // Calculate compliance rate based on on-time vs expected (for display purposes)
+      // But if nothing is overdue yet, keep compliance at 100%
+      if (totalExpectedContributions > 0 && totalOverdueContributions > 0) {
+        const onTimeRate = (totalOnTime / totalExpectedContributions) * 100;
+        complianceRate = Math.round(onTimeRate * 10) / 10;
       }
 
       // Reduce health score based on reports
@@ -1892,8 +1923,7 @@ router.get('/:groupId', authenticate, async (req, res) => {
       reportPenalty = (pendingReports * 5) + (reviewedReports * 2);
       healthScore = Math.max(0, healthScore - reportPenalty);
       
-      // Update compliance rate to reflect reports penalty
-      // Compliance rate should also be reduced by reports
+      // Update compliance rate to reflect reports penalty (but don't go below 0)
       complianceRate = Math.max(0, complianceRate - reportPenalty);
 
       // If group has 3+ pending reports, consider closing it
