@@ -1191,7 +1191,9 @@ async function calculateAdminReliability(adminId) {
       `SELECT 
         COUNT(*) FILTER (WHERE status = 'pending') as pending_reports,
         COUNT(*) FILTER (WHERE status = 'resolved') as resolved_reports,
-        COUNT(*) FILTER (WHERE status IN ('pending', 'resolved')) as total_valid_reports
+        COUNT(*) FILTER (WHERE status = 'dismissed') as dismissed_reports,
+        COUNT(*) FILTER (WHERE status IN ('pending', 'resolved')) as total_valid_reports,
+        COUNT(*) as total_reports
        FROM reports 
        WHERE reported_user_id = $1`,
       [adminId]
@@ -1199,7 +1201,9 @@ async function calculateAdminReliability(adminId) {
 
     const pendingReports = parseInt(reportsResult.rows[0]?.pending_reports || 0);
     const resolvedReports = parseInt(reportsResult.rows[0]?.resolved_reports || 0);
-    const totalValidReports = parseInt(reportsResult.rows[0]?.total_valid_reports || 0);
+    const dismissedReports = parseInt(reportsResult.rows[0]?.dismissed_reports || 0);
+    const totalValidReports = parseInt(reportsResult.rows[0]?.total_valid_reports || 0); // All reports except dismissed
+    const totalReports = parseInt(reportsResult.rows[0]?.total_reports || 0);
 
     // Calculate reliability score (0-100)
     // Reliability starts at 100% and only reduces for overdue contributions and reports
@@ -1275,7 +1279,9 @@ async function calculateAdminReliability(adminId) {
         reliability_score: reliabilityScore,
         pending_reports: pendingReports,
         resolved_reports: resolvedReports,
-        total_valid_reports: totalValidReports,
+        dismissed_reports: dismissedReports,
+        total_valid_reports: totalValidReports, // All reports except dismissed (pending + resolved)
+        total_reports: totalReports, // All reports including dismissed
         report_penalty: reportPenalty
       },
       summary: {
@@ -1294,7 +1300,9 @@ async function calculateAdminReliability(adminId) {
         reliability_score: 100,
         pending_reports: 0,
         resolved_reports: 0,
-        total_valid_reports: 0,
+        dismissed_reports: 0,
+        total_valid_reports: 0, // All reports except dismissed (pending + resolved)
+        total_reports: 0, // All reports including dismissed
         report_penalty: 0
       },
       summary: {

@@ -250,7 +250,9 @@ router.get('/profile', authenticate, async (req, res) => {
       `SELECT 
         COUNT(*) FILTER (WHERE status = 'pending') as pending_reports,
         COUNT(*) FILTER (WHERE status = 'resolved') as resolved_reports,
-        COUNT(*) FILTER (WHERE status IN ('pending', 'resolved')) as total_valid_reports
+        COUNT(*) FILTER (WHERE status = 'dismissed') as dismissed_reports,
+        COUNT(*) FILTER (WHERE status IN ('pending', 'resolved')) as total_valid_reports,
+        COUNT(*) as total_reports
        FROM reports 
        WHERE reported_user_id = $1`,
       [userId]
@@ -258,7 +260,9 @@ router.get('/profile', authenticate, async (req, res) => {
 
     const pendingReports = parseInt(reportsResult.rows[0]?.pending_reports || 0);
     const resolvedReports = parseInt(reportsResult.rows[0]?.resolved_reports || 0);
-    const totalValidReports = parseInt(reportsResult.rows[0]?.total_valid_reports || 0);
+    const dismissedReports = parseInt(reportsResult.rows[0]?.dismissed_reports || 0);
+    const totalValidReports = parseInt(reportsResult.rows[0]?.total_valid_reports || 0); // All reports except dismissed
+    const totalReports = parseInt(reportsResult.rows[0]?.total_reports || 0);
 
     // Reliability starts at 100% and only reduces for overdue contributions and reports
     let reliabilityScore = 100; // Start at 100% (excellent)
@@ -332,7 +336,9 @@ router.get('/profile', authenticate, async (req, res) => {
     userData.on_time_rate = Math.round(onTimeRate * 10) / 10;
     userData.pending_reports = pendingReports;
     userData.resolved_reports = resolvedReports;
-    userData.total_valid_reports = totalValidReports;
+    userData.dismissed_reports = dismissedReports;
+    userData.total_valid_reports = totalValidReports; // All reports except dismissed (pending + resolved)
+    userData.total_reports = totalReports; // All reports including dismissed
     userData.report_penalty = reportPenalty;
 
     res.json({
