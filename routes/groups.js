@@ -131,7 +131,7 @@ router.post('/create', authenticate, [
     const groupResult = await pool.query(
       `INSERT INTO groups (${insertFields}) 
        VALUES (${insertValues}) 
-       RETURNING id, name, invite_code, contribution_amount, max_members, admin_id, currency, accepting_requests, group_type, subscription_frequency, subscription_platform, subscription_deadline_day, subscription_deadline_month, deadline, created_at`,
+       RETURNING id, name, invite_code, contribution_amount, max_members, admin_id, currency, accepting_requests, group_type, is_public, subscription_frequency, subscription_platform, subscription_deadline_day, subscription_deadline_month, deadline, created_at`,
       params
     );
 
@@ -842,14 +842,257 @@ router.get('/overdue', authenticate, async (req, res) => {
   }
 });
 
+// Search for discoverable subscription groups
+// This endpoint allows users to search for public subscription groups by platform name or group name
+router.get('/discover', authenticate, async (req, res) => {
+  try {
+    const { query, limit = 20 } = req.query;
+    const userId = req.user.id;
+
+    if (!query || query.trim().length === 0) {
+      return res.status(400).json({ error: 'Search query is required' });
+    }
+
+    const searchTerm = `%${query.trim().toLowerCase()}%`;
+
+    // Search for public subscription groups matching platform name or group name
+    const groupsResult = await pool.query(
+      `SELECT 
+        g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, 
+        g.status, g.accepting_requests, g.subscription_frequency, g.subscription_platform,
+        g.subscription_deadline_day, g.subscription_deadline_month, g.created_at,
+        COUNT(gm.id) FILTER (WHERE gm.status = 'active') as current_members,
+        u.name as admin_name,
+        CASE WHEN EXISTS (
+          SELECT 1 FROM group_members gm2 
+          WHERE gm2.group_id = g.id AND gm2.user_id = $2 AND gm2.status = 'active'
+        ) THEN true ELSE false END as is_member
+       FROM groups g
+       LEFT JOIN group_members gm ON g.id = gm.group_id
+       LEFT JOIN users u ON g.admin_id = u.id
+       WHERE g.group_type = 'subscription' 
+         AND g.is_public = TRUE
+         AND g.status = 'active'
+         AND (
+           LOWER(g.subscription_platform) LIKE $1 
+           OR LOWER(g.name) LIKE $1
+         )
+       GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, 
+                g.currency, g.status, g.accepting_requests, g.subscription_frequency, 
+                g.subscription_platform, g.subscription_deadline_day, 
+                g.subscription_deadline_month, g.created_at, u.name
+       ORDER BY g.created_at DESC
+       LIMIT $3`,
+      [searchTerm, userId, parseInt(limit)]
+    );
+
+    // Get health metrics for each group
+    const groupsWithHealth = await Promise.all(
+      groupsResult.rows.map(async (group) => {
+        // Calculate health for subscription group
+        const healthData = await calculateSubscriptionGroupHealth(group.id);
+        
+        return {
+          id: group.id,
+          name: group.name,
+          subscription_platform: group.subscription_platform,
+          contribution_amount: parseFloat(group.contribution_amount),
+          currency: group.currency || 'NGN',
+          max_members: parseInt(group.max_members),
+          current_members: parseInt(group.current_members || 0),
+          subscription_frequency: group.subscription_frequency,
+          subscription_deadline_day: group.subscription_deadline_day,
+          subscription_deadline_month: group.subscription_deadline_month,
+          accepting_requests: group.accepting_requests !== false,
+          is_member: group.is_member,
+          admin_name: group.admin_name,
+          created_at: group.created_at,
+          health: healthData
+        };
+      })
+    );
+
+    res.json({
+      groups: groupsWithHealth,
+      total: groupsWithHealth.length
+    });
+  } catch (error) {
+    console.error('Search subscription groups error:', error);
+    res.status(500).json({ error: 'Server error searching groups' });
+  }
+});
+
+// Helper function to calculate subscription group health
+async function calculateSubscriptionGroupHealth(groupId) {
+  try {
+    const groupResult = await pool.query(
+      `SELECT id, name, subscription_frequency, subscription_deadline_day, subscription_deadline_month
+       FROM groups WHERE id = $1 AND group_type = 'subscription'`,
+      [groupId]
+    );
+
+    if (groupResult.rows.length === 0) {
+      return null;
+    }
+
+    const group = groupResult.rows[0];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const currentYear = today.getFullYear();
+    const currentMonth = today.getMonth() + 1;
+
+    // Get all active members
+    const membersResult = await pool.query(
+      `SELECT u.id, u.name, gm.joined_at
+       FROM users u
+       JOIN group_members gm ON u.id = gm.user_id
+       WHERE gm.group_id = $1 AND gm.status = 'active'`,
+      [groupId]
+    );
+
+    let totalExpectedContributions = 0;
+    let totalOverdueContributions = 0;
+    let membersWithOverdue = new Set();
+    let totalOnTime = 0;
+
+    // Calculate period start for current period
+    let periodStart;
+    if (group.subscription_frequency === 'monthly') {
+      periodStart = new Date(currentYear, currentMonth - 1, 1);
+    } else {
+      periodStart = new Date(currentYear, 0, 1);
+    }
+    periodStart.setHours(0, 0, 0, 0);
+
+    // Calculate deadline for current period
+    let deadlineDate;
+    if (group.subscription_frequency === 'monthly') {
+      deadlineDate = getDeadlineDate(currentYear, currentMonth - 1, group.subscription_deadline_day);
+    } else {
+      deadlineDate = getDeadlineDate(currentYear, group.subscription_deadline_month - 1, group.subscription_deadline_day);
+    }
+    deadlineDate.setHours(0, 0, 0, 0);
+    const isDeadlinePassed = deadlineDate < today;
+
+    // Check contributions for current period
+    for (const member of membersResult.rows) {
+      const memberJoinDate = new Date(member.joined_at);
+      memberJoinDate.setHours(0, 0, 0, 0);
+
+      // Only count if member joined before or during the period
+      if (memberJoinDate <= deadlineDate) {
+        const contributionCheck = await pool.query(
+          `SELECT status, contribution_date 
+           FROM subscription_contributions 
+           WHERE group_id = $1 AND contributor_id = $2 AND subscription_period_start = $3
+           ORDER BY contribution_date DESC
+           LIMIT 1`,
+          [groupId, member.id, periodStart]
+        );
+
+        let isFullyPaid = false;
+        let status = null;
+        let contributionDate = null;
+        let paidOnTime = false;
+
+        if (contributionCheck.rows.length > 0) {
+          status = contributionCheck.rows[0].status;
+          contributionDate = contributionCheck.rows[0].contribution_date ? new Date(contributionCheck.rows[0].contribution_date) : null;
+          isFullyPaid = (status === 'confirmed');
+          
+          // On-time = confirmed AND paid on or before deadline
+          if (isFullyPaid && contributionDate) {
+            contributionDate.setHours(0, 0, 0, 0);
+            paidOnTime = contributionDate <= deadlineDate;
+          }
+        }
+
+        if (!isFullyPaid) {
+          totalExpectedContributions++;
+        }
+
+        if (paidOnTime) {
+          totalOnTime++;
+        } else if (status === 'not_paid' || status === 'not_received') {
+          if (isDeadlinePassed) {
+            totalOverdueContributions++;
+            membersWithOverdue.add(member.id);
+          }
+        } else if (status === 'paid') {
+          if (isDeadlinePassed) {
+            totalOverdueContributions++;
+            membersWithOverdue.add(member.id);
+          }
+        } else if (status === 'confirmed' && !paidOnTime) {
+          totalOverdueContributions++;
+          membersWithOverdue.add(member.id);
+        } else if (!contributionCheck.rows.length && isDeadlinePassed) {
+          totalOverdueContributions++;
+          membersWithOverdue.add(member.id);
+        }
+      }
+    }
+
+    // Calculate health score
+    let healthScore = 100;
+    let complianceRate = 100;
+
+    if (totalExpectedContributions > 0) {
+      complianceRate = (totalOnTime / totalExpectedContributions) * 100;
+      healthScore = Math.round(complianceRate);
+    }
+
+    // Generate health summary
+    let healthText = '';
+    let healthRating = 'healthy';
+    const membersWithOverdueCount = membersWithOverdue.size;
+
+    if (totalExpectedContributions === 0) {
+      healthText = 'New group - No contribution history yet';
+      healthRating = 'new';
+    } else if (membersWithOverdueCount === 0) {
+      healthText = 'Healthy - All contributions up to date';
+      healthRating = 'healthy';
+    } else if (healthScore >= 90) {
+      healthText = `Mostly healthy - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthRating = 'mostly_healthy';
+    } else if (healthScore >= 75) {
+      healthText = `Moderate - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthRating = 'moderate';
+    } else {
+      healthText = `Unhealthy - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthRating = 'unhealthy';
+    }
+
+    return {
+      metrics: {
+        total_members: membersResult.rows.length,
+        total_expected_contributions: totalExpectedContributions,
+        total_on_time: totalOnTime,
+        total_overdue: totalOverdueContributions,
+        members_with_overdue: membersWithOverdueCount,
+        compliance_rate: Math.round(complianceRate * 10) / 10,
+        health_score: healthScore
+      },
+      health: {
+        text: healthText,
+        rating: healthRating
+      }
+    };
+  } catch (error) {
+    console.error('Error calculating subscription group health:', error);
+    return null;
+  }
+}
+
 // Get group health/score (accessible to everyone, even non-members)
 router.get('/:groupId/health', authenticate, async (req, res) => {
   try {
     const { groupId } = req.params;
 
-    // Get group basic info
+    // Get group basic info including group type
     const groupResult = await pool.query(
-      'SELECT id, name, status FROM groups WHERE id = $1',
+      'SELECT id, name, status, group_type, subscription_frequency, subscription_deadline_day, subscription_deadline_month FROM groups WHERE id = $1',
       [groupId]
     );
 
@@ -858,6 +1101,28 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
     }
 
     const group = groupResult.rows[0];
+    const groupType = group.group_type || 'birthday';
+
+    // Handle subscription groups
+    if (groupType === 'subscription') {
+      const healthData = await calculateSubscriptionGroupHealth(groupId);
+      
+      if (!healthData) {
+        return res.status(500).json({ error: 'Error calculating group health' });
+      }
+
+      return res.json({
+        group: {
+          id: group.id,
+          name: group.name,
+          status: group.status,
+          group_type: groupType
+        },
+        ...healthData
+      });
+    }
+
+    // Handle birthday groups (existing logic)
     const today = new Date();
     today.setHours(0, 0, 0, 0); // Normalize to start of day
     const currentYear = today.getFullYear();
@@ -1014,7 +1279,8 @@ router.get('/:groupId/health', authenticate, async (req, res) => {
       group: {
         id: group.id,
         name: group.name,
-        status: group.status
+        status: group.status,
+        group_type: groupType
       },
       metrics: {
         total_members: membersResult.rows.length,
@@ -1290,6 +1556,7 @@ router.put('/:groupId', authenticate, [
   body('contributionAmount').optional().isFloat({ min: 0 }),
   body('maxMembers').optional().isInt({ min: 2 }),
   body('acceptingRequests').optional().isBoolean(),
+  body('isPublic').optional().isBoolean(),
   body('deadline').optional().isISO8601().withMessage('Deadline must be a valid date'),
   body('subscriptionDeadlineDay').optional().isInt({ min: 1, max: 31 }).withMessage('Subscription deadline day must be between 1 and 31'),
   body('subscriptionDeadlineMonth').optional().isInt({ min: 1, max: 12 }).withMessage('Subscription deadline month must be between 1 and 12'),
@@ -1322,10 +1589,16 @@ router.put('/:groupId', authenticate, [
       contributionAmount, 
       maxMembers, 
       acceptingRequests,
+      isPublic,
       deadline,
       subscriptionDeadlineDay,
       subscriptionDeadlineMonth
     } = req.body;
+
+    // Validate isPublic can only be set for subscription groups
+    if (isPublic !== undefined && groupType !== 'subscription') {
+      return res.status(400).json({ error: 'Only subscription groups can be made public' });
+    }
 
     // Get current group details before updating (to check if contribution amount, deadline, or max_members changed)
     const currentGroupResult = await pool.query(
@@ -1418,6 +1691,12 @@ router.put('/:groupId', authenticate, [
     if (acceptingRequests !== undefined) {
       updates.push(`accepting_requests = $${paramCount++}`);
       values.push(acceptingRequests);
+    }
+
+    // Update is_public for subscription groups only
+    if (groupType === 'subscription' && isPublic !== undefined) {
+      updates.push(`is_public = $${paramCount++}`);
+      values.push(isPublic);
     }
 
     // Update deadline for general groups

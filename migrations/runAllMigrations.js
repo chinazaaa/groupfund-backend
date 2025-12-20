@@ -26,7 +26,8 @@ const migrations = [
   'make_phone_nullable.sql',
   'add_group_types.sql',
   'add_subscription_contributions.sql',
-  'add_general_contributions.sql'
+  'add_general_contributions.sql',
+  'add_is_public_to_groups.sql'
 ];
 
 async function runAllMigrations() {
