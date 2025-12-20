@@ -29,8 +29,164 @@ router.get('/profile', authenticate, async (req, res) => {
       ? wallet
       : { balance: 0, account_number: null, bank_name: null, account_name: null, iban: null, swift_bic: null, routing_number: null, sort_code: null, branch_code: null, branch_address: null };
 
+    // Calculate member/reliability score
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Normalize to start of day
+    const currentYear = today.getFullYear();
+
+    // Get all groups the user is/was a member of (active or past)
+    const groupsResult = await pool.query(
+      `SELECT g.id, g.name, gm.joined_at, gm.status
+       FROM group_members gm
+       JOIN groups g ON gm.group_id = g.id
+       WHERE gm.user_id = $1 AND gm.status IN ('active', 'inactive')
+       ORDER BY gm.joined_at DESC`,
+      [userId]
+    );
+
+    let totalContributions = 0; // Total contributions expected (all past/today birthdays)
+    let totalOverdue = 0;
+    let totalOnTime = 0;
+    let totalGroups = groupsResult.rows.length;
+
+    // Calculate metrics for each group
+    for (const group of groupsResult.rows) {
+      const userJoinDate = new Date(group.joined_at);
+      userJoinDate.setHours(0, 0, 0, 0); // Normalize to start of day
+
+      // Get all members in this group with birthdays
+      const membersResult = await pool.query(
+        `SELECT u.id, u.name, u.birthday
+         FROM users u
+         JOIN group_members gm ON u.id = gm.user_id
+         WHERE gm.group_id = $1 AND gm.status = 'active' AND u.birthday IS NOT NULL AND u.id != $2`,
+        [group.id, userId]
+      );
+
+      for (const member of membersResult.rows) {
+        const memberBirthday = new Date(member.birthday);
+        const thisYearBirthday = new Date(currentYear, memberBirthday.getMonth(), memberBirthday.getDate());
+        thisYearBirthday.setHours(0, 0, 0, 0); // Normalize to start of day
+        
+        // Only count if user was a member when birthday occurred
+        if (userJoinDate <= thisYearBirthday) {
+          const isPast = thisYearBirthday < today;
+          const isToday = thisYearBirthday.getTime() === today.getTime();
+          const isPastOrToday = isPast || isToday;
+          
+          if (isPastOrToday) {
+            // Birthday has passed or is today, check contribution status
+            // Don't filter by year - just get the most recent contribution for this birthday
+            const contributionCheck = await pool.query(
+              `SELECT status, contribution_date FROM birthday_contributions 
+               WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3
+               ORDER BY contribution_date DESC
+               LIMIT 1`,
+              [group.id, member.id, userId]
+            );
+
+            let isFullyPaid = false; // Only 'confirmed' is fully paid
+            let status = null;
+            let contributionDate = null;
+            let paidOnTime = false;
+
+            if (contributionCheck.rows.length > 0) {
+              status = contributionCheck.rows[0].status;
+              contributionDate = contributionCheck.rows[0].contribution_date ? new Date(contributionCheck.rows[0].contribution_date) : null;
+              isFullyPaid = (status === 'confirmed');
+              
+              // On-time = confirmed AND paid on or before birthday
+              if (isFullyPaid && contributionDate) {
+                contributionDate.setHours(0, 0, 0, 0);
+                paidOnTime = contributionDate <= thisYearBirthday;
+              }
+              
+              // Total contributions = only confirmed contributions
+              if (isFullyPaid) {
+                totalContributions++;
+              }
+            }
+
+            // On-time = confirmed AND paid on or before birthday
+            if (paidOnTime) {
+              totalOnTime++;
+            } else if (status === 'not_paid' || status === 'not_received') {
+              // Not paid or rejected - overdue if birthday has passed
+              if (isPast) {
+                totalOverdue++;
+              }
+              // If it's today and not paid/not_received, it's expected but not overdue yet
+            } else if (status === 'paid') {
+              // Paid but awaiting confirmation - overdue if birthday has passed
+              if (isPast) {
+                totalOverdue++;
+              }
+              // If it's today and paid, it's expected but not overdue yet
+            } else if (status === 'confirmed' && !paidOnTime) {
+              // Confirmed but paid AFTER birthday - this is overdue (late payment)
+              totalOverdue++;
+            } else if (!contributionCheck.rows.length) {
+              // No contribution record = not_paid
+              // Only count as overdue if birthday has passed (not today)
+              if (isPast) {
+                totalOverdue++;
+              }
+              // If it's today and no record, it's expected but not overdue yet
+            }
+          }
+        }
+      }
+    }
+
+    // Calculate reliability score (0-100)
+    // Formula: (on-time payments / total contributions) * 100
+    // If no contributions yet, give neutral score of 50
+    let reliabilityScore = 50; // Default neutral score
+    let onTimeRate = 0;
+
+    // totalContributions should include ALL contributions (confirmed or not) for reliability calculation
+    if (totalContributions > 0) {
+      onTimeRate = (totalOnTime / totalContributions) * 100;
+      reliabilityScore = Math.round(onTimeRate);
+    }
+
+    // Generate summary text
+    let summaryText = '';
+    let rating = 'neutral';
+
+    if (totalContributions === 0) {
+      summaryText = 'New member - No contribution history yet';
+      rating = 'new';
+    } else if (totalOverdue === 0) {
+      summaryText = 'Excellent - No overdue contributions';
+      rating = 'excellent';
+    } else if (reliabilityScore >= 90) {
+      summaryText = 'Very reliable - Excellent payment record';
+      rating = 'excellent';
+    } else if (reliabilityScore >= 75) {
+      summaryText = 'Reliable - Good payment record';
+      rating = 'good';
+    } else if (reliabilityScore >= 50) {
+      summaryText = 'Moderate - Some overdue contributions';
+      rating = 'moderate';
+    } else {
+      summaryText = 'Poor - Multiple overdue contributions';
+      rating = 'poor';
+    }
+
+    // Add specific details
+    if (totalOverdue > 0) {
+      summaryText += ` (${totalOverdue} overdue)`;
+    }
+
+    // Add reliability score to user response
+    const userData = userResult.rows[0];
+    userData.reliability_score = reliabilityScore;
+    userData.reliability_rating = rating;
+    userData.reliability_text = summaryText;
+
     res.json({
-      user: userResult.rows[0],
+      user: userData,
       wallet: walletResponse,
     });
   } catch (error) {

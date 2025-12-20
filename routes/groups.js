@@ -1119,6 +1119,164 @@ router.get('/:groupId', authenticate, async (req, res) => {
       }
     }
 
+    // Calculate group health score
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Normalize to start of day
+    const currentYear = today.getFullYear();
+
+    // Get all active members with birthdays
+    const membersResult = await pool.query(
+      `SELECT u.id, u.name, u.birthday
+       FROM users u
+       JOIN group_members gm ON u.id = gm.user_id
+       WHERE gm.group_id = $1 AND gm.status = 'active' AND u.birthday IS NOT NULL
+       ORDER BY 
+         EXTRACT(MONTH FROM u.birthday),
+         EXTRACT(DAY FROM u.birthday)`,
+      [groupId]
+    );
+
+    let totalExpectedContributions = 0;
+    let totalOverdueContributions = 0;
+    let membersWithOverdue = new Set();
+    let totalContributions = 0;
+    let totalOnTime = 0;
+
+    // Calculate health metrics for each member's birthday
+    for (const member of membersResult.rows) {
+      const memberBirthday = new Date(member.birthday);
+      const thisYearBirthday = new Date(currentYear, memberBirthday.getMonth(), memberBirthday.getDate());
+      thisYearBirthday.setHours(0, 0, 0, 0); // Normalize to start of day
+      const isPast = thisYearBirthday < today;
+      const isToday = thisYearBirthday.getTime() === today.getTime();
+
+      // Get all active members who should contribute (excluding the birthday person)
+      const contributorsResult = await pool.query(
+        `SELECT u.id, u.name, gm.joined_at
+         FROM users u
+         JOIN group_members gm ON u.id = gm.user_id
+         WHERE gm.group_id = $1 AND gm.status = 'active' AND u.id != $2`,
+        [groupId, member.id]
+      );
+
+      for (const contributor of contributorsResult.rows) {
+        const contributorJoinDate = new Date(contributor.joined_at);
+        contributorJoinDate.setHours(0, 0, 0, 0); // Normalize to start of day
+        
+        // Only count if contributor was a member when birthday occurred
+        if (contributorJoinDate <= thisYearBirthday) {
+          // Count today and past birthdays
+          const isPastOrToday = isPast || isToday;
+          
+          if (isPastOrToday) {
+            // Check contribution status first
+            const contributionCheck = await pool.query(
+              `SELECT status, contribution_date 
+               FROM birthday_contributions 
+               WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3
+               ORDER BY contribution_date DESC
+               LIMIT 1`,
+              [groupId, member.id, contributor.id]
+            );
+
+            let isFullyPaid = false; // Only 'confirmed' is fully paid
+            let status = null;
+            let contributionDate = null;
+            let paidOnTime = false;
+
+            if (contributionCheck.rows.length > 0) {
+              status = contributionCheck.rows[0].status;
+              contributionDate = contributionCheck.rows[0].contribution_date ? new Date(contributionCheck.rows[0].contribution_date) : null;
+              isFullyPaid = (status === 'confirmed');
+              
+              // On-time = confirmed AND paid on or before birthday
+              if (isFullyPaid && contributionDate) {
+                contributionDate.setHours(0, 0, 0, 0);
+                paidOnTime = contributionDate <= thisYearBirthday;
+              }
+            }
+
+            // "Expected" = contributions that are still needed
+            // Expected includes: not_paid, paid (awaiting confirmation), not_received (rejected)
+            // NOT expected: confirmed (regardless of when paid - it's fully done)
+            if (!isFullyPaid) {
+              totalExpectedContributions++;
+            }
+
+            totalContributions++;
+
+            // On-time = confirmed AND paid on or before birthday
+            if (paidOnTime) {
+              totalOnTime++;
+            } else if (status === 'not_paid' || status === 'not_received') {
+              // Not paid or rejected - overdue if birthday has passed
+              if (isPast) {
+                totalOverdueContributions++;
+                membersWithOverdue.add(contributor.id);
+              }
+              // If it's today and not paid/not_received, it's expected but not overdue yet
+            } else if (status === 'paid') {
+              // Paid but awaiting confirmation - overdue if birthday has passed
+              if (isPast) {
+                totalOverdueContributions++;
+                membersWithOverdue.add(contributor.id);
+              }
+              // If it's today and paid, it's expected but not overdue yet
+            } else if (status === 'confirmed' && !paidOnTime) {
+              // Confirmed but paid AFTER birthday - this is overdue (late payment)
+              totalOverdueContributions++;
+              membersWithOverdue.add(contributor.id);
+            } else if (!contributionCheck.rows.length) {
+              // No contribution record = not_paid
+              // Only count as overdue if birthday has passed (not today)
+              if (isPast) {
+                totalOverdueContributions++;
+                membersWithOverdue.add(contributor.id);
+              }
+              // If it's today and no record, it's expected but not overdue yet
+            }
+          }
+        }
+      }
+    }
+
+    // Calculate health score (0-100)
+    // Formula: (on-time contributions / total expected contributions) * 100
+    let healthScore = 100; // Default perfect score
+    let complianceRate = 100;
+
+    if (totalExpectedContributions > 0) {
+      complianceRate = (totalOnTime / totalExpectedContributions) * 100;
+      healthScore = Math.round(complianceRate);
+    }
+
+    // Generate health summary
+    let healthText = '';
+    let healthRating = 'healthy';
+    const membersWithOverdueCount = membersWithOverdue.size;
+
+    if (totalExpectedContributions === 0) {
+      healthText = 'New group - No contribution history yet';
+      healthRating = 'new';
+    } else if (membersWithOverdueCount === 0) {
+      healthText = 'Healthy - All contributions up to date';
+      healthRating = 'healthy';
+    } else if (healthScore >= 90) {
+      healthText = `Mostly healthy - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthRating = 'mostly_healthy';
+    } else if (healthScore >= 75) {
+      healthText = `Moderate - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthRating = 'moderate';
+    } else {
+      healthText = `Unhealthy - ${membersWithOverdueCount} member${membersWithOverdueCount > 1 ? 's' : ''} with overdue contributions`;
+      healthRating = 'unhealthy';
+    }
+
+    // Add health score to group response
+    group.health_score = healthScore;
+    group.health_rating = healthRating;
+    group.health_text = healthText;
+
     res.json({ group });
   } catch (error) {
     console.error('Get group error:', error);
