@@ -68,7 +68,7 @@ async function sendPushNotification(pushToken, title, body, data = {}) {
 /**
  * Create a notification for a user and send push notification if token exists
  * @param {string} userId - The user to notify
- * @param {string} type - Notification type: 'group_invite', 'group_approved', 'group_rejected', 'group_removed', 'contribution_paid', 'contribution_confirmed', 'contribution_not_received', 'birthday_reminder', 'birthday_wish', 'wishlist_claim', 'wishlist_unclaim', 'wishlist_fulfilled'
+ * @param {string} type - Notification type: 'group_invite', 'group_approved', 'group_rejected', 'group_removed', 'contribution_paid', 'contribution_confirmed', 'contribution_not_received', 'contribution_amount_updated', 'birthday_reminder', 'birthday_wish', 'wishlist_claim', 'wishlist_unclaim', 'wishlist_fulfilled'
  * @param {string} title - Notification title
  * @param {string} message - Notification message
  * @param {string} groupId - Optional group ID
@@ -107,6 +107,13 @@ async function createNotification(userId, type, title, message, groupId = null, 
 
       if (type === 'contribution_paid' || type === 'contribution_confirmed' || type === 'contribution_not_received') {
         screen = 'ContributionHistory';
+        if (groupId) {
+          params = { groupId };
+        }
+      }
+
+      if (type === 'contribution_amount_updated') {
+        screen = 'GroupView';
         if (groupId) {
           params = { groupId };
         }

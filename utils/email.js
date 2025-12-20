@@ -1518,6 +1518,100 @@ const sendAdminUpcomingDeadlineEmail = async (adminEmail, adminName, groupName, 
   }
 };
 
+// Send email notification when group admin updates contribution amount
+const sendContributionAmountUpdateEmail = async (email, memberName, groupName, oldAmount, newAmount, currency, adminName) => {
+  try {
+    const { formatAmount } = require('./currency');
+    
+    const subject = `Contribution Amount Updated - ${groupName}`;
+    const oldAmountFormatted = formatAmount(oldAmount, currency);
+    const newAmountFormatted = formatAmount(newAmount, currency);
+    const isIncrease = newAmount > oldAmount;
+    const changeType = isIncrease ? 'increased' : 'decreased';
+    const changeEmoji = isIncrease ? '📈' : '📉';
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">${changeEmoji} GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1e40af; font-size: 24px; margin-top: 0;">
+            Contribution Amount Updated
+          </h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${memberName},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            The group admin <strong>${adminName}</strong> has ${changeType} the contribution amount for the group <strong>"${groupName}"</strong>.
+          </p>
+          
+          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f59e0b;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+              <span style="color: #6b7280; font-size: 14px;">Previous Amount:</span>
+              <span style="color: #374151; font-size: 18px; font-weight: 600;">${oldAmountFormatted}</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span style="color: #6b7280; font-size: 14px;">New Amount:</span>
+              <span style="color: ${isIncrease ? '#dc2626' : '#059669'}; font-size: 20px; font-weight: 700;">${newAmountFormatted}</span>
+            </div>
+          </div>
+
+          <div style="background: #fef3c7; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f59e0b;">
+            <p style="color: #92400e; font-size: 16px; margin: 0; font-weight: 600;">
+              ⚠️ Important: Please Review
+            </p>
+            <p style="color: #78350f; font-size: 14px; margin: 10px 0 0 0; line-height: 1.6;">
+              Please check if you're still okay with this new contribution amount. If this change doesn't work for you, you can leave the group at any time.
+            </p>
+          </div>
+
+          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border: 1px solid #e5e7eb;">
+            <p style="color: #374151; font-size: 14px; margin: 0 0 10px 0; font-weight: 600;">
+              What you can do:
+            </p>
+            <ul style="color: #6b7280; font-size: 14px; margin: 0; padding-left: 20px; line-height: 1.8;">
+              <li>Review the new contribution amount in the app</li>
+              <li>Continue participating if you're comfortable with the change</li>
+              <li>Leave the group if this doesn't work for you</li>
+            </ul>
+          </div>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            If you have any questions or concerns, please reach out to the group admin or contact our support team.
+          </p>
+          
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Best regards,<br>
+            <strong>The GroupFund Team</strong>
+          </p>
+          <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            This is an automated notification. Please do not reply to this email.
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject,
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error sending contribution amount update email:', error);
+      return false;
+    }
+
+    console.log('Contribution amount update email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending contribution amount update email:', error);
+    return false;
+  }
+};
+
 // Alias for backward compatibility
 const sendMonthlyBirthdayNewsletter = async (email, userName, userId, monthName, groupsWithBirthdays) => {
   return sendMonthlyNewsletter(email, userName, userId, monthName, groupsWithBirthdays, [], []);
@@ -1539,4 +1633,5 @@ module.exports = {
   sendOverdueContributionEmail,
   sendAdminOverdueNotificationEmail,
   sendAdminUpcomingDeadlineEmail,
+  sendContributionAmountUpdateEmail,
 };

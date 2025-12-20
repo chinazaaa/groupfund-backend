@@ -1327,6 +1327,21 @@ router.put('/:groupId', authenticate, [
       subscriptionDeadlineMonth
     } = req.body;
 
+    // Get current group details before updating (to check if contribution amount changed)
+    const currentGroupResult = await pool.query(
+      'SELECT contribution_amount, name, currency FROM groups WHERE id = $1',
+      [groupId]
+    );
+
+    if (currentGroupResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const currentGroup = currentGroupResult.rows[0];
+    const oldContributionAmount = parseFloat(currentGroup.contribution_amount);
+    const isContributionAmountChanging = contributionAmount !== undefined && 
+                                         parseFloat(contributionAmount) !== oldContributionAmount;
+
     // Validate deadline fields based on group type
     if (groupType === 'general' && deadline) {
       const deadlineDate = new Date(deadline);
@@ -1391,8 +1406,74 @@ router.put('/:groupId', authenticate, [
     const query = `UPDATE groups SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING *`;
 
     const result = await pool.query(query, values);
+    const updatedGroup = result.rows[0];
 
-    res.json({ group: result.rows[0] });
+    // If contribution amount changed, notify all members
+    if (isContributionAmountChanging) {
+      try {
+        // Get all active members (excluding the admin who made the change)
+        const membersResult = await pool.query(
+          `SELECT u.id, u.name, u.email, u.expo_push_token
+           FROM users u
+           JOIN group_members gm ON u.id = gm.user_id
+           WHERE gm.group_id = $1 AND gm.status = 'active' AND u.id != $2`,
+          [groupId, userId]
+        );
+
+        const newContributionAmount = parseFloat(contributionAmount);
+        const groupName = updatedGroup.name || currentGroup.name;
+        const currency = updatedGroup.currency || currentGroup.currency || 'NGN';
+
+        // Get admin name for email
+        const adminResult = await pool.query(
+          'SELECT name FROM users WHERE id = $1',
+          [userId]
+        );
+        const adminName = adminResult.rows[0]?.name || 'Group Admin';
+
+        // Send notifications to all members
+        const { createNotification } = require('../utils/notifications');
+        const { sendContributionAmountUpdateEmail } = require('../utils/email');
+
+        for (const member of membersResult.rows) {
+          // Send email
+          if (member.email) {
+            try {
+              await sendContributionAmountUpdateEmail(
+                member.email,
+                member.name,
+                groupName,
+                oldContributionAmount,
+                newContributionAmount,
+                currency,
+                adminName
+              );
+            } catch (err) {
+              console.error(`Error sending contribution amount update email to ${member.email}:`, err);
+            }
+          }
+
+          // Send in-app and push notifications
+          try {
+            await createNotification(
+              member.id,
+              'contribution_amount_updated',
+              'Contribution Amount Updated',
+              'Group admin has updated the contribution amount. Check your email for more information.',
+              groupId,
+              null
+            );
+          } catch (err) {
+            console.error(`Error sending notification to user ${member.id}:`, err);
+          }
+        }
+      } catch (error) {
+        console.error('Error sending contribution amount update notifications:', error);
+        // Don't fail the request if notifications fail
+      }
+    }
+
+    res.json({ group: updatedGroup });
   } catch (error) {
     console.error('Update group error:', error);
     res.status(500).json({ error: 'Server error updating group' });
