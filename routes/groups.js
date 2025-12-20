@@ -1091,6 +1091,34 @@ router.get('/:groupId', authenticate, async (req, res) => {
       });
     }
 
+    // Include admin wallet information for subscription and general groups
+    if (group.group_type === 'subscription' || group.group_type === 'general') {
+      const walletResult = await pool.query(
+        `SELECT account_name, bank_name, account_number, iban, swift_bic, routing_number, sort_code, branch_code, branch_address
+         FROM wallets
+         WHERE user_id = $1`,
+        [group.admin_id]
+      );
+
+      if (walletResult.rows.length > 0) {
+        const wallet = walletResult.rows[0];
+        group.admin_wallet = {
+          account_name: wallet.account_name || null,
+          bank_name: wallet.bank_name || null,
+          account_number: wallet.account_number || null,
+          iban: wallet.iban || null,
+          swift_bic: wallet.swift_bic || null,
+          routing_number: wallet.routing_number || null,
+          sort_code: wallet.sort_code || null,
+          branch_code: wallet.branch_code || null,
+          branch_address: wallet.branch_address || null,
+        };
+      } else {
+        // If no wallet found, set admin_wallet to null
+        group.admin_wallet = null;
+      }
+    }
+
     res.json({ group });
   } catch (error) {
     console.error('Get group error:', error);
