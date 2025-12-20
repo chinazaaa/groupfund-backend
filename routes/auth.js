@@ -68,7 +68,8 @@ router.post('/signup', authLimiter, [
 
 // Verify OTP
 router.post('/verify-otp', otpLimiter, [
-  body('userId').notEmpty().withMessage('User ID is required'),
+  body('userId').optional().notEmpty().withMessage('User ID must not be empty if provided'),
+  body('email').optional().isEmail().withMessage('Valid email is required if provided'),
   body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
   body('type').optional().isIn(['signup', 'forgot-password', 'login']),
 ], async (req, res) => {
@@ -78,14 +79,37 @@ router.post('/verify-otp', otpLimiter, [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { userId, otp, type = 'signup' } = req.body;
+    const { userId, email, otp, type = 'signup' } = req.body;
+
+    // Validate that either userId or email is provided
+    if (!userId && !email) {
+      return res.status(400).json({ error: 'Either userId or email is required' });
+    }
+
+    let actualUserId;
+
+    if (userId) {
+      // Use provided userId
+      const userResult = await pool.query('SELECT id FROM users WHERE id = $1', [userId]);
+      if (userResult.rows.length === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      actualUserId = userId;
+    } else {
+      // Look up user by email
+      const userResult = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+      if (userResult.rows.length === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      actualUserId = userResult.rows[0].id;
+    }
 
     // Find valid OTP
     const otpResult = await pool.query(
       `SELECT * FROM otps 
        WHERE user_id = $1 AND code = $2 AND type = $3 AND is_used = FALSE AND expires_at > NOW()
        ORDER BY created_at DESC LIMIT 1`,
-      [userId, otp, type]
+      [actualUserId, otp, type]
     );
 
     if (otpResult.rows.length === 0) {
@@ -97,11 +121,11 @@ router.post('/verify-otp', otpLimiter, [
 
     // If signup, mark user as verified and send welcome email
     if (type === 'signup') {
-      await pool.query('UPDATE users SET is_verified = TRUE WHERE id = $1', [userId]);
+      await pool.query('UPDATE users SET is_verified = TRUE WHERE id = $1', [actualUserId]);
       // Note: Wallet will be created only when user adds payment details in their profile
       
       // Get user details for welcome email
-      const userResult = await pool.query('SELECT name, email FROM users WHERE id = $1', [userId]);
+      const userResult = await pool.query('SELECT name, email FROM users WHERE id = $1', [actualUserId]);
       if (userResult.rows.length > 0) {
         const user = userResult.rows[0];
         // Send welcome email (non-blocking - don't fail if email fails)
@@ -113,7 +137,18 @@ router.post('/verify-otp', otpLimiter, [
       }
     }
 
-    res.json({ message: 'OTP verified successfully' });
+    // Get user data for response
+    const userResult = await pool.query('SELECT id, name, email FROM users WHERE id = $1', [actualUserId]);
+    const user = userResult.rows[0];
+
+    res.json({ 
+      message: 'OTP verified successfully',
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email
+      }
+    });
   } catch (error) {
     console.error('OTP verification error:', error);
     res.status(500).json({ error: 'Server error during OTP verification' });
@@ -122,18 +157,43 @@ router.post('/verify-otp', otpLimiter, [
 
 // Resend OTP
 router.post('/resend-otp', otpLimiter, [
-  body('userId').notEmpty().withMessage('User ID is required'),
+  body('userId').optional().notEmpty().withMessage('User ID must not be empty if provided'),
+  body('email').optional().isEmail().withMessage('Valid email is required if provided'),
   body('type').optional().isIn(['signup', 'forgot-password', 'login']),
 ], async (req, res) => {
   try {
-    const { userId, type = 'signup' } = req.body;
-
-    const userResult = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
     }
 
-    const { email } = userResult.rows[0];
+    const { userId, email, type = 'signup' } = req.body;
+
+    // Validate that either userId or email is provided
+    if (!userId && !email) {
+      return res.status(400).json({ error: 'Either userId or email is required' });
+    }
+
+    let user;
+    let userEmail;
+
+    if (userId) {
+      // Look up user by ID
+      const userResult = await pool.query('SELECT id, email FROM users WHERE id = $1', [userId]);
+      if (userResult.rows.length === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      user = userResult.rows[0];
+      userEmail = user.email;
+    } else {
+      // Look up user by email
+      const userResult = await pool.query('SELECT id, email FROM users WHERE email = $1', [email]);
+      if (userResult.rows.length === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      user = userResult.rows[0];
+      userEmail = user.email;
+    }
 
     // Generate new OTP
     const otp = generateOTP();
@@ -141,10 +201,10 @@ router.post('/resend-otp', otpLimiter, [
 
     await pool.query(
       'INSERT INTO otps (user_id, phone, email, code, type, expires_at) VALUES ($1, $2, $3, $4, $5, $6)',
-      [userId, null, email, otp, type, expiresAt]
+      [user.id, null, userEmail, otp, type, expiresAt]
     );
 
-    await sendOTPEmail(email, otp, type);
+    await sendOTPEmail(userEmail, otp, type);
 
     res.json({ message: 'OTP resent successfully' });
   } catch (error) {
@@ -186,7 +246,12 @@ router.post('/login', authLimiter, [
 
     // Check if verified
     if (!user.is_verified) {
-      return res.status(403).json({ error: 'Please verify your email first' });
+      return res.status(403).json({ 
+        error: 'Please verify your email first',
+        status: 403,
+        userId: user.id,
+        email: user.email
+      });
     }
 
     // Check if account is active
