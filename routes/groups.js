@@ -35,6 +35,8 @@ router.post('/create', authenticate, [
   body('subscriptionDeadlineMonth').optional().isInt({ min: 1, max: 12 }).withMessage('Subscription deadline month must be between 1 and 12'),
   // General group validations
   body('deadline').optional().isISO8601().withMessage('Deadline must be a valid date'),
+  // Notes/description field (optional for all group types)
+  body('notes').optional().trim(),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -52,7 +54,8 @@ router.post('/create', authenticate, [
       subscriptionPlatform,
       subscriptionDeadlineDay,
       subscriptionDeadlineMonth,
-      deadline
+      deadline,
+      notes
     } = req.body;
     const adminId = req.user.id;
 
@@ -111,6 +114,13 @@ router.post('/create', authenticate, [
     let params = [name, inviteCode, contributionAmount, maxMembers, adminId, currency, groupType];
     let paramCount = 8;
 
+    // Add notes if provided
+    if (notes !== undefined && notes !== null && notes.trim() !== '') {
+      insertFields += ', notes';
+      insertValues += `, $${paramCount++}`;
+      params.push(notes.trim());
+    }
+
     if (groupType === 'subscription') {
       insertFields += ', subscription_frequency, subscription_platform, subscription_deadline_day';
       insertValues += `, $${paramCount++}, $${paramCount++}, $${paramCount++}`;
@@ -131,7 +141,7 @@ router.post('/create', authenticate, [
     const groupResult = await pool.query(
       `INSERT INTO groups (${insertFields}) 
        VALUES (${insertValues}) 
-       RETURNING id, name, invite_code, contribution_amount, max_members, admin_id, currency, accepting_requests, group_type, is_public, subscription_frequency, subscription_platform, subscription_deadline_day, subscription_deadline_month, deadline, created_at`,
+       RETURNING id, name, invite_code, contribution_amount, max_members, admin_id, currency, accepting_requests, group_type, is_public, subscription_frequency, subscription_platform, subscription_deadline_day, subscription_deadline_month, deadline, notes, created_at`,
       params
     );
 
@@ -162,7 +172,7 @@ router.get('/preview/:inviteCode', authenticate, async (req, res) => {
     const groupResult = await pool.query(
       `SELECT 
         g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.group_type,
-        g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline,
+        g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline, g.notes,
         COUNT(gm.id) FILTER (WHERE gm.status = 'active') as current_members,
         u.name as admin_name
        FROM groups g
@@ -170,7 +180,7 @@ router.get('/preview/:inviteCode', authenticate, async (req, res) => {
        LEFT JOIN users u ON g.admin_id = u.id
        WHERE g.invite_code = $1
        GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.group_type,
-                g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline, g.created_at, u.name`,
+                g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline, g.notes, g.created_at, u.name`,
       [inviteCode]
     );
 
@@ -198,6 +208,7 @@ router.get('/preview/:inviteCode', authenticate, async (req, res) => {
         subscription_deadline_day: group.subscription_deadline_day,
         subscription_deadline_month: group.subscription_deadline_month,
         deadline: group.deadline,
+        notes: group.notes,
         created_at: group.created_at,
       },
     });
@@ -376,7 +387,7 @@ router.get('/my-groups', authenticate, async (req, res) => {
     const result = await pool.query(
       `SELECT
         g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.group_type,
-        g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline,
+        g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline, g.notes,
         g.created_at,
         gm.role, gm.status as member_status, gm.joined_at,
         COUNT(DISTINCT gm2.id) FILTER (WHERE gm2.status = 'active') as active_members,
@@ -388,7 +399,7 @@ router.get('/my-groups', authenticate, async (req, res) => {
        WHERE gm.user_id = $1
          AND gm.status != 'inactive'
        GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.group_type,
-                g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline,
+                g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline, g.notes,
                 g.created_at, gm.role, gm.status, gm.joined_at, u.name
        ORDER BY gm.joined_at DESC`,
       [userId]
@@ -1057,7 +1068,7 @@ router.get('/discover', authenticate, async (req, res) => {
       `SELECT 
         g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, 
         g.status, g.accepting_requests, g.subscription_frequency, g.subscription_platform,
-        g.subscription_deadline_day, g.subscription_deadline_month, g.created_at,
+        g.subscription_deadline_day, g.subscription_deadline_month, g.notes, g.created_at,
         g.admin_id,
         COUNT(gm.id) FILTER (WHERE gm.status = 'active') as current_members,
         u.name as admin_name,
@@ -1078,7 +1089,7 @@ router.get('/discover', authenticate, async (req, res) => {
        GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, 
                 g.currency, g.status, g.accepting_requests, g.subscription_frequency, 
                 g.subscription_platform, g.subscription_deadline_day, 
-                g.subscription_deadline_month, g.created_at, g.admin_id, u.name
+                g.subscription_deadline_month, g.notes, g.created_at, g.admin_id, u.name
        ORDER BY g.created_at DESC
        LIMIT $3`,
       [searchTerm, userId, parseInt(limit)]
@@ -1106,6 +1117,7 @@ router.get('/discover', authenticate, async (req, res) => {
           subscription_deadline_day: group.subscription_deadline_day,
           subscription_deadline_month: group.subscription_deadline_month,
           accepting_requests: group.accepting_requests !== false,
+          notes: group.notes,
           is_member: group.is_member,
           admin: {
             id: group.admin_id,
@@ -1763,6 +1775,7 @@ router.put('/:groupId', authenticate, [
   body('maxMembers').optional().isInt({ min: 2 }),
   body('acceptingRequests').optional().isBoolean(),
   body('isPublic').optional().isBoolean(),
+  body('notes').optional().trim(),
   body('deadline').optional().isISO8601().withMessage('Deadline must be a valid date'),
   body('subscriptionDeadlineDay').optional().isInt({ min: 1, max: 31 }).withMessage('Subscription deadline day must be between 1 and 31'),
   body('subscriptionDeadlineMonth').optional().isInt({ min: 1, max: 12 }).withMessage('Subscription deadline month must be between 1 and 12'),
@@ -1796,6 +1809,7 @@ router.put('/:groupId', authenticate, [
       maxMembers, 
       acceptingRequests,
       isPublic,
+      notes,
       deadline,
       subscriptionDeadlineDay,
       subscriptionDeadlineMonth
@@ -1903,6 +1917,13 @@ router.put('/:groupId', authenticate, [
     if (groupType === 'subscription' && isPublic !== undefined) {
       updates.push(`is_public = $${paramCount++}`);
       values.push(isPublic);
+    }
+
+    // Update notes (for all group types)
+    if (notes !== undefined) {
+      updates.push(`notes = $${paramCount++}`);
+      // Allow setting notes to null/empty string to clear them
+      values.push(notes === null || notes === '' ? null : notes.trim());
     }
 
     // Update deadline for general groups

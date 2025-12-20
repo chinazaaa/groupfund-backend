@@ -97,7 +97,8 @@ async function createNotification(userId, type, title, message, groupId = null, 
       let params = {};
 
       if (groupId) {
-        if (type === 'group_invite' || type === 'group_approved' || type === 'group_rejected' || type === 'group_removed') {
+        if (type === 'group_invite' || type === 'group_approved' || type === 'group_rejected' || type === 'group_removed' || 
+            type === 'member_left_subscription' || type === 'member_removed_subscription') {
           screen = 'GroupsList';
         } else {
           screen = 'GroupView';

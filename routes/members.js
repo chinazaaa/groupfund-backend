@@ -350,11 +350,12 @@ router.delete('/:memberId', authenticate, async (req, res) => {
       return res.status(403).json({ error: 'Only admins can remove members' });
     }
 
-    // Get member info and group name before removing
+    // Get member info and group details before removing
     const memberCheck = await pool.query(
-      `SELECT gm.role, gm.user_id, g.name as group_name
+      `SELECT gm.role, gm.user_id, g.name as group_name, g.group_type, g.subscription_platform, g.admin_id, u.name as user_name
        FROM group_members gm
        JOIN groups g ON gm.group_id = g.id
+       JOIN users u ON gm.user_id = u.id
        WHERE gm.id = $1 AND gm.group_id = $2`,
       [memberId, groupId]
     );
@@ -369,6 +370,10 @@ router.delete('/:memberId', authenticate, async (req, res) => {
 
     const removedUserId = memberCheck.rows[0].user_id;
     const groupName = memberCheck.rows[0].group_name;
+    const groupType = memberCheck.rows[0].group_type;
+    const subscriptionPlatform = memberCheck.rows[0].subscription_platform;
+    const adminId = memberCheck.rows[0].admin_id;
+    const userName = memberCheck.rows[0].user_name;
 
     // Remove member
     await pool.query('DELETE FROM group_members WHERE id = $1', [memberId]);
@@ -381,6 +386,44 @@ router.delete('/:memberId', authenticate, async (req, res) => {
       `You've been removed from ${groupName}`,
       groupId
     );
+
+    // Notify admin if member was removed from a subscription group
+    if (groupType === 'subscription' && adminId) {
+      const platformName = subscriptionPlatform || 'the subscription';
+      
+      // Send in-app and push notification
+      await createNotification(
+        adminId,
+        'member_removed_subscription',
+        'Member Removed from Subscription Group',
+        `${userName} has been removed from ${groupName} (${platformName}). You may want to change the subscription password or update access credentials.`,
+        groupId,
+        removedUserId
+      );
+
+      // Send email notification
+      try {
+        const adminResult = await pool.query(
+          'SELECT email, name FROM users WHERE id = $1',
+          [adminId]
+        );
+        
+        if (adminResult.rows.length > 0 && adminResult.rows[0].email) {
+          const { sendMemberLeftSubscriptionEmail } = require('../utils/email');
+          await sendMemberLeftSubscriptionEmail(
+            adminResult.rows[0].email,
+            adminResult.rows[0].name,
+            userName,
+            groupName,
+            subscriptionPlatform,
+            true // isRemoved = true (admin removed the member)
+          );
+        }
+      } catch (err) {
+        console.error(`Error sending member removed subscription email to admin ${adminId}:`, err);
+        // Don't fail the request if email fails
+      }
+    }
 
     res.json({ message: 'Member removed successfully' });
   } catch (error) {
@@ -395,9 +438,13 @@ router.post('/leave', authenticate, async (req, res) => {
     const { groupId } = req.body;
     const userId = req.user.id;
 
-    // Check if user is member
+    // Check if user is member and get group info
     const memberCheck = await pool.query(
-      'SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2',
+      `SELECT gm.role, g.group_type, g.admin_id, g.name as group_name, g.subscription_platform, u.name as user_name
+       FROM group_members gm
+       JOIN groups g ON gm.group_id = g.id
+       JOIN users u ON gm.user_id = u.id
+       WHERE gm.group_id = $1 AND gm.user_id = $2`,
       [groupId, userId]
     );
 
@@ -405,8 +452,15 @@ router.post('/leave', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'You are not a member of this group' });
     }
 
+    const memberInfo = memberCheck.rows[0];
+    const groupType = memberInfo.group_type;
+    const adminId = memberInfo.admin_id;
+    const groupName = memberInfo.group_name;
+    const subscriptionPlatform = memberInfo.subscription_platform;
+    const userName = memberInfo.user_name;
+
     // Don't allow admin to leave (or handle differently)
-    if (memberCheck.rows[0].role === 'admin') {
+    if (memberInfo.role === 'admin') {
       // Check if there are other admins
       const adminCount = await pool.query(
         'SELECT COUNT(*) FROM group_members WHERE group_id = $1 AND role = $2 AND status = $3',
@@ -422,6 +476,44 @@ router.post('/leave', authenticate, async (req, res) => {
       'DELETE FROM group_members WHERE group_id = $1 AND user_id = $2',
       [groupId, userId]
     );
+
+    // Notify admin if member left a subscription group
+    if (groupType === 'subscription' && adminId && adminId !== userId) {
+      const platformName = subscriptionPlatform || 'the subscription';
+      
+      // Send in-app and push notification
+      await createNotification(
+        adminId,
+        'member_left_subscription',
+        'Member Left Subscription Group',
+        `${userName} has left ${groupName} (${platformName}). You may want to change the subscription password or update access credentials.`,
+        groupId,
+        userId
+      );
+
+      // Send email notification
+      try {
+        const adminResult = await pool.query(
+          'SELECT email, name FROM users WHERE id = $1',
+          [adminId]
+        );
+        
+        if (adminResult.rows.length > 0 && adminResult.rows[0].email) {
+          const { sendMemberLeftSubscriptionEmail } = require('../utils/email');
+          await sendMemberLeftSubscriptionEmail(
+            adminResult.rows[0].email,
+            adminResult.rows[0].name,
+            userName,
+            groupName,
+            subscriptionPlatform,
+            false // isRemoved = false (member left voluntarily)
+          );
+        }
+      } catch (err) {
+        console.error(`Error sending member left subscription email to admin ${adminId}:`, err);
+        // Don't fail the request if email fails
+      }
+    }
 
     res.json({ message: 'Left group successfully' });
   } catch (error) {

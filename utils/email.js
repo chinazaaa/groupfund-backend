@@ -1848,6 +1848,91 @@ const sendMonthlyBirthdayNewsletter = async (email, userName, userId, monthName,
   return sendMonthlyNewsletter(email, userName, userId, monthName, groupsWithBirthdays, [], []);
 };
 
+// Send email to admin when a member leaves or is removed from a subscription group
+const sendMemberLeftSubscriptionEmail = async (adminEmail, adminName, memberName, groupName, subscriptionPlatform, isRemoved = false) => {
+  try {
+    const action = isRemoved ? 'removed from' : 'left';
+    const subject = `Member ${action.charAt(0).toUpperCase() + action.slice(1)} Subscription Group - ${groupName}`;
+    const platformName = subscriptionPlatform || 'the subscription';
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">🔐 GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1e40af; font-size: 24px; margin-top: 0;">
+            Member ${action.charAt(0).toUpperCase() + action.slice(1)} Subscription Group
+          </h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${adminName},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            <strong>${memberName}</strong> has ${action} your subscription group <strong>"${groupName}"</strong> (${platformName}).
+          </p>
+          
+          <div style="background: #fef3c7; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f59e0b;">
+            <p style="color: #92400e; font-size: 14px; margin: 0 0 10px 0; font-weight: 600;">
+              ⚠️ Important Security Action Required:
+            </p>
+            <ul style="color: #78350f; font-size: 14px; margin: 0; padding-left: 20px; line-height: 1.8;">
+              <li>Change the subscription account password</li>
+              <li>Update access credentials if shared</li>
+              <li>Review active sessions and log out any unauthorized devices</li>
+              <li>Update payment information if needed</li>
+            </ul>
+          </div>
+
+          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
+            <p style="color: #374151; font-size: 14px; margin: 0 0 10px 0; font-weight: 600;">
+              Group Details:
+            </p>
+            <p style="color: #6b7280; font-size: 14px; margin: 5px 0;">
+              <strong>Group:</strong> ${groupName}
+            </p>
+            <p style="color: #6b7280; font-size: 14px; margin: 5px 0;">
+              <strong>Platform:</strong> ${platformName}
+            </p>
+            <p style="color: #6b7280; font-size: 14px; margin: 5px 0;">
+              <strong>Member:</strong> ${memberName}
+            </p>
+          </div>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Please take the necessary security steps to protect your subscription account. If you have any questions, feel free to contact our support team.
+          </p>
+          
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Best regards,<br>
+            <strong style="color: #6366f1;">The GroupFund Team</strong>
+          </p>
+          <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            This is an automated security notification. Please do not reply to this email.
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: adminEmail,
+      subject,
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error sending member left subscription email:', error);
+      return false;
+    }
+
+    console.log('Member left subscription email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending member left subscription email:', error);
+    return false;
+  }
+};
+
 module.exports = {
   sendOTPEmail,
   sendOTPSMS,
@@ -1867,4 +1952,5 @@ module.exports = {
   sendContributionAmountUpdateEmail,
   sendDeadlineUpdateEmail,
   sendMaxMembersUpdateEmail,
+  sendMemberLeftSubscriptionEmail,
 };
