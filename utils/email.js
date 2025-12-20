@@ -1241,6 +1241,147 @@ const sendOverdueContributionEmail = async (email, userName, daysOverdue, overdu
   }
 };
 
+// Send email to group admin about overdue contributions from members
+// overdueMembers: array of { memberName, memberEmail, contributionAmount, currency, eventName, deadlineDate, daysOverdue, groupType, subscriptionPlatform, subscriptionFrequency }
+const sendAdminOverdueNotificationEmail = async (adminEmail, adminName, groupName, groupType, daysOverdue, overdueMembers) => {
+  try {
+    const { formatAmount } = require('./currency');
+    
+    let subject = '';
+    let titleText = '';
+    let messageText = '';
+    let urgencyText = '';
+
+    const totalOverdue = overdueMembers.length;
+
+    if (daysOverdue === 1) {
+      subject = `Reminder: ${totalOverdue} member${totalOverdue > 1 ? 's' : ''} with overdue contributions in ${groupName} - GroupFund`;
+      titleText = 'Reminder: Overdue Contributions - 1 Day';
+      messageText = `${totalOverdue} member${totalOverdue > 1 ? 's have' : ' has'} contribution${totalOverdue > 1 ? 's' : ''} that ${totalOverdue > 1 ? 'are' : 'is'} 1 day overdue in your group "${groupName}".`;
+      urgencyText = 'This is a friendly reminder to follow up with these members.';
+    } else if (daysOverdue === 3) {
+      subject = `⚠️ ${totalOverdue} member${totalOverdue > 1 ? 's' : ''} with overdue contributions in ${groupName} - GroupFund`;
+      titleText = '⚠️ Overdue Contributions - 3 Days';
+      messageText = `${totalOverdue} member${totalOverdue > 1 ? 's have' : ' has'} contribution${totalOverdue > 1 ? 's' : ''} that ${totalOverdue > 1 ? 'are' : 'is'} 3 days overdue in your group "${groupName}".`;
+      urgencyText = 'Please follow up with these members as soon as possible.';
+    } else if (daysOverdue === 7) {
+      subject = `⚠️ ${totalOverdue} member${totalOverdue > 1 ? 's' : ''} with overdue contributions in ${groupName} - GroupFund`;
+      titleText = '⚠️ Overdue Contributions - 7 Days';
+      messageText = `${totalOverdue} member${totalOverdue > 1 ? 's have' : ' has'} contribution${totalOverdue > 1 ? 's' : ''} that ${totalOverdue > 1 ? 'are' : 'is'} 7 days overdue in your group "${groupName}".`;
+      urgencyText = 'This is a reminder that contributions are now 7 days overdue. Please follow up immediately.';
+    } else if (daysOverdue === 14) {
+      subject = `🚨 Urgent: ${totalOverdue} member${totalOverdue > 1 ? 's' : ''} with overdue contributions in ${groupName} - GroupFund`;
+      titleText = '🚨 Urgent - Overdue Contributions - 14 Days';
+      messageText = `${totalOverdue} member${totalOverdue > 1 ? 's have' : ' has'} contribution${totalOverdue > 1 ? 's' : ''} that ${totalOverdue > 1 ? 'are' : 'is'} 14 days overdue in your group "${groupName}".`;
+      urgencyText = 'This is a final reminder. Contributions are significantly overdue. Please follow up immediately.';
+    }
+
+    // Build members list
+    const membersHtml = overdueMembers.map(member => {
+      const deadlineDate = new Date(member.deadlineDate);
+      const formattedDate = deadlineDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+      
+      let eventTitle = '';
+      let eventDetails = '';
+      
+      if (groupType === 'subscription') {
+        eventTitle = `📺 ${member.eventName}`;
+        eventDetails = `Subscription: ${member.subscriptionPlatform} (${member.subscriptionFrequency === 'monthly' ? 'Monthly' : 'Annual'}) - Deadline: ${formattedDate}`;
+      } else if (groupType === 'general') {
+        eventTitle = `📋 ${member.eventName}`;
+        eventDetails = `Deadline: ${formattedDate}`;
+      } else {
+        eventTitle = `🎂 ${member.eventName}`;
+        eventDetails = `Deadline: ${formattedDate}`;
+      }
+      
+      // Highlight if this member is the admin
+      const memberLabel = member.isAdmin 
+        ? `<strong style="color: #dc2626;">${member.memberName} (You - Group Admin)</strong>`
+        : member.memberName;
+      
+      return `
+            <div style="background: ${member.isAdmin ? '#fff7ed' : '#fef2f2'}; padding: 15px; border-radius: 8px; margin: 12px 0; border-left: 4px solid ${member.isAdmin ? '#f59e0b' : '#ef4444'};">
+              <p style="color: #374151; font-size: 16px; margin: 0 0 8px 0; font-weight: 600;">
+                ${eventTitle}
+              </p>
+              <p style="color: #6b7280; font-size: 14px; margin: 4px 0;">
+                ${eventDetails}
+              </p>
+              <p style="color: #6b7280; font-size: 14px; margin: 4px 0;">
+                Member: ${memberLabel}${member.memberEmail ? ` (${member.memberEmail})` : ''}
+              </p>
+              <p style="color: #dc2626; font-size: 16px; margin: 8px 0 0 0; font-weight: 700;">
+                Amount: ${formatAmount(member.contributionAmount, member.currency)}
+              </p>
+            </div>
+          `;
+    }).join('');
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">⚠️ GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #dc2626; font-size: 24px; margin-top: 0;">${titleText}</h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${adminName},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            ${messageText}
+          </p>
+          
+          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
+            <p style="color: #374151; font-size: 18px; margin: 0 0 10px 0; font-weight: 700;">
+              📋 Group: ${groupName}
+            </p>
+          </div>
+
+          ${membersHtml}
+
+          <div style="background: #fee2e2; padding: 20px; border-radius: 8px; margin: 20px 0; border: 2px solid #ef4444;">
+            <p style="color: #dc2626; font-size: 16px; margin: 0; font-weight: 700; text-align: center;">
+              ⚠️ ${urgencyText}
+            </p>
+          </div>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Please log in to the GroupFund app to view the full details and follow up with these members. Thank you for managing your group effectively.
+          </p>
+          
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Best regards,<br/>
+            <strong style="color: #6366f1;">The GroupFund Team</strong>
+          </p>
+          
+          <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            This is an automated notification email from GroupFund. You can manage your notification preferences in the app settings.
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: adminEmail,
+      subject,
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error sending admin overdue notification email:', error);
+      return false;
+    }
+
+    console.log('Admin overdue notification email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending admin overdue notification email:', error);
+    return false;
+  }
+};
+
 // Alias for backward compatibility
 const sendMonthlyBirthdayNewsletter = async (email, userName, userId, monthName, groupsWithBirthdays) => {
   return sendMonthlyNewsletter(email, userName, userId, monthName, groupsWithBirthdays, [], []);
@@ -1260,4 +1401,5 @@ module.exports = {
   sendWaitlistConfirmationEmail,
   sendBetaInvitationEmail,
   sendOverdueContributionEmail,
+  sendAdminOverdueNotificationEmail,
 };

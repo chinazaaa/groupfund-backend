@@ -491,12 +491,17 @@ async function checkOverdueContributions() {
        WHERE is_verified = TRUE AND is_active = TRUE`
     );
 
+    // Track overdue contributions by group and admin for admin notifications
+    // Structure: adminOverdueByGroup[adminId][groupId][daysOverdue] = [overdue members]
+    const adminOverdueByGroup = {};
+
     for (const user of usersResult.rows) {
       // Get all groups the user is in (exclude closed groups - they don't accept contributions)
       const groupsResult = await pool.query(
         `SELECT g.id, g.name, g.contribution_amount, g.currency, g.group_type,
                 g.subscription_frequency, g.subscription_platform,
-                g.subscription_deadline_day, g.subscription_deadline_month, g.deadline
+                g.subscription_deadline_day, g.subscription_deadline_month, g.deadline,
+                g.admin_id
          FROM groups g
          JOIN group_members gm ON g.id = gm.group_id
          WHERE gm.user_id = $1 AND gm.status = 'active' AND g.status = 'active'`,
@@ -655,6 +660,34 @@ async function checkOverdueContributions() {
                   daysOverdue: daysOverdue,
                   relatedUserId: null
                 });
+
+                // Track for admin notification (subscription groups)
+                // Note: This includes the admin themselves if they're also a member with overdue contributions
+                if (group.admin_id) {
+                  if (!adminOverdueByGroup[group.admin_id]) {
+                    adminOverdueByGroup[group.admin_id] = {};
+                  }
+                  if (!adminOverdueByGroup[group.admin_id][group.id]) {
+                    adminOverdueByGroup[group.admin_id][group.id] = {
+                      groupName: group.name,
+                      groupType: 'subscription',
+                      currency: group.currency || 'NGN',
+                      subscriptionPlatform: group.subscription_platform,
+                      subscriptionFrequency: group.subscription_frequency,
+                      byDaysOverdue: { 1: [], 3: [], 7: [], 14: [] }
+                    };
+                  }
+                  adminOverdueByGroup[group.admin_id][group.id].byDaysOverdue[daysOverdue].push({
+                    memberId: user.id,
+                    memberName: user.name,
+                    memberEmail: user.email,
+                    contributionAmount: parseFloat(group.contribution_amount),
+                    eventName: `${group.subscription_platform} Subscription`,
+                    deadlineDate: deadlineDate.toISOString().split('T')[0],
+                    daysOverdue: daysOverdue,
+                    isAdmin: user.id === group.admin_id // Flag if this member is the admin
+                  });
+                }
               }
             }
           }
@@ -701,6 +734,32 @@ async function checkOverdueContributions() {
                   daysOverdue: daysOverdue,
                   relatedUserId: null
                 });
+
+                // Track for admin notification (general groups)
+                // Note: This includes the admin themselves if they're also a member with overdue contributions
+                if (group.admin_id) {
+                  if (!adminOverdueByGroup[group.admin_id]) {
+                    adminOverdueByGroup[group.admin_id] = {};
+                  }
+                  if (!adminOverdueByGroup[group.admin_id][group.id]) {
+                    adminOverdueByGroup[group.admin_id][group.id] = {
+                      groupName: group.name,
+                      groupType: 'general',
+                      currency: group.currency || 'NGN',
+                      byDaysOverdue: { 1: [], 3: [], 7: [], 14: [] }
+                    };
+                  }
+                  adminOverdueByGroup[group.admin_id][group.id].byDaysOverdue[daysOverdue].push({
+                    memberId: user.id,
+                    memberName: user.name,
+                    memberEmail: user.email,
+                    contributionAmount: parseFloat(group.contribution_amount),
+                    eventName: group.name,
+                    deadlineDate: group.deadline,
+                    daysOverdue: daysOverdue,
+                    isAdmin: user.id === group.admin_id // Flag if this member is the admin
+                  });
+                }
               }
             }
           }
@@ -770,6 +829,86 @@ async function checkOverdueContributions() {
             );
           } catch (err) {
             console.error(`Error sending overdue contribution email to ${user.email}:`, err);
+          }
+        }
+      }
+    }
+
+    // Send admin notifications for subscription and general groups
+    for (const [adminId, groups] of Object.entries(adminOverdueByGroup)) {
+      // Get admin user info
+      const adminResult = await pool.query(
+        `SELECT id, name, email FROM users WHERE id = $1 AND is_verified = TRUE`,
+        [adminId]
+      );
+
+      if (adminResult.rows.length === 0 || !adminResult.rows[0].email) {
+        continue; // Skip if admin doesn't exist or has no email
+      }
+
+      const admin = adminResult.rows[0];
+
+      // Process each group for this admin
+      for (const [groupId, groupData] of Object.entries(groups)) {
+        // Process each days overdue period (1, 3, 7, 14)
+        for (const [daysOverdue, overdueMembers] of Object.entries(groupData.byDaysOverdue)) {
+          const daysNum = parseInt(daysOverdue);
+
+          if (overdueMembers.length === 0) {
+            continue;
+          }
+
+          // Check if admin notification was already sent today for this group and days overdue
+          const adminNotificationCheck = await pool.query(
+            `SELECT id FROM notifications 
+             WHERE user_id = $1 AND type = 'admin_overdue_notification' 
+             AND created_at::date = CURRENT_DATE
+             AND message LIKE $2
+             AND group_id = $3`,
+            [adminId, `%${daysNum} days overdue%`, groupId]
+          );
+
+          if (adminNotificationCheck.rows.length > 0) {
+            continue; // Already sent today
+          }
+
+          // Send email to admin
+          try {
+            const { sendAdminOverdueNotificationEmail } = require('../utils/email');
+            await sendAdminOverdueNotificationEmail(
+              admin.email,
+              admin.name,
+              groupData.groupName,
+              groupData.groupType,
+              daysNum,
+              overdueMembers.map(m => ({
+                memberName: m.memberName,
+                memberEmail: m.memberEmail,
+                contributionAmount: m.contributionAmount,
+                currency: groupData.currency,
+                eventName: m.eventName,
+                deadlineDate: m.deadlineDate,
+                daysOverdue: m.daysOverdue,
+                groupType: groupData.groupType,
+                subscriptionPlatform: groupData.subscriptionPlatform,
+                subscriptionFrequency: groupData.subscriptionFrequency,
+                isAdmin: m.isAdmin || false // Include flag to highlight if admin is also overdue
+              }))
+            );
+
+            // Create notification for admin
+            await createNotification(
+              adminId,
+              'admin_overdue_notification',
+              `Overdue Contributions in ${groupData.groupName} - ${daysNum} Days`,
+              `${overdueMembers.length} member${overdueMembers.length > 1 ? 's have' : ' has'} contribution${overdueMembers.length > 1 ? 's' : ''} that ${overdueMembers.length > 1 ? 'are' : 'is'} ${daysNum} days overdue in ${groupData.groupName}.`,
+              groupId,
+              null
+            );
+
+            console.log(`Admin overdue notification sent to ${admin.name} (${admin.email}) for group ${groupData.groupName} - ${daysNum} days overdue`);
+          } catch (err) {
+            console.error(`Error sending admin overdue notification to ${admin.email} for group ${groupData.groupName}:`, err);
           }
         }
       }
