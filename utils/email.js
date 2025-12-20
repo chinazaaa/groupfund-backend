@@ -1382,6 +1382,142 @@ const sendAdminOverdueNotificationEmail = async (adminEmail, adminName, groupNam
   }
 };
 
+// Send email to group admin about upcoming deadlines for members
+// upcomingMembers: array of { memberName, memberEmail, contributionAmount, currency, eventName, deadlineDate, daysUntil, groupType, subscriptionPlatform, subscriptionFrequency, isAdmin }
+const sendAdminUpcomingDeadlineEmail = async (adminEmail, adminName, groupName, groupType, daysUntil, upcomingMembers) => {
+  try {
+    const { formatAmount } = require('./currency');
+    
+    let subject = '';
+    let titleText = '';
+    let messageText = '';
+    let urgencyText = '';
+
+    const totalUpcoming = upcomingMembers.length;
+
+    if (daysUntil === 7) {
+      subject = `Reminder: ${totalUpcoming} member${totalUpcoming > 1 ? 's' : ''} with upcoming deadlines in ${groupName} - GroupFund`;
+      titleText = 'Upcoming Deadline Reminder - 7 Days';
+      messageText = `${totalUpcoming} member${totalUpcoming > 1 ? 's have' : ' has'} upcoming deadline${totalUpcoming > 1 ? 's' : ''} in 7 days in your group "${groupName}".`;
+      urgencyText = 'Members have 7 days to prepare their contributions.';
+    } else if (daysUntil === 1) {
+      subject = `Reminder: ${totalUpcoming} member${totalUpcoming > 1 ? 's' : ''} with deadlines tomorrow in ${groupName} - GroupFund`;
+      titleText = 'Upcoming Deadline Reminder - Tomorrow';
+      messageText = `${totalUpcoming} member${totalUpcoming > 1 ? 's have' : ' has'} upcoming deadline${totalUpcoming > 1 ? 's' : ''} tomorrow in your group "${groupName}".`;
+      urgencyText = 'Action needed: Please remind members to mark their contributions as paid today.';
+    } else if (daysUntil === 0) {
+      subject = `Action Required: ${totalUpcoming} member${totalUpcoming > 1 ? 's' : ''} with deadlines today in ${groupName} - GroupFund`;
+      titleText = 'Upcoming Deadline Reminder - Today';
+      messageText = `${totalUpcoming} member${totalUpcoming > 1 ? 's have' : ' has'} upcoming deadline${totalUpcoming > 1 ? 's' : ''} today in your group "${groupName}".`;
+      urgencyText = 'Action required: Please remind members to mark their contributions as paid now.';
+    }
+
+    // Build members list
+    const membersHtml = upcomingMembers.map(member => {
+      const deadlineDate = new Date(member.deadlineDate);
+      const formattedDate = deadlineDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+      
+      let eventTitle = '';
+      let eventDetails = '';
+      
+      if (groupType === 'subscription') {
+        eventTitle = `📺 ${member.eventName}`;
+        eventDetails = `Subscription: ${member.subscriptionPlatform} (${member.subscriptionFrequency === 'monthly' ? 'Monthly' : 'Annual'}) - Deadline: ${formattedDate}`;
+      } else if (groupType === 'general') {
+        eventTitle = `📋 ${member.eventName}`;
+        eventDetails = `Deadline: ${formattedDate}`;
+      } else {
+        eventTitle = `🎂 ${member.eventName}`;
+        eventDetails = `Deadline: ${formattedDate}`;
+      }
+      
+      // Highlight if this member is the admin
+      const memberLabel = member.isAdmin 
+        ? `<strong style="color: #f59e0b;">${member.memberName} (You - Group Admin)</strong>`
+        : member.memberName;
+      
+      return `
+            <div style="background: ${member.isAdmin ? '#fffbeb' : '#f0f9ff'}; padding: 15px; border-radius: 8px; margin: 12px 0; border-left: 4px solid ${member.isAdmin ? '#f59e0b' : '#3b82f6'};">
+              <p style="color: #374151; font-size: 16px; margin: 0 0 8px 0; font-weight: 600;">
+                ${eventTitle}
+              </p>
+              <p style="color: #6b7280; font-size: 14px; margin: 4px 0;">
+                ${eventDetails}
+              </p>
+              <p style="color: #6b7280; font-size: 14px; margin: 4px 0;">
+                Member: ${memberLabel}${member.memberEmail ? ` (${member.memberEmail})` : ''}
+              </p>
+              <p style="color: #1e40af; font-size: 16px; margin: 8px 0 0 0; font-weight: 700;">
+                Amount: ${formatAmount(member.contributionAmount, member.currency)}
+              </p>
+            </div>
+          `;
+    }).join('');
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">📅 GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1e40af; font-size: 24px; margin-top: 0;">${titleText}</h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${adminName},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            ${messageText}
+          </p>
+          
+          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #3b82f6;">
+            <p style="color: #374151; font-size: 18px; margin: 0 0 10px 0; font-weight: 700;">
+              📋 Group: ${groupName}
+            </p>
+          </div>
+
+          ${membersHtml}
+
+          <div style="background: #dbeafe; padding: 20px; border-radius: 8px; margin: 20px 0; border: 2px solid #3b82f6;">
+            <p style="color: #1e40af; font-size: 16px; margin: 0; font-weight: 700; text-align: center;">
+              ⚠️ ${urgencyText}
+            </p>
+          </div>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Please log in to the GroupFund app to view the full details and remind members about their upcoming deadlines. Thank you for managing your group effectively.
+          </p>
+          
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Best regards,<br/>
+            <strong style="color: #3b82f6;">The GroupFund Team</strong>
+          </p>
+          
+          <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            This is an automated notification email from GroupFund. You can manage your notification preferences in the app settings.
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: adminEmail,
+      subject,
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error sending admin upcoming deadline email:', error);
+      return false;
+    }
+
+    console.log('Admin upcoming deadline email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending admin upcoming deadline email:', error);
+    return false;
+  }
+};
+
 // Alias for backward compatibility
 const sendMonthlyBirthdayNewsletter = async (email, userName, userId, monthName, groupsWithBirthdays) => {
   return sendMonthlyNewsletter(email, userName, userId, monthName, groupsWithBirthdays, [], []);
@@ -1402,4 +1538,5 @@ module.exports = {
   sendBetaInvitationEmail,
   sendOverdueContributionEmail,
   sendAdminOverdueNotificationEmail,
+  sendAdminUpcomingDeadlineEmail,
 };

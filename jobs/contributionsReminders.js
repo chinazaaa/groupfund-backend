@@ -120,6 +120,10 @@ async function checkBirthdayReminders() {
        WHERE is_verified = TRUE AND is_active = TRUE`
     );
 
+    // Track upcoming deadlines by group and admin for admin notifications
+    // Structure: adminUpcomingByGroup[adminId][groupId][daysUntil] = [members with upcoming deadlines]
+    const adminUpcomingByGroup = {};
+
     for (const user of usersResult.rows) {
       // Helper function to get deadline date, handling months with fewer days
       function getLastDayOfMonth(year, month) {
@@ -136,7 +140,8 @@ async function checkBirthdayReminders() {
       const groupsResult = await pool.query(
         `SELECT g.id, g.name, g.contribution_amount, g.currency, g.group_type,
                 g.subscription_frequency, g.subscription_platform, 
-                g.subscription_deadline_day, g.subscription_deadline_month, g.deadline
+                g.subscription_deadline_day, g.subscription_deadline_month, g.deadline,
+                g.admin_id
          FROM groups g
          JOIN group_members gm ON g.id = gm.group_id
          WHERE gm.user_id = $1 AND gm.status = 'active' AND g.status = 'active'`,
@@ -270,6 +275,34 @@ async function checkBirthdayReminders() {
               contributionAmount: parseFloat(group.contribution_amount),
               deadlineDate: nextDeadline.toISOString().split('T')[0]
             });
+
+            // Track for admin notification (subscription groups)
+            // Note: This includes the admin themselves if they're also a member with upcoming deadlines
+            if (group.admin_id) {
+              if (!adminUpcomingByGroup[group.admin_id]) {
+                adminUpcomingByGroup[group.admin_id] = {};
+              }
+              if (!adminUpcomingByGroup[group.admin_id][group.id]) {
+                adminUpcomingByGroup[group.admin_id][group.id] = {
+                  groupName: group.name,
+                  groupType: 'subscription',
+                  currency: group.currency || 'NGN',
+                  subscriptionPlatform: group.subscription_platform,
+                  subscriptionFrequency: group.subscription_frequency,
+                  byDaysUntil: { 7: [], 1: [], 0: [] }
+                };
+              }
+              adminUpcomingByGroup[group.admin_id][group.id].byDaysUntil[daysUntilDeadline].push({
+                memberId: user.id,
+                memberName: user.name,
+                memberEmail: user.email,
+                contributionAmount: parseFloat(group.contribution_amount),
+                eventName: `${group.subscription_platform} Subscription`,
+                deadlineDate: nextDeadline.toISOString().split('T')[0],
+                daysUntil: daysUntilDeadline,
+                isAdmin: user.id === group.admin_id // Flag if this member is the admin
+              });
+            }
           }
         }
       } else if (group.group_type === 'general') {
@@ -299,6 +332,32 @@ async function checkBirthdayReminders() {
                 contributionAmount: parseFloat(group.contribution_amount),
                 deadlineDate: group.deadline
               });
+
+              // Track for admin notification (general groups)
+              // Note: This includes the admin themselves if they're also a member with upcoming deadlines
+              if (group.admin_id) {
+                if (!adminUpcomingByGroup[group.admin_id]) {
+                  adminUpcomingByGroup[group.admin_id] = {};
+                }
+                if (!adminUpcomingByGroup[group.admin_id][group.id]) {
+                  adminUpcomingByGroup[group.admin_id][group.id] = {
+                    groupName: group.name,
+                    groupType: 'general',
+                    currency: group.currency || 'NGN',
+                    byDaysUntil: { 7: [], 1: [], 0: [] }
+                  };
+                }
+                adminUpcomingByGroup[group.admin_id][group.id].byDaysUntil[daysUntilDeadline].push({
+                  memberId: user.id,
+                  memberName: user.name,
+                  memberEmail: user.email,
+                  contributionAmount: parseFloat(group.contribution_amount),
+                  eventName: group.name,
+                  deadlineDate: group.deadline,
+                  daysUntil: daysUntilDeadline,
+                  isAdmin: user.id === group.admin_id // Flag if this member is the admin
+                });
+              }
             }
           }
         }
@@ -434,6 +493,87 @@ async function checkBirthdayReminders() {
             );
           } catch (err) {
             console.error(`Error sending comprehensive reminder email to ${user.email}:`, err);
+          }
+        }
+      }
+    }
+
+    // Send admin notifications for subscription and general groups with upcoming deadlines
+    for (const [adminId, groups] of Object.entries(adminUpcomingByGroup)) {
+      // Get admin user info
+      const adminResult = await pool.query(
+        `SELECT id, name, email FROM users WHERE id = $1 AND is_verified = TRUE`,
+        [adminId]
+      );
+
+      if (adminResult.rows.length === 0 || !adminResult.rows[0].email) {
+        continue; // Skip if admin doesn't exist or has no email
+      }
+
+      const admin = adminResult.rows[0];
+
+      // Process each group for this admin
+      for (const [groupId, groupData] of Object.entries(groups)) {
+        // Process each days until deadline period (7, 1, 0)
+        for (const [daysUntil, upcomingMembers] of Object.entries(groupData.byDaysUntil)) {
+          const daysNum = parseInt(daysUntil);
+
+          if (upcomingMembers.length === 0) {
+            continue;
+          }
+
+          // Check if admin notification was already sent today for this group and days until
+          const adminNotificationCheck = await pool.query(
+            `SELECT id FROM notifications 
+             WHERE user_id = $1 AND type = 'admin_upcoming_deadline' 
+             AND created_at::date = CURRENT_DATE
+             AND message LIKE $2
+             AND group_id = $3`,
+            [adminId, `%${daysNum === 0 ? 'today' : daysNum === 1 ? 'tomorrow' : '7 days'}%`, groupId]
+          );
+
+          if (adminNotificationCheck.rows.length > 0) {
+            continue; // Already sent today
+          }
+
+          // Send email to admin
+          try {
+            const { sendAdminUpcomingDeadlineEmail } = require('../utils/email');
+            await sendAdminUpcomingDeadlineEmail(
+              admin.email,
+              admin.name,
+              groupData.groupName,
+              groupData.groupType,
+              daysNum,
+              upcomingMembers.map(m => ({
+                memberName: m.memberName,
+                memberEmail: m.memberEmail,
+                contributionAmount: m.contributionAmount,
+                currency: groupData.currency,
+                eventName: m.eventName,
+                deadlineDate: m.deadlineDate,
+                daysUntil: m.daysUntil,
+                groupType: groupData.groupType,
+                subscriptionPlatform: groupData.subscriptionPlatform,
+                subscriptionFrequency: groupData.subscriptionFrequency,
+                isAdmin: m.isAdmin || false // Include flag to highlight if admin is also in the list
+              }))
+            );
+
+            // Create notification for admin
+            const deadlineText = daysNum === 0 ? 'today' : daysNum === 1 ? 'tomorrow' : 'in 7 days';
+            await createNotification(
+              adminId,
+              'admin_upcoming_deadline',
+              `Upcoming Deadline in ${groupData.groupName} - ${daysNum === 0 ? 'Today' : daysNum === 1 ? 'Tomorrow' : '7 Days'}`,
+              `${upcomingMembers.length} member${upcomingMembers.length > 1 ? 's have' : ' has'} upcoming deadline${upcomingMembers.length > 1 ? 's' : ''} ${deadlineText} in ${groupData.groupName}.`,
+              groupId,
+              null
+            );
+
+            console.log(`Admin upcoming deadline notification sent to ${admin.name} (${admin.email}) for group ${groupData.groupName} - ${daysNum} days until deadline`);
+          } catch (err) {
+            console.error(`Error sending admin upcoming deadline notification to ${admin.email} for group ${groupData.groupName}:`, err);
           }
         }
       }
