@@ -433,3 +433,7 @@ router.post('/member/:userId/public', [
 
 module.exports = router;
 
+// Export helper functions for use in admin routes
+module.exports.updateGroupHealthFromReports = updateGroupHealthFromReports;
+module.exports.updateUserStatusFromReports = updateUserStatusFromReports;
+

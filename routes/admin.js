@@ -1745,5 +1745,316 @@ router.post('/contributions/trigger-overdue-reminders', async (req, res) => {
   }
 });
 
+// Get all reports
+router.get('/reports', async (req, res) => {
+  try {
+    const { 
+      page = 1, 
+      limit = 50, 
+      status, 
+      report_type, 
+      reason,
+      group_id,
+      user_id
+    } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    let query = `
+      SELECT 
+        r.id, r.report_type, r.reason, r.description, r.status, r.created_at, r.updated_at,
+        r.reviewed_at, r.admin_notes,
+        r.reported_group_id, r.reported_user_id,
+        reporter.id as reporter_id, reporter.name as reporter_name, reporter.email as reporter_email,
+        reported_group.id as group_id, reported_group.name as group_name, reported_group.group_type as group_type,
+        reported_user.id as reported_user_id, reported_user.name as reported_user_name, reported_user.email as reported_user_email,
+        reviewer.id as reviewer_id, reviewer.name as reviewer_name
+      FROM reports r
+      LEFT JOIN users reporter ON r.reporter_id = reporter.id
+      LEFT JOIN groups reported_group ON r.reported_group_id = reported_group.id
+      LEFT JOIN users reported_user ON r.reported_user_id = reported_user.id
+      LEFT JOIN users reviewer ON r.reviewed_by = reviewer.id
+      WHERE 1=1
+    `;
+    const params = [];
+    let paramCount = 1;
+
+    if (status) {
+      query += ` AND r.status = $${paramCount}`;
+      params.push(status);
+      paramCount++;
+    }
+
+    if (report_type) {
+      query += ` AND r.report_type = $${paramCount}`;
+      params.push(report_type);
+      paramCount++;
+    }
+
+    if (reason) {
+      query += ` AND r.reason = $${paramCount}`;
+      params.push(reason);
+      paramCount++;
+    }
+
+    if (group_id) {
+      query += ` AND r.reported_group_id = $${paramCount}`;
+      params.push(group_id);
+      paramCount++;
+    }
+
+    if (user_id) {
+      query += ` AND r.reported_user_id = $${paramCount}`;
+      params.push(user_id);
+      paramCount++;
+    }
+
+    // Get total count for pagination
+    const countQuery = query.replace(/SELECT[\s\S]*?FROM/, 'SELECT COUNT(*) as total FROM');
+    const countResult = await pool.query(countQuery, params);
+    const total = parseInt(countResult.rows[0]?.total || 0);
+
+    // Add ordering and pagination
+    query += ` ORDER BY r.created_at DESC LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
+    params.push(parseInt(limit), offset);
+
+    const result = await pool.query(query, params);
+
+    res.json({
+      reports: result.rows.map(report => ({
+        id: report.id,
+        report_type: report.report_type,
+        reason: report.reason,
+        description: report.description,
+        status: report.status,
+        created_at: report.created_at,
+        updated_at: report.updated_at,
+        reviewed_at: report.reviewed_at,
+        admin_notes: report.admin_notes,
+        reporter: report.reporter_id ? {
+          id: report.reporter_id,
+          name: report.reporter_name,
+          email: report.reporter_email
+        } : null,
+        reported_group: report.group_id ? {
+          id: report.group_id,
+          name: report.group_name,
+          group_type: report.group_type
+        } : null,
+        reported_user: report.reported_user_id ? {
+          id: report.reported_user_id,
+          name: report.reported_user_name,
+          email: report.reported_user_email
+        } : null,
+        reviewer: report.reviewer_id ? {
+          id: report.reviewer_id,
+          name: report.reviewer_name
+        } : null
+      })),
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        total_pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Get reports error:', error);
+    res.status(500).json({ error: 'Server error fetching reports' });
+  }
+});
+
+// Get a specific report
+router.get('/reports/:reportId', async (req, res) => {
+  try {
+    const { reportId } = req.params;
+
+    const result = await pool.query(
+      `SELECT 
+        r.id, r.report_type, r.reason, r.description, r.status, r.created_at, r.updated_at,
+        r.reviewed_at, r.admin_notes,
+        r.reported_group_id, r.reported_user_id,
+        reporter.id as reporter_id, reporter.name as reporter_name, reporter.email as reporter_email,
+        reported_group.id as group_id, reported_group.name as group_name, reported_group.group_type as group_type,
+        reported_group.status as group_status,
+        reported_user.id as reported_user_id, reported_user.name as reported_user_name, 
+        reported_user.email as reported_user_email, reported_user.is_active as reported_user_is_active,
+        reviewer.id as reviewer_id, reviewer.name as reviewer_name
+       FROM reports r
+       LEFT JOIN users reporter ON r.reporter_id = reporter.id
+       LEFT JOIN groups reported_group ON r.reported_group_id = reported_group.id
+       LEFT JOIN users reported_user ON r.reported_user_id = reported_user.id
+       LEFT JOIN users reviewer ON r.reviewed_by = reviewer.id
+       WHERE r.id = $1`,
+      [reportId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Report not found' });
+    }
+
+    const report = result.rows[0];
+
+    res.json({
+      id: report.id,
+      report_type: report.report_type,
+      reason: report.reason,
+      description: report.description,
+      status: report.status,
+      created_at: report.created_at,
+      updated_at: report.updated_at,
+      reviewed_at: report.reviewed_at,
+      admin_notes: report.admin_notes,
+      reporter: report.reporter_id ? {
+        id: report.reporter_id,
+        name: report.reporter_name,
+        email: report.reporter_email
+      } : null,
+      reported_group: report.group_id ? {
+        id: report.group_id,
+        name: report.group_name,
+        group_type: report.group_type,
+        status: report.group_status
+      } : null,
+      reported_user: report.reported_user_id ? {
+        id: report.reported_user_id,
+        name: report.reported_user_name,
+        email: report.reported_user_email,
+        is_active: report.reported_user_is_active
+      } : null,
+      reviewer: report.reviewer_id ? {
+        id: report.reviewer_id,
+        name: report.reviewer_name
+      } : null
+    });
+  } catch (error) {
+    console.error('Get report error:', error);
+    res.status(500).json({ error: 'Server error fetching report' });
+  }
+});
+
+// Update report status (review, resolve, dismiss)
+router.put('/reports/:reportId', [
+  body('status').isIn(['pending', 'reviewed', 'resolved', 'dismissed']).withMessage('Invalid status'),
+  body('admin_notes').optional().trim(),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { reportId } = req.params;
+    const { status, admin_notes } = req.body;
+    const reviewerId = req.user.id;
+
+    // Check if report exists
+    const reportCheck = await pool.query(
+      'SELECT id, status FROM reports WHERE id = $1',
+      [reportId]
+    );
+
+    if (reportCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Report not found' });
+    }
+
+    // Update report
+    const updateFields = ['status = $1', 'reviewed_by = $2', 'updated_at = CURRENT_TIMESTAMP'];
+    const updateValues = [status, reviewerId];
+    let paramCount = 3;
+
+    if (status !== 'pending') {
+      updateFields.push(`reviewed_at = CURRENT_TIMESTAMP`);
+    }
+
+    if (admin_notes !== undefined) {
+      updateFields.push(`admin_notes = $${paramCount}`);
+      updateValues.push(admin_notes);
+      paramCount++;
+    }
+
+    updateValues.push(reportId);
+
+    await pool.query(
+      `UPDATE reports SET ${updateFields.join(', ')} WHERE id = $${paramCount}`,
+      updateValues
+    );
+
+    // Get updated report with full details
+    const updatedReport = await pool.query(
+      `SELECT 
+        r.id, r.report_type, r.reason, r.description, r.status, r.created_at, r.updated_at,
+        r.reviewed_at, r.admin_notes,
+        r.reported_group_id, r.reported_user_id,
+        reporter.id as reporter_id, reporter.name as reporter_name, reporter.email as reporter_email,
+        reported_group.id as group_id, reported_group.name as group_name,
+        reported_user.id as reported_user_id, reported_user.name as reported_user_name,
+        reviewer.id as reviewer_id, reviewer.name as reviewer_name
+       FROM reports r
+       LEFT JOIN users reporter ON r.reporter_id = reporter.id
+       LEFT JOIN groups reported_group ON r.reported_group_id = reported_group.id
+       LEFT JOIN users reported_user ON r.reported_user_id = reported_user.id
+       LEFT JOIN users reviewer ON r.reviewed_by = reviewer.id
+       WHERE r.id = $1`,
+      [reportId]
+    );
+
+    // If report was resolved or dismissed, update group/user status if needed
+    if (status === 'resolved' || status === 'dismissed') {
+      const report = updatedReport.rows[0];
+      
+      // Recalculate group health if group was reported
+      if (report.reported_group_id) {
+        const reportsModule = require('../routes/reports');
+        if (reportsModule.updateGroupHealthFromReports) {
+          await reportsModule.updateGroupHealthFromReports(report.reported_group_id);
+        }
+      }
+
+      // Recalculate user status if user was reported
+      if (report.reported_user_id) {
+        const reportsModule = require('../routes/reports');
+        if (reportsModule.updateUserStatusFromReports) {
+          await reportsModule.updateUserStatusFromReports(report.reported_user_id);
+        }
+      }
+    }
+
+    res.json({
+      message: 'Report updated successfully',
+      report: {
+        id: updatedReport.rows[0].id,
+        report_type: updatedReport.rows[0].report_type,
+        reason: updatedReport.rows[0].reason,
+        description: updatedReport.rows[0].description,
+        status: updatedReport.rows[0].status,
+        created_at: updatedReport.rows[0].created_at,
+        updated_at: updatedReport.rows[0].updated_at,
+        reviewed_at: updatedReport.rows[0].reviewed_at,
+        admin_notes: updatedReport.rows[0].admin_notes,
+        reporter: updatedReport.rows[0].reporter_id ? {
+          id: updatedReport.rows[0].reporter_id,
+          name: updatedReport.rows[0].reporter_name,
+          email: updatedReport.rows[0].reporter_email
+        } : null,
+        reported_group: updatedReport.rows[0].group_id ? {
+          id: updatedReport.rows[0].group_id,
+          name: updatedReport.rows[0].group_name
+        } : null,
+        reported_user: updatedReport.rows[0].reported_user_id ? {
+          id: updatedReport.rows[0].reported_user_id,
+          name: updatedReport.rows[0].reported_user_name
+        } : null,
+        reviewer: updatedReport.rows[0].reviewer_id ? {
+          id: updatedReport.rows[0].reviewer_id,
+          name: updatedReport.rows[0].reviewer_name
+        } : null
+      }
+    });
+  } catch (error) {
+    console.error('Update report error:', error);
+    res.status(500).json({ error: 'Server error updating report' });
+  }
+});
+
 module.exports = router;
 
