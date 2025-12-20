@@ -842,6 +842,203 @@ router.get('/overdue', authenticate, async (req, res) => {
   }
 });
 
+// Helper function to calculate admin reliability
+// This calculates the admin's reliability based on their payment history as a member
+async function calculateAdminReliability(adminId) {
+  try {
+    // Get admin's payment history across all groups they're a member of
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const currentYear = today.getFullYear();
+
+    let totalContributions = 0;
+    let totalOnTime = 0;
+    let totalOverdue = 0;
+
+    // Get all groups where admin is a member (not admin)
+    const memberGroupsResult = await pool.query(
+      `SELECT g.id, g.group_type, g.subscription_frequency, g.subscription_deadline_day, g.subscription_deadline_month
+       FROM groups g
+       JOIN group_members gm ON g.id = gm.group_id
+       WHERE gm.user_id = $1 AND gm.status = 'active' AND gm.role = 'member'`,
+      [adminId]
+    );
+
+    // Calculate reliability from birthday contributions
+    for (const group of memberGroupsResult.rows.filter(g => g.group_type === 'birthday')) {
+      const membersResult = await pool.query(
+        `SELECT u.id, u.birthday
+         FROM users u
+         JOIN group_members gm ON u.id = gm.user_id
+         WHERE gm.group_id = $1 AND gm.status = 'active' AND u.birthday IS NOT NULL AND u.id != $2`,
+        [group.id, adminId]
+      );
+
+      for (const member of membersResult.rows) {
+        const memberBirthday = new Date(member.birthday);
+        const thisYearBirthday = new Date(currentYear, memberBirthday.getMonth(), memberBirthday.getDate());
+        thisYearBirthday.setHours(0, 0, 0, 0);
+        const isPast = thisYearBirthday < today;
+        const isToday = thisYearBirthday.getTime() === today.getTime();
+
+        if (isPast || isToday) {
+          const contributionCheck = await pool.query(
+            `SELECT status, contribution_date 
+             FROM birthday_contributions 
+             WHERE group_id = $1 AND birthday_user_id = $2 AND contributor_id = $3
+             ORDER BY contribution_date DESC
+             LIMIT 1`,
+            [group.id, member.id, adminId]
+          );
+
+          totalContributions++;
+
+          if (contributionCheck.rows.length > 0) {
+            const status = contributionCheck.rows[0].status;
+            const contributionDate = contributionCheck.rows[0].contribution_date ? new Date(contributionCheck.rows[0].contribution_date) : null;
+            const isFullyPaid = (status === 'confirmed');
+            
+            if (isFullyPaid && contributionDate) {
+              contributionDate.setHours(0, 0, 0, 0);
+              const paidOnTime = contributionDate <= thisYearBirthday;
+              if (paidOnTime) {
+                totalOnTime++;
+              } else if (isPast) {
+                totalOverdue++;
+              }
+            } else if (isPast && (status === 'not_paid' || status === 'not_received' || status === 'paid')) {
+              totalOverdue++;
+            }
+          } else if (isPast) {
+            totalOverdue++;
+          }
+        }
+      }
+    }
+
+    // Calculate reliability from subscription contributions
+    for (const group of memberGroupsResult.rows.filter(g => g.group_type === 'subscription')) {
+      const currentMonth = today.getMonth() + 1;
+      let periodStart;
+      if (group.subscription_frequency === 'monthly') {
+        periodStart = new Date(currentYear, currentMonth - 1, 1);
+      } else {
+        periodStart = new Date(currentYear, 0, 1);
+      }
+      periodStart.setHours(0, 0, 0, 0);
+
+      let deadlineDate;
+      if (group.subscription_frequency === 'monthly') {
+        deadlineDate = getDeadlineDate(currentYear, currentMonth - 1, group.subscription_deadline_day);
+      } else {
+        deadlineDate = getDeadlineDate(currentYear, group.subscription_deadline_month - 1, group.subscription_deadline_day);
+      }
+      deadlineDate.setHours(0, 0, 0, 0);
+      const isDeadlinePassed = deadlineDate < today;
+
+      if (isDeadlinePassed) {
+        const contributionCheck = await pool.query(
+          `SELECT status, contribution_date 
+           FROM subscription_contributions 
+           WHERE group_id = $1 AND contributor_id = $2 AND subscription_period_start = $3
+           ORDER BY contribution_date DESC
+           LIMIT 1`,
+          [group.id, adminId, periodStart]
+        );
+
+        totalContributions++;
+
+        if (contributionCheck.rows.length > 0) {
+          const status = contributionCheck.rows[0].status;
+          const contributionDate = contributionCheck.rows[0].contribution_date ? new Date(contributionCheck.rows[0].contribution_date) : null;
+          const isFullyPaid = (status === 'confirmed');
+          
+          if (isFullyPaid && contributionDate) {
+            contributionDate.setHours(0, 0, 0, 0);
+            const paidOnTime = contributionDate <= deadlineDate;
+            if (paidOnTime) {
+              totalOnTime++;
+            } else {
+              totalOverdue++;
+            }
+          } else if (status === 'not_paid' || status === 'not_received' || status === 'paid') {
+            totalOverdue++;
+          }
+        } else {
+          totalOverdue++;
+        }
+      }
+    }
+
+    // Calculate reliability score (0-100)
+    let reliabilityScore = 50; // Default neutral score
+    let onTimeRate = 0;
+
+    if (totalContributions > 0) {
+      onTimeRate = (totalOnTime / totalContributions) * 100;
+      reliabilityScore = Math.round(onTimeRate);
+    }
+
+    // Generate summary text
+    let summaryText = '';
+    let rating = 'neutral';
+
+    if (totalContributions === 0) {
+      summaryText = 'New admin - No contribution history yet';
+      rating = 'new';
+    } else if (totalOverdue === 0) {
+      summaryText = 'Excellent - No overdue contributions';
+      rating = 'excellent';
+    } else if (reliabilityScore >= 90) {
+      summaryText = 'Very reliable - Excellent payment record';
+      rating = 'excellent';
+    } else if (reliabilityScore >= 75) {
+      summaryText = 'Reliable - Good payment record';
+      rating = 'good';
+    } else if (reliabilityScore >= 50) {
+      summaryText = 'Moderate - Some overdue contributions';
+      rating = 'moderate';
+    } else {
+      summaryText = 'Poor - Multiple overdue contributions';
+      rating = 'poor';
+    }
+
+    // Add specific details
+    if (totalOverdue > 0) {
+      summaryText += ` (${totalOverdue} overdue)`;
+    }
+
+    return {
+      metrics: {
+        total_contributions: totalContributions,
+        total_on_time: totalOnTime,
+        total_overdue: totalOverdue,
+        on_time_rate: totalContributions > 0 ? Math.round(onTimeRate * 10) / 10 : 0,
+        reliability_score: reliabilityScore
+      },
+      summary: {
+        text: summaryText,
+        rating: rating // 'new', 'excellent', 'good', 'moderate', 'poor'
+      }
+    };
+  } catch (error) {
+    console.error('Error calculating admin reliability:', error);
+    return {
+      metrics: {
+        total_contributions: 0,
+        total_on_time: 0,
+        total_overdue: 0,
+        on_time_rate: 0,
+        reliability_score: 50
+      },
+      summary: {
+        text: 'Unable to calculate reliability',
+        rating: 'neutral'
+      }
+    };
+  }
+}
+
 // Search for discoverable subscription groups
 // This endpoint allows users to search for public subscription groups by platform name or group name
 router.get('/discover', authenticate, async (req, res) => {
@@ -861,6 +1058,7 @@ router.get('/discover', authenticate, async (req, res) => {
         g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, 
         g.status, g.accepting_requests, g.subscription_frequency, g.subscription_platform,
         g.subscription_deadline_day, g.subscription_deadline_month, g.created_at,
+        g.admin_id,
         COUNT(gm.id) FILTER (WHERE gm.status = 'active') as current_members,
         u.name as admin_name,
         CASE WHEN EXISTS (
@@ -880,17 +1078,20 @@ router.get('/discover', authenticate, async (req, res) => {
        GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, 
                 g.currency, g.status, g.accepting_requests, g.subscription_frequency, 
                 g.subscription_platform, g.subscription_deadline_day, 
-                g.subscription_deadline_month, g.created_at, u.name
+                g.subscription_deadline_month, g.created_at, g.admin_id, u.name
        ORDER BY g.created_at DESC
        LIMIT $3`,
       [searchTerm, userId, parseInt(limit)]
     );
 
-    // Get health metrics for each group
+    // Get health metrics and admin reliability for each group
     const groupsWithHealth = await Promise.all(
       groupsResult.rows.map(async (group) => {
         // Calculate health for subscription group
         const healthData = await calculateSubscriptionGroupHealth(group.id);
+        
+        // Calculate admin reliability
+        const adminReliability = await calculateAdminReliability(group.admin_id);
         
         return {
           id: group.id,
@@ -906,7 +1107,11 @@ router.get('/discover', authenticate, async (req, res) => {
           subscription_deadline_month: group.subscription_deadline_month,
           accepting_requests: group.accepting_requests !== false,
           is_member: group.is_member,
-          admin_name: group.admin_name,
+          admin: {
+            id: group.admin_id,
+            name: group.admin_name,
+            reliability: adminReliability
+          },
           created_at: group.created_at,
           health: healthData
         };
