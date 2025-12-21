@@ -325,6 +325,125 @@ router.get('/groups/:groupId/members', async (req, res) => {
   }
 });
 
+// Delete group (admin only)
+// This will delete the group and remove members, but preserve contributions and transaction history
+// Note: Contributions will have their group_id set to NULL to preserve history
+router.delete('/groups/:groupId', async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    const { groupId } = req.params;
+
+    // Check if group exists
+    const groupCheck = await client.query(
+      'SELECT id, name, admin_id FROM groups WHERE id = $1',
+      [groupId]
+    );
+
+    if (groupCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const group = groupCheck.rows[0];
+
+    // Start a transaction to ensure data consistency
+    await client.query('BEGIN');
+
+    try {
+      // Update contribution tables to set group_id to NULL to preserve them
+      // Note: This requires the migration allow_null_group_id_in_contributions.sql to be run first
+      // The migration changes the foreign key constraints from ON DELETE CASCADE to ON DELETE SET NULL
+      // and modifies unique constraints to allow NULL group_id values
+      
+      try {
+        // Update birthday_contributions
+        await client.query(
+          'UPDATE birthday_contributions SET group_id = NULL WHERE group_id = $1',
+          [groupId]
+        );
+
+        // Update subscription_contributions
+        await client.query(
+          'UPDATE subscription_contributions SET group_id = NULL WHERE group_id = $1',
+          [groupId]
+        );
+
+        // Update general_contributions
+        await client.query(
+          'UPDATE general_contributions SET group_id = NULL WHERE group_id = $1',
+          [groupId]
+        );
+      } catch (updateError) {
+        // If updating fails, it's likely because the migration hasn't been run
+        if (updateError.code === '23505' || updateError.message.includes('unique constraint') || 
+            updateError.message.includes('duplicate key')) {
+          throw new Error('Cannot preserve contributions: Database constraints prevent setting group_id to NULL. Please run the migration allow_null_group_id_in_contributions.sql first.');
+        }
+        throw updateError;
+      }
+
+      // Delete group members (so they won't see the group anymore)
+      await client.query(
+        'DELETE FROM group_members WHERE group_id = $1',
+        [groupId]
+      );
+
+      // Delete notifications related to this group
+      await client.query(
+        'DELETE FROM notifications WHERE group_id = $1',
+        [groupId]
+      );
+
+      // Delete reports related to this group
+      await client.query(
+        'DELETE FROM reports WHERE reported_group_id = $1',
+        [groupId]
+      );
+
+      // Delete the group itself
+      await client.query(
+        'DELETE FROM groups WHERE id = $1',
+        [groupId]
+      );
+
+      // Commit the transaction
+      await client.query('COMMIT');
+
+      res.json({ 
+        message: 'Group deleted successfully. Contributions and transaction history have been preserved.',
+        deletedGroup: {
+          id: group.id,
+          name: group.name
+        }
+      });
+    } catch (error) {
+      // Rollback on error
+      await client.query('ROLLBACK');
+      throw error;
+    }
+  } catch (error) {
+    console.error('Delete group error:', error);
+    
+    // Check if it's a specific error message about migration
+    if (error.message && error.message.includes('Cannot preserve contributions')) {
+      return res.status(400).json({ 
+        error: error.message 
+      });
+    }
+    
+    // Check if it's a foreign key constraint error
+    if (error.code === '23503' || error.message.includes('foreign key') || error.message.includes('constraint')) {
+      return res.status(400).json({ 
+        error: 'Cannot delete group: Database constraint violation. Please run the migration allow_null_group_id_in_contributions.sql first to allow preserving contributions.' 
+      });
+    }
+    
+    res.status(500).json({ error: error.message || 'Server error deleting group' });
+  } finally {
+    client.release();
+  }
+});
+
 // Get all transactions
 router.get('/transactions', async (req, res) => {
   try {
