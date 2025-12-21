@@ -92,8 +92,15 @@ router.post('/create', authenticate, [
     // Validate general group deadline
     if (groupType === 'general' && deadline) {
       const deadlineDate = new Date(deadline);
-      if (deadlineDate < new Date()) {
+      const now = new Date();
+      if (deadlineDate < now) {
         return res.status(400).json({ error: 'Deadline cannot be in the past' });
+      }
+      // Check if deadline is more than 1 year in the future
+      const oneYearFromNow = new Date();
+      oneYearFromNow.setFullYear(oneYearFromNow.getFullYear() + 1);
+      if (deadlineDate > oneYearFromNow) {
+        return res.status(400).json({ error: 'Deadline cannot be more than 1 year in the future' });
       }
     }
 
@@ -2388,8 +2395,15 @@ router.put('/:groupId', authenticate, [
     // Validate deadline fields based on group type
     if (groupType === 'general' && deadline) {
       const deadlineDate = new Date(deadline);
-      if (deadlineDate < new Date()) {
+      const now = new Date();
+      if (deadlineDate < now) {
         return res.status(400).json({ error: 'Deadline cannot be in the past' });
+      }
+      // Check if deadline is more than 1 year in the future
+      const oneYearFromNow = new Date();
+      oneYearFromNow.setFullYear(oneYearFromNow.getFullYear() + 1);
+      if (deadlineDate > oneYearFromNow) {
+        return res.status(400).json({ error: 'Deadline cannot be more than 1 year in the future' });
       }
     }
 
