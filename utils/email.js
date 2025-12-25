@@ -1933,6 +1933,73 @@ const sendMemberLeftSubscriptionEmail = async (adminEmail, adminName, memberName
   }
 };
 
+// Send Merry Christmas email to users
+const sendMerryChristmasEmail = async (email, name) => {
+  try {
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 40px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 36px;">🎄🎅🎄</h1>
+          <h1 style="color: white; margin: 10px 0 0 0; font-size: 32px;">Merry Christmas!</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 40px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1a1a1a; font-size: 28px; margin-top: 0; text-align: center;">Merry Christmas, ${name}! 🎁</h2>
+          <p style="color: #374151; font-size: 18px; line-height: 1.7; margin-bottom: 20px; text-align: center;">
+            Wishing you a joyful Christmas season filled with love, laughter, and wonderful moments with your loved ones! 🎊
+          </p>
+          
+          <div style="background: linear-gradient(135deg, #e0e7ff 0%, #ddd6fe 100%); padding: 30px; border-radius: 12px; margin: 30px 0; text-align: center; border: 2px solid #6366f1;">
+            <p style="color: #4338ca; font-size: 20px; margin: 0; font-weight: 600;">
+              🎄 May your Christmas be merry and bright! 🎄
+            </p>
+          </div>
+
+          <div style="background: white; padding: 25px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
+            <p style="color: #374151; font-size: 16px; margin: 0 0 15px 0; font-weight: 600;">✨ This holiday season:</p>
+            <ul style="color: #6b7280; font-size: 15px; line-height: 2; margin: 0; padding-left: 20px;">
+              <li>Celebrate with family and friends</li>
+              <li>Create beautiful memories</li>
+              <li>Share joy and kindness</li>
+              <li>Enjoy the festive spirit</li>
+            </ul>
+          </div>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px; text-align: center;">
+            Thank you for being part of the GroupFund family! 🎉
+          </p>
+          
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px; text-align: center;">
+            With warmest wishes,<br/>
+            <strong style="color: #6366f1;">The GroupFund Team</strong> 🎅
+          </p>
+          
+          <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb; text-align: center;">
+            This is an automated Christmas greeting from GroupFund.
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject: `🎄 Merry Christmas, ${name}! 🎅`,
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error sending Merry Christmas email:', error);
+      return false;
+    }
+
+    console.log('Merry Christmas email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending Merry Christmas email:', error);
+    return false;
+  }
+};
+
 module.exports = {
   sendOTPEmail,
   sendOTPSMS,
@@ -1953,4 +2020,5 @@ module.exports = {
   sendDeadlineUpdateEmail,
   sendMaxMembersUpdateEmail,
   sendMemberLeftSubscriptionEmail,
+  sendMerryChristmasEmail,
 };

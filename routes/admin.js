@@ -1443,6 +1443,120 @@ router.post('/contributions/send-monthly-newsletter', async (req, res) => {
   }
 });
 
+// Send Merry Christmas notifications to all users (push, in-app, and email)
+router.post('/notifications/send-merry-christmas', async (req, res) => {
+  try {
+    const pool = require('../config/database');
+    const { createNotification } = require('../utils/notifications');
+    const { sendMerryChristmasEmail } = require('../utils/email');
+    
+    const results = {
+      sent: 0,
+      skipped: 0,
+      errors: 0,
+      details: []
+    };
+    
+    // Get current year for duplicate checking
+    const currentYear = new Date().getFullYear();
+    
+    // Get all active verified users
+    const usersResult = await pool.query(
+      `SELECT id, name, email, expo_push_token
+       FROM users 
+       WHERE is_verified = TRUE AND is_active = TRUE`
+    );
+    
+    for (const user of usersResult.rows) {
+      try {
+        // Check if we've already sent a Christmas notification this year
+        const existingNotification = await pool.query(
+          `SELECT id FROM notifications 
+           WHERE user_id = $1 
+           AND type = 'monthly_newsletter'
+           AND title = '🎄 Merry Christmas!'
+           AND DATE_PART('year', created_at) = $2`,
+          [user.id, currentYear]
+        );
+        
+        if (existingNotification.rows.length > 0) {
+          results.skipped++;
+          results.details.push({
+            user_id: user.id,
+            user_name: user.name,
+            email: user.email,
+            status: 'skipped',
+            reason: 'Already sent this year'
+          });
+          console.log(`Skipping Merry Christmas notification for ${user.name}: Already sent this year`);
+          continue;
+        }
+        
+        // Send in-app notification (this also sends push if token exists)
+        await createNotification(
+          user.id,
+          'monthly_newsletter', // Using existing type for holiday greetings
+          '🎄 Merry Christmas!',
+          `Merry Christmas, ${user.name}! 🎅 Wishing you a joyful holiday season filled with love and happiness!`,
+          null,
+          null
+        );
+        
+        // Send email if user has email
+        let emailSent = false;
+        if (user.email) {
+          try {
+            await sendMerryChristmasEmail(user.email, user.name);
+            emailSent = true;
+          } catch (err) {
+            console.error(`Error sending Merry Christmas email to ${user.email}:`, err);
+          }
+        }
+        
+        // Check if push was sent (user has push token)
+        const pushSent = !!user.expo_push_token;
+        
+        results.sent++;
+        results.details.push({
+          user_id: user.id,
+          user_name: user.name,
+          email: user.email,
+          status: 'sent',
+          in_app_notification: true,
+          push_notification: pushSent,
+          email: emailSent
+        });
+        
+        console.log(`Merry Christmas notifications sent to ${user.name} (${user.email || 'no email'})${pushSent ? ' + push' : ''}`);
+      } catch (err) {
+        results.errors++;
+        results.details.push({
+          user_id: user.id,
+          user_name: user.name,
+          email: user.email,
+          status: 'error',
+          error: err.message
+        });
+        console.error(`Error sending Merry Christmas notifications to user ${user.id}:`, err);
+      }
+    }
+    
+    res.json({
+      message: 'Merry Christmas notifications sent',
+      results: {
+        total_users: usersResult.rows.length,
+        sent: results.sent,
+        skipped: results.skipped,
+        errors: results.errors,
+        details: results.details
+      }
+    });
+  } catch (error) {
+    console.error('Error sending Merry Christmas notifications:', error);
+    res.status(500).json({ error: 'Server error sending Merry Christmas notifications', message: error.message });
+  }
+});
+
 // Get all notifications
 router.get('/notifications', async (req, res) => {
   try {
