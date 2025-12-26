@@ -1041,6 +1041,15 @@ const sendBetaInvitationEmail = async (email, firstName) => {
                 Install the TestFlight app if asked, then tap Start Testing to install GroupFund.
               </p>
             </div>
+              <div style="margin: 20px 0; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+              <p style="color: #374151; font-size: 15px; margin: 0 0 10px 0; font-weight: 600;">If you want to use Web App</p>
+              <p style="color: #6b7280; font-size: 14px; line-height: 1.6; margin: 5px 0;">
+                <a href="https://groupfund.app" style="color: #6366f1; text-decoration: none; font-weight: 600; font-size: 15px;">👉 Click here to get started</a>
+              </p>
+              <p style="color: #6b7280; font-size: 14px; line-height: 1.6; margin: 10px 0 0 0;">
+                Click Signup, then get started with GroupFund.
+              </p>
+            </div>
           </div>
 
           <div style="background: #f0f9ff; padding: 20px; border-radius: 8px; margin: 20px 0; border: 1px solid #bae6fd;">
