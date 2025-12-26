@@ -955,6 +955,15 @@ const sendWaitlistConfirmationEmail = async (email, name) => {
             We appreciate your interest and patience. Stay tuned for updates!
           </p>
           
+          <div style="text-align: center; margin: 30px 0;">
+            <p style="color: #374151; font-size: 16px; line-height: 1.7; margin: 0 0 15px 0;">
+              Or use the website to signup:
+            </p>
+            <a href="https://www.groupfund.app/" style="display: inline-block; background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); color: white; padding: 12px 30px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 16px;">
+              Visit GroupFund.app
+            </a>
+          </div>
+          
           <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
             Best regards,<br/>
             <strong>The GroupFund Team</strong>
