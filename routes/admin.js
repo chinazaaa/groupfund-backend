@@ -2415,5 +2415,171 @@ router.post('/emails/send-custom', [
   }
 });
 
+// Search users for notification dropdown (admin only)
+router.get('/users/search', async (req, res) => {
+  try {
+    const { search = '', limit = 50 } = req.query;
+    const searchLimit = Math.min(parseInt(limit) || 50, 100); // Max 100 results
+
+    let query = `
+      SELECT 
+        u.id, u.name, u.email, u.is_verified, u.is_active,
+        (SELECT COUNT(*) FROM group_members gm WHERE gm.user_id = u.id) as group_count
+      FROM users u
+      WHERE 1=1
+    `;
+    const params = [];
+    let paramCount = 1;
+
+    if (search) {
+      query += ` AND (u.name ILIKE $${paramCount} OR u.email ILIKE $${paramCount} OR u.phone ILIKE $${paramCount})`;
+      params.push(`%${search}%`);
+      paramCount++;
+    }
+
+    query += ` ORDER BY u.name ASC LIMIT $${paramCount}`;
+    params.push(searchLimit);
+
+    const result = await pool.query(query, params);
+
+    res.json({
+      users: result.rows.map(user => ({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        is_verified: user.is_verified,
+        is_active: user.is_active !== undefined ? user.is_active : true,
+        group_count: parseInt(user.group_count || 0),
+      })),
+    });
+  } catch (error) {
+    console.error('Search users error:', error);
+    res.status(500).json({ error: 'Server error searching users' });
+  }
+});
+
+// Send custom notifications (in-app and push) to selected recipients (admin only)
+router.post('/notifications/send-custom', [
+  body('title').trim().notEmpty().withMessage('Title is required'),
+  body('body').trim().notEmpty().withMessage('Body is required'),
+  body('recipientType').isIn(['waitlist', 'group_admins', 'everyone', 'selected_users']).withMessage('Invalid recipient type'),
+  body('userIds').optional().isArray().withMessage('userIds must be an array'),
+  body('userIds.*').optional().isUUID().withMessage('Each userId must be a valid UUID'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { title, body, recipientType, userIds = [] } = req.body;
+    const { createNotification } = require('../utils/notifications');
+
+    let recipients = [];
+    let recipientCount = 0;
+
+    // Get recipients based on type
+    if (recipientType === 'waitlist') {
+      const waitlistResult = await pool.query(
+        `SELECT DISTINCT u.id 
+         FROM waitlist w
+         JOIN users u ON u.email = w.email
+         WHERE w.email IS NOT NULL AND w.email != '' AND u.id IS NOT NULL`
+      );
+      recipients = waitlistResult.rows.map(row => row.id);
+      recipientCount = recipients.length;
+    } else if (recipientType === 'group_admins') {
+      const adminsResult = await pool.query(
+        `SELECT DISTINCT u.id 
+         FROM users u
+         JOIN groups g ON g.admin_id = u.id
+         WHERE u.id IS NOT NULL`
+      );
+      recipients = adminsResult.rows.map(row => row.id);
+      recipientCount = recipients.length;
+    } else if (recipientType === 'everyone') {
+      const usersResult = await pool.query(
+        'SELECT id FROM users WHERE id IS NOT NULL'
+      );
+      recipients = usersResult.rows.map(row => row.id);
+      recipientCount = recipients.length;
+    } else if (recipientType === 'selected_users') {
+      if (!userIds || userIds.length === 0) {
+        return res.status(400).json({ error: 'At least one user ID is required when recipient type is selected_users' });
+      }
+      // Validate that all user IDs exist
+      const placeholders = userIds.map((_, i) => `$${i + 1}`).join(', ');
+      const usersResult = await pool.query(
+        `SELECT id FROM users WHERE id IN (${placeholders})`,
+        userIds
+      );
+      recipients = usersResult.rows.map(row => row.id);
+      recipientCount = recipients.length;
+      
+      if (recipients.length !== userIds.length) {
+        return res.status(400).json({ 
+          error: 'Some user IDs are invalid or not found',
+          valid_count: recipients.length,
+          requested_count: userIds.length
+        });
+      }
+    }
+
+    if (recipients.length === 0) {
+      return res.status(400).json({ error: 'No recipients found for the selected recipient type' });
+    }
+
+    // Send notifications to all recipients
+    const results = {
+      sent: 0,
+      failed: 0,
+      total: recipientCount,
+      failedUsers: [],
+      details: [],
+    };
+
+    for (const userId of recipients) {
+      try {
+        await createNotification(
+          userId,
+          'admin_announcement', // Custom type for admin notifications
+          title,
+          body,
+          null, // No group ID
+          null  // No related user ID
+        );
+        results.sent++;
+        results.details.push({
+          user_id: userId,
+          status: 'sent',
+        });
+      } catch (error) {
+        console.error(`Error sending notification to user ${userId}:`, error);
+        results.failed++;
+        results.failedUsers.push(userId);
+        results.details.push({
+          user_id: userId,
+          status: 'failed',
+          error: error.message,
+        });
+      }
+    }
+
+    res.json({
+      message: `Custom notifications processed: ${results.sent} sent, ${results.failed} failed`,
+      results: {
+        sent: results.sent,
+        failed: results.failed,
+        total: results.total,
+        ...(results.failedUsers.length > 0 && { failed_user_ids: results.failedUsers }),
+        details: results.details,
+      },
+    });
+  } catch (error) {
+    console.error('Send custom notification error:', error);
+    res.status(500).json({ error: 'Server error sending custom notification', message: error.message });
+  }
+});
+
 module.exports = router;
 
