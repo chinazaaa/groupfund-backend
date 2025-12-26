@@ -2000,6 +2000,29 @@ const sendMerryChristmasEmail = async (email, name) => {
   }
 };
 
+// Send custom email (for admin use)
+const sendCustomEmail = async (email, subject, html) => {
+  try {
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject,
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error:', error);
+      return false;
+    }
+
+    console.log('Custom email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending custom email:', error);
+    return false;
+  }
+};
+
 module.exports = {
   sendOTPEmail,
   sendOTPSMS,
@@ -2021,4 +2044,5 @@ module.exports = {
   sendMaxMembersUpdateEmail,
   sendMemberLeftSubscriptionEmail,
   sendMerryChristmasEmail,
+  sendCustomEmail,
 };

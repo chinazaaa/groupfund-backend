@@ -2298,5 +2298,122 @@ router.put('/reports/:reportId', [
   }
 });
 
+// Preview custom email HTML (admin only)
+router.post('/emails/preview', [
+  body('subject').trim().notEmpty().withMessage('Subject is required'),
+  body('html').trim().notEmpty().withMessage('HTML content is required'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { subject, html } = req.body;
+
+    // Return the HTML as-is for preview (frontend will render it)
+    res.json({
+      subject,
+      html,
+      preview: html, // Same as html, but can be used for preview rendering
+    });
+  } catch (error) {
+    console.error('Preview email error:', error);
+    res.status(500).json({ error: 'Server error previewing email' });
+  }
+});
+
+// Send custom email to selected recipients (admin only)
+router.post('/emails/send-custom', [
+  body('subject').trim().notEmpty().withMessage('Subject is required'),
+  body('html').trim().notEmpty().withMessage('HTML content is required'),
+  body('recipientType').isIn(['waitlist', 'group_admins', 'everyone', 'custom']).withMessage('Invalid recipient type'),
+  body('customEmail').optional().isEmail().withMessage('Invalid custom email address'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { subject, html, recipientType, customEmail } = req.body;
+    const { sendCustomEmail } = require('../utils/email');
+
+    let recipients = [];
+    let recipientCount = 0;
+
+    // Get recipients based on type
+    if (recipientType === 'waitlist') {
+      const waitlistResult = await pool.query(
+        'SELECT DISTINCT email FROM waitlist WHERE email IS NOT NULL AND email != \'\''
+      );
+      recipients = waitlistResult.rows.map(row => row.email);
+      recipientCount = recipients.length;
+    } else if (recipientType === 'group_admins') {
+      const adminsResult = await pool.query(
+        `SELECT DISTINCT u.email 
+         FROM users u
+         JOIN groups g ON g.admin_id = u.id
+         WHERE u.email IS NOT NULL AND u.email != ''`
+      );
+      recipients = adminsResult.rows.map(row => row.email);
+      recipientCount = recipients.length;
+    } else if (recipientType === 'everyone') {
+      const usersResult = await pool.query(
+        'SELECT DISTINCT email FROM users WHERE email IS NOT NULL AND email != \'\''
+      );
+      recipients = usersResult.rows.map(row => row.email);
+      recipientCount = recipients.length;
+    } else if (recipientType === 'custom') {
+      if (!customEmail) {
+        return res.status(400).json({ error: 'Custom email address is required when recipient type is custom' });
+      }
+      recipients = [customEmail];
+      recipientCount = 1;
+    }
+
+    if (recipients.length === 0) {
+      return res.status(400).json({ error: 'No recipients found for the selected recipient type' });
+    }
+
+    // Send emails to all recipients
+    const results = {
+      sent: 0,
+      failed: 0,
+      total: recipientCount,
+      failedEmails: [],
+    };
+
+    for (const email of recipients) {
+      try {
+        const emailSent = await sendCustomEmail(email, subject, html);
+        if (emailSent) {
+          results.sent++;
+        } else {
+          results.failed++;
+          results.failedEmails.push(email);
+        }
+      } catch (error) {
+        console.error(`Error sending custom email to ${email}:`, error);
+        results.failed++;
+        results.failedEmails.push(email);
+      }
+    }
+
+    res.json({
+      message: `Custom email processed: ${results.sent} sent, ${results.failed} failed`,
+      results: {
+        sent: results.sent,
+        failed: results.failed,
+        total: results.total,
+        ...(results.failedEmails.length > 0 && { failed_emails: results.failedEmails }),
+      },
+    });
+  } catch (error) {
+    console.error('Send custom email error:', error);
+    res.status(500).json({ error: 'Server error sending custom email', message: error.message });
+  }
+});
+
 module.exports = router;
 
