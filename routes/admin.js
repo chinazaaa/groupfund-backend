@@ -10,6 +10,50 @@ const router = express.Router();
 router.use(adminLimiter);
 router.use(requireAdmin);
 
+// Search users for notification dropdown (admin only)
+// NOTE: This must come BEFORE /users/:userId to avoid route conflicts
+router.get('/users/search', async (req, res) => {
+  try {
+    const { search = '', limit = 50 } = req.query;
+    const searchLimit = Math.min(parseInt(limit) || 50, 100); // Max 100 results
+
+    let query = `
+      SELECT 
+        u.id, u.name, u.email, u.is_verified, u.is_active,
+        (SELECT COUNT(*) FROM group_members gm WHERE gm.user_id = u.id) as group_count
+      FROM users u
+      WHERE 1=1
+    `;
+    const params = [];
+    let paramCount = 1;
+
+    if (search) {
+      query += ` AND (u.name ILIKE $${paramCount} OR u.email ILIKE $${paramCount} OR u.phone ILIKE $${paramCount})`;
+      params.push(`%${search}%`);
+      paramCount++;
+    }
+
+    query += ` ORDER BY u.name ASC LIMIT $${paramCount}`;
+    params.push(searchLimit);
+
+    const result = await pool.query(query, params);
+
+    res.json({
+      users: result.rows.map(user => ({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        is_verified: user.is_verified,
+        is_active: user.is_active !== undefined ? user.is_active : true,
+        group_count: parseInt(user.group_count || 0),
+      })),
+    });
+  } catch (error) {
+    console.error('Search users error:', error);
+    res.status(500).json({ error: 'Server error searching users' });
+  }
+});
+
 // Get all users
 router.get('/users', async (req, res) => {
   try {
@@ -2412,49 +2456,6 @@ router.post('/emails/send-custom', [
   } catch (error) {
     console.error('Send custom email error:', error);
     res.status(500).json({ error: 'Server error sending custom email', message: error.message });
-  }
-});
-
-// Search users for notification dropdown (admin only)
-router.get('/users/search', async (req, res) => {
-  try {
-    const { search = '', limit = 50 } = req.query;
-    const searchLimit = Math.min(parseInt(limit) || 50, 100); // Max 100 results
-
-    let query = `
-      SELECT 
-        u.id, u.name, u.email, u.is_verified, u.is_active,
-        (SELECT COUNT(*) FROM group_members gm WHERE gm.user_id = u.id) as group_count
-      FROM users u
-      WHERE 1=1
-    `;
-    const params = [];
-    let paramCount = 1;
-
-    if (search) {
-      query += ` AND (u.name ILIKE $${paramCount} OR u.email ILIKE $${paramCount} OR u.phone ILIKE $${paramCount})`;
-      params.push(`%${search}%`);
-      paramCount++;
-    }
-
-    query += ` ORDER BY u.name ASC LIMIT $${paramCount}`;
-    params.push(searchLimit);
-
-    const result = await pool.query(query, params);
-
-    res.json({
-      users: result.rows.map(user => ({
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        is_verified: user.is_verified,
-        is_active: user.is_active !== undefined ? user.is_active : true,
-        group_count: parseInt(user.group_count || 0),
-      })),
-    });
-  } catch (error) {
-    console.error('Search users error:', error);
-    res.status(500).json({ error: 'Server error searching users' });
   }
 });
 
