@@ -1600,6 +1600,119 @@ router.post('/notifications/send-merry-christmas', async (req, res) => {
     res.status(500).json({ error: 'Server error sending Merry Christmas notifications', message: error.message });
   }
 });
+// Send Happy New Year notifications to all users (push, in-app, and email)
+router.post('/notifications/send-happy-new-year', async (req, res) => {
+  try {
+    const pool = require('../config/database');
+    const { createNotification } = require('../utils/notifications');
+    const { sendHappyNewYearEmail } = require('../utils/email');
+    
+    const results = {
+      sent: 0,
+      skipped: 0,
+      errors: 0,
+      details: []
+    };
+    
+    // Get current year for duplicate checking
+    const currentYear = new Date().getFullYear();
+    
+    // Get all active verified users
+    const usersResult = await pool.query(
+      `SELECT id, name, email, expo_push_token
+       FROM users 
+       WHERE is_verified = TRUE AND is_active = TRUE`
+    );
+    
+    for (const user of usersResult.rows) {
+      try {
+        // Check if we've already sent a New Year notification this year
+        const existingNotification = await pool.query(
+          `SELECT id FROM notifications 
+           WHERE user_id = $1 
+           AND type = 'monthly_newsletter'
+           AND title = '🎆 Happy New Year!'
+           AND DATE_PART('year', created_at) = $2`,
+          [user.id, currentYear]
+        );
+        
+        if (existingNotification.rows.length > 0) {
+          results.skipped++;
+          results.details.push({
+            user_id: user.id,
+            user_name: user.name,
+            email: user.email,
+            status: 'skipped',
+            reason: 'Already sent this year'
+          });
+          console.log(`Skipping Happy New Year notification for ${user.name}: Already sent this year`);
+          continue;
+        }
+        
+        // Send in-app notification (this also sends push if token exists)
+        await createNotification(
+          user.id,
+          'monthly_newsletter', // Using existing type for holiday greetings
+          '🎆 Happy New Year!',
+          `Happy New Year, ${user.name}! 🎉 Wishing you an amazing ${currentYear} filled with joy, growth, and shared wins with the people who matter most!`,
+          null,
+          null
+        );
+        
+        // Send email if user has email
+        let emailSent = false;
+        if (user.email) {
+          try {
+            await sendHappyNewYearEmail(user.email, user.name);
+            emailSent = true;
+          } catch (err) {
+            console.error(`Error sending Happy New Year email to ${user.email}:`, err);
+          }
+        }
+        
+        // Check if push was sent (user has push token)
+        const pushSent = !!user.expo_push_token;
+        
+        results.sent++;
+        results.details.push({
+          user_id: user.id,
+          user_name: user.name,
+          email: user.email,
+          status: 'sent',
+          in_app_notification: true,
+          push_notification: pushSent,
+          email: emailSent
+        });
+        
+        console.log(`Happy New Year notifications sent to ${user.name} (${user.email || 'no email'})${pushSent ? ' + push' : ''}`);
+      } catch (err) {
+        results.errors++;
+        results.details.push({
+          user_id: user.id,
+          user_name: user.name,
+          email: user.email,
+          status: 'error',
+          error: err.message
+        });
+        console.error(`Error sending Happy New Year notifications to user ${user.id}:`, err);
+      }
+    }
+    
+    res.json({
+      message: 'Happy New Year notifications sent',
+      results: {
+        total_users: usersResult.rows.length,
+        sent: results.sent,
+        skipped: results.skipped,
+        errors: results.errors,
+        details: results.details
+      }
+    });
+  } catch (error) {
+    console.error('Error sending Happy New Year notifications:', error);
+    res.status(500).json({ error: 'Server error sending Happy New Year notifications', message: error.message });
+  }
+});
 
 // Get all notifications
 router.get('/notifications', async (req, res) => {

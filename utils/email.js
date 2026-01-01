@@ -2017,6 +2017,74 @@ const sendMerryChristmasEmail = async (email, name) => {
     return false;
   }
 };
+// Send Happy New Year email to users
+const sendHappyNewYearEmail = async (email, name) => {
+  try {
+    const currentYear = new Date().getFullYear();
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 40px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 36px;">🎆🥂🎆</h1>
+          <h1 style="color: white; margin: 10px 0 0 0; font-size: 32px;">Happy New Year!</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 40px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1a1a1a; font-size: 28px; margin-top: 0; text-align: center;">Happy New Year, ${name}! 🎉</h2>
+          <p style="color: #374151; font-size: 18px; line-height: 1.7; margin-bottom: 20px; text-align: center;">
+            Wishing you a bright and successful New Year filled with joy, growth, and amazing moments with the people who matter most. ✨
+          </p>
+          
+          <div style="background: linear-gradient(135deg, #e0e7ff 0%, #ddd6fe 100%); padding: 30px; border-radius: 12px; margin: 30px 0; text-align: center; border: 2px solid #6366f1;">
+            <p style="color: #4338ca; font-size: 20px; margin: 0; font-weight: 600;">
+              🎆 Here’s to new beginnings, bold goals, and shared wins in 2026! 🎆
+            </p>
+          </div>
+
+          <div style="background: white; padding: 25px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
+            <p style="color: #374151; font-size: 16px; margin: 0 0 15px 0; font-weight: 600;">✨ As we start this new year:</p>
+            <ul style="color: #6b7280; font-size: 15px; line-height: 2; margin: 0; padding-left: 20px;">
+              <li>Set fresh goals and chase big dreams</li>
+              <li>Create meaningful moments with loved ones</li>
+              <li>Share kindness, generosity, and support</li>
+              <li>Make this your best year yet</li>
+            </ul>
+          </div>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px; text-align: center;">
+            Thank you for being part of the GroupFund family — here’s to many more milestones together this year. 🥂
+          </p>
+          
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px; text-align: center;">
+            With warmest wishes,<br/>
+            <strong style="color: #6366f1;">The GroupFund Team</strong> 🎉
+          </p>
+          
+          <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb; text-align: center;">
+            This is an automated New Year greeting from GroupFund.
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject: `🎆 Happy New Year, ${name}! 🎉`,
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error sending Happy New Year email:', error);
+      return false;
+    }
+
+    console.log('Happy New Year email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending Happy New Year email:', error);
+    return false;
+  }
+};
 
 // Send custom email (for admin use)
 const sendCustomEmail = async (email, subject, html) => {
