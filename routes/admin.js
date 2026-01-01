@@ -1729,6 +1729,9 @@ router.post('/notifications/send-happy-new-year-emails', async (req, res) => {
 
     const currentYear = new Date().getFullYear();
 
+    // Simple helper to respect Resend rate limit (2 req/sec)
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
     // Get all active verified users with email
     const usersResult = await pool.query(
       `SELECT id, name, email
@@ -1763,13 +1766,20 @@ router.post('/notifications/send-happy-new-year-emails', async (req, res) => {
           continue;
         }
 
-        const ok = await sendHappyNewYearEmail(user.email, user.name);
+        let ok = false;
+        try {
+          ok = await sendHappyNewYearEmail(user.email, user.name);
+          // throttle so we stay under 2 req/sec
+          await sleep(600);
+        } catch (e) {
+          ok = false;
+        }
 
         if (ok) {
           // Mark that the Happy New Year email was sent this year
           await pool.query(
-            `INSERT INTO notifications (user_id, type, title, body)
-             VALUES ($1, 'monthly_newsletter', '🎆 Happy New Year! (Email)', 'Happy New Year email sent.')`,
+            `INSERT INTO notifications (user_id, type, title)
+             VALUES ($1, 'monthly_newsletter', '🎆 Happy New Year! (Email)')`,
             [user.id]
           );
 
@@ -1823,6 +1833,7 @@ router.post('/notifications/send-happy-new-year-emails', async (req, res) => {
     });
   }
 });
+
 
 
 
