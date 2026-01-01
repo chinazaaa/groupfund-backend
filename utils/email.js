@@ -2036,7 +2036,7 @@ const sendHappyNewYearEmail = async (email, name) => {
           
           <div style="background: linear-gradient(135deg, #e0e7ff 0%, #ddd6fe 100%); padding: 30px; border-radius: 12px; margin: 30px 0; text-align: center; border: 2px solid #6366f1;">
             <p style="color: #4338ca; font-size: 20px; margin: 0; font-weight: 600;">
-              🎆 Here’s to new beginnings, bold goals, and shared wins in 2026! 🎆
+              🎆 Here’s to new beginnings, bold goals, and shared wins in in ${currentYear}! 🎆
             </p>
           </div>
 
