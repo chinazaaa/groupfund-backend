@@ -1729,28 +1729,28 @@ router.post('/notifications/send-happy-new-year-emails', async (req, res) => {
 
     const currentYear = new Date().getFullYear();
 
-    // Active verified users with email
+    // Get all active verified users with email
     const usersResult = await pool.query(
       `SELECT id, name, email
-       FROM users
-       WHERE is_verified = TRUE
+       FROM users 
+       WHERE is_verified = TRUE 
          AND is_active = TRUE
          AND email IS NOT NULL`
     );
 
     for (const user of usersResult.rows) {
       try {
-        // Check if email already sent this year
-        const existing = await pool.query(
-          `SELECT id FROM notification_logs
-           WHERE user_id = $1
-             AND channel = 'email'
-             AND type = 'happy_new_year'
-             AND year = $2`,
+        // Check if we've already sent a Happy New Year EMAIL this year
+        const existingNotification = await pool.query(
+          `SELECT id FROM notifications 
+           WHERE user_id = $1 
+             AND type = 'monthly_newsletter'
+             AND title = '🎆 Happy New Year! (Email)'
+             AND DATE_PART('year', created_at) = $2`,
           [user.id, currentYear]
         );
 
-        if (existing.rows.length > 0) {
+        if (existingNotification.rows.length > 0) {
           results.skipped++;
           results.details.push({
             user_id: user.id,
@@ -1759,19 +1759,18 @@ router.post('/notifications/send-happy-new-year-emails', async (req, res) => {
             status: 'skipped',
             reason: 'Email already sent this year',
           });
-          console.log(`Skipping Happy New Year EMAIL for ${user.name}: already sent this year`);
+          console.log(`Skipping Happy New Year EMAIL for ${user.name}: email already sent this year`);
           continue;
         }
 
         const ok = await sendHappyNewYearEmail(user.email, user.name);
 
         if (ok) {
-          // Log email send
+          // Mark that the Happy New Year email was sent this year
           await pool.query(
-            `INSERT INTO notification_logs (user_id, channel, type, year)
-             VALUES ($1, 'email', 'happy_new_year', $2)
-             ON CONFLICT (user_id, channel, type, year) DO NOTHING`,
-            [user.id, currentYear]
+            `INSERT INTO notifications (user_id, type, title, body)
+             VALUES ($1, 'monthly_newsletter', '🎆 Happy New Year! (Email)', 'Happy New Year email sent.')`,
+            [user.id]
           );
 
           results.sent++;
@@ -1791,6 +1790,7 @@ router.post('/notifications/send-happy-new-year-emails', async (req, res) => {
             status: 'error',
             error: 'sendHappyNewYearEmail returned false',
           });
+          console.error(`Happy New Year EMAIL failed for ${user.name} (${user.email})`);
         }
       } catch (err) {
         results.errors++;
@@ -1823,6 +1823,8 @@ router.post('/notifications/send-happy-new-year-emails', async (req, res) => {
     });
   }
 });
+
+
 
 
 // Get all notifications
