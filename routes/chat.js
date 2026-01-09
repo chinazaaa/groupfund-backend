@@ -99,37 +99,56 @@ router.post('/:groupId/messages', authenticate, [
         );
 
         // Find mentioned users by matching names (case-insensitive, supports partial matches)
+        // Priority: exact match > starts with match > contains match
         const mentionedUserIds = new Set();
+        const mentionedUsers = []; // Store for priority sorting
+        
         for (const member of membersResult.rows) {
           const memberNameLower = member.name.toLowerCase();
+          
           // Check if any mention matches this member's name
           for (const mention of mentions) {
-            // Match if:
-            // 1. Mention exactly matches the full name
-            // 2. Mention matches the first word(s) of the name (e.g., @John matches "John Doe")
-            // 3. Mention is contained in the name (for partial matches)
-            const nameWords = memberNameLower.split(/\s+/);
-            const mentionWords = mention.split(/\s+/);
+            let matchType = null;
             
-            // Exact match
+            // 1. Exact match (highest priority)
             if (memberNameLower === mention) {
-              if (member.id !== userId) {
-                mentionedUserIds.add(member.id);
-              }
-              break;
+              matchType = 'exact';
+            }
+            // 2. Starts with match (e.g., "@John" matches "John Doe")
+            else if (memberNameLower.startsWith(mention + ' ') || memberNameLower.startsWith(mention)) {
+              matchType = 'starts_with';
+            }
+            // 3. Contains match (e.g., "@naza" matches "Chinaza Obi")
+            else if (memberNameLower.includes(mention)) {
+              matchType = 'contains';
             }
             
-            // Check if mention matches the beginning of the name
-            // e.g., "@John" matches "John Doe", "@John Doe" matches "John Doe Smith"
-            if (nameWords.length >= mentionWords.length) {
-              const nameStart = nameWords.slice(0, mentionWords.length).join(' ');
-              if (nameStart === mention) {
-                if (member.id !== userId) {
-                  mentionedUserIds.add(member.id);
-                }
-                break;
-              }
+            if (matchType && member.id !== userId) {
+              mentionedUsers.push({
+                userId: member.id,
+                name: member.name,
+                matchType: matchType,
+                mention: mention
+              });
+              break; // Found a match for this member, no need to check other mentions
             }
+          }
+        }
+        
+        // Sort by match priority: exact > starts_with > contains
+        // If multiple users match, prefer exact matches
+        mentionedUsers.sort((a, b) => {
+          const priority = { 'exact': 0, 'starts_with': 1, 'contains': 2 };
+          return priority[a.matchType] - priority[b.matchType];
+        });
+        
+        // For each unique mention, only notify the best match
+        const processedMentions = new Set();
+        for (const user of mentionedUsers) {
+          // If this mention hasn't been processed yet, or this is a better match
+          if (!processedMentions.has(user.mention) || user.matchType === 'exact') {
+            mentionedUserIds.add(user.userId);
+            processedMentions.add(user.mention);
           }
         }
 
@@ -322,6 +341,107 @@ router.delete('/:groupId/messages/:messageId', authenticate, async (req, res) =>
   } catch (error) {
     console.error('Delete message error:', error);
     res.status(500).json({ error: 'Server error deleting message' });
+  }
+});
+
+// Get mention suggestions (autocomplete for @mentions)
+router.get('/:groupId/mentions', authenticate, async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const userId = req.user.id;
+    const { query = '' } = req.query;
+
+    // Check if group exists and chat is enabled
+    const groupCheck = await pool.query(
+      'SELECT id, name, chat_enabled FROM groups WHERE id = $1',
+      [groupId]
+    );
+
+    if (groupCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const group = groupCheck.rows[0];
+
+    // Check if chat is enabled for this group
+    if (!group.chat_enabled) {
+      return res.status(403).json({ error: 'Chat is not enabled for this group' });
+    }
+
+    // Check if user is a member of the group
+    const memberCheck = await pool.query(
+      'SELECT id, status FROM group_members WHERE group_id = $1 AND user_id = $2',
+      [groupId, userId]
+    );
+
+    if (memberCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'You must be a member of this group to search mentions' });
+    }
+
+    // If no query, return all active members (limit to 20 for performance)
+    if (!query || query.trim().length === 0) {
+      const allMembersResult = await pool.query(
+        `SELECT DISTINCT u.id, u.name, u.email, gm.role
+         FROM group_members gm
+         JOIN users u ON gm.user_id = u.id
+         WHERE gm.group_id = $1 
+           AND gm.status = 'active'
+           AND u.is_active = true
+         ORDER BY 
+           CASE WHEN gm.role = 'admin' THEN 0 ELSE 1 END,
+           u.name ASC
+         LIMIT 20`,
+        [groupId]
+      );
+
+      return res.json({
+        members: allMembersResult.rows.map(m => ({
+          id: m.id,
+          name: m.name,
+          email: m.email,
+          role: m.role,
+          display_name: m.name, // For display in autocomplete
+        })),
+      });
+    }
+
+    // Search for members matching the query (case-insensitive)
+    const searchTerm = `%${query.trim().toLowerCase()}%`;
+    const membersResult = await pool.query(
+      `SELECT DISTINCT u.id, u.name, u.email, gm.role
+       FROM group_members gm
+       JOIN users u ON gm.user_id = u.id
+       WHERE gm.group_id = $1 
+         AND gm.status = 'active'
+         AND u.is_active = true
+         AND (
+           LOWER(u.name) LIKE $2
+           OR LOWER(u.email) LIKE $2
+         )
+       ORDER BY 
+         CASE WHEN gm.role = 'admin' THEN 0 ELSE 1 END,
+         CASE 
+           WHEN LOWER(u.name) = LOWER($3) THEN 0
+           WHEN LOWER(u.name) LIKE LOWER($4) THEN 1
+           ELSE 2
+         END,
+         u.name ASC
+       LIMIT 10`,
+      [groupId, searchTerm, query.trim(), `${query.trim()}%`]
+    );
+
+    res.json({
+      members: membersResult.rows.map(m => ({
+        id: m.id,
+        name: m.name,
+        email: m.email,
+        role: m.role,
+        display_name: m.name, // For display in autocomplete
+      })),
+    });
+  } catch (error) {
+    console.error('Get mention suggestions error:', error);
+    res.status(500).json({ error: 'Server error fetching mention suggestions' });
   }
 });
 
