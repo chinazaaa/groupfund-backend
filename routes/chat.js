@@ -71,6 +71,9 @@ router.post('/:groupId/messages', authenticate, [
 
     const user = userResult.rows[0];
 
+    // Initialize mentionedUserIds outside the if block so it's accessible later
+    const mentionedUserIds = new Set();
+
     // Detect mentions in the message (@username format)
     // Extract all @mentions from the message - supports @FirstName, @FirstName LastName, @FullName
     // Matches @ followed by word characters and spaces (until next space or end)
@@ -101,7 +104,6 @@ router.post('/:groupId/messages', authenticate, [
 
         // Find mentioned users by matching names (case-insensitive, supports partial matches)
         // Priority: exact match > starts with match > contains match
-        const mentionedUserIds = new Set();
         const mentionedUsers = []; // Store for priority sorting
         
         for (const member of membersResult.rows) {
@@ -417,15 +419,14 @@ router.get('/:groupId/mentions', authenticate, async (req, res) => {
     // If no query, return all active members (limit to 20 for performance)
     if (!query || query.trim().length === 0) {
       const allMembersResult = await pool.query(
-        `SELECT DISTINCT u.id, u.name, u.email, gm.role
+        `SELECT u.id, u.name, u.email, gm.role,
+                CASE WHEN gm.role = 'admin' THEN 0 ELSE 1 END as role_priority
          FROM group_members gm
          JOIN users u ON gm.user_id = u.id
          WHERE gm.group_id = $1 
            AND gm.status = 'active'
            AND u.is_active = true
-         ORDER BY 
-           CASE WHEN gm.role = 'admin' THEN 0 ELSE 1 END,
-           u.name ASC
+         ORDER BY role_priority, u.name ASC
          LIMIT 20`,
         [groupId]
       );
