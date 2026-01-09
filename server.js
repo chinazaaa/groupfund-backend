@@ -60,9 +60,17 @@ const corsOptions = {
 
 // Security headers with Helmet
 // Configure Helmet for API usage (less restrictive for API endpoints)
+// Note: We serve HTML for deep links, so we need to allow some HTML features
 app.use(helmet({
-  // Disable contentSecurityPolicy for API (not serving HTML)
-  contentSecurityPolicy: false,
+  // Allow inline scripts for deep link redirect logic
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "https:"],
+    },
+  },
   // Allow cross-origin requests for API
   crossOriginEmbedderPolicy: false,
   // Keep other security headers enabled
@@ -89,6 +97,54 @@ app.use(express.urlencoded({ extended: true }));
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', message: 'GroupFund API is running' });
 });
+
+// Universal Links - iOS (Apple App Site Association)
+// Must be served at exactly /.well-known/apple-app-site-association (no extension)
+// Must return Content-Type: application/json
+app.get('/.well-known/apple-app-site-association', (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+  
+  const appleTeamId = process.env.APPLE_TEAM_ID || 'TEAM_ID';
+  const bundleId = 'com.groupfund.app';
+  
+  res.json({
+    applinks: {
+      apps: [],
+      details: [
+        {
+          appID: `${appleTeamId}.${bundleId}`,
+          paths: ['/g/*', '/group/*']
+        }
+      ]
+    }
+  });
+});
+
+// Universal Links - Android (Digital Asset Links)
+// Must be served at exactly /.well-known/assetlinks.json
+// Must return Content-Type: application/json
+app.get('/.well-known/assetlinks.json', (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+  
+  const androidSha256 = process.env.ANDROID_SHA256_FINGERPRINT || 'REPLACE_WITH_YOUR_SHA256_FINGERPRINT';
+  const packageName = 'com.groupfund.app';
+  
+  res.json([
+    {
+      relation: ['delegate_permission/common.handle_all_urls'],
+      target: {
+        namespace: 'android_app',
+        package_name: packageName,
+        sha256_cert_fingerprints: [
+          androidSha256
+        ]
+      }
+    }
+  ]);
+});
+
+// Deep link routes (public, no auth required)
+app.use('/', require('./routes/deeplink'));
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
