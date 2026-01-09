@@ -34,7 +34,8 @@ const migrations = [
   'fix_reports_constraint.sql',
   'add_closed_reason_to_groups.sql',
   'add_chat_enabled_to_groups.sql',
-  'add_group_messages.sql'
+  'add_group_messages.sql',
+  'add_chat_notification_preferences.sql'
 ];
 
 async function runAllMigrations() {

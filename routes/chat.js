@@ -87,9 +87,10 @@ router.post('/:groupId/messages', authenticate, [
     // Send notifications to mentioned users
     if (mentions.length > 0) {
       try {
-        // Get all active group members with their names
+        // Get all active group members with their names and chat notification preferences
         const membersResult = await pool.query(
-          `SELECT DISTINCT gm.user_id, u.name, u.expo_push_token, u.id
+          `SELECT DISTINCT gm.user_id, u.name, u.expo_push_token, u.id,
+                  COALESCE(u.notify_chat_mentions, true) as notify_chat_mentions
            FROM group_members gm
            JOIN users u ON gm.user_id = u.id
            WHERE gm.group_id = $1 
@@ -152,10 +153,10 @@ router.post('/:groupId/messages', authenticate, [
           }
         }
 
-        // Send notifications to mentioned users
+        // Send notifications to mentioned users (only if they have mention notifications enabled)
         for (const mentionedUserId of mentionedUserIds) {
           const mentionedMember = membersResult.rows.find(m => m.id === mentionedUserId);
-          if (mentionedMember) {
+          if (mentionedMember && mentionedMember.notify_chat_mentions !== false) {
             await createNotification(
               mentionedUserId,
               'chat_mention',
@@ -170,6 +171,41 @@ router.post('/:groupId/messages', authenticate, [
         // Don't fail message creation if notification fails
         console.error('Error sending mention notifications:', notifError);
       }
+    }
+
+    // Send notifications for all messages (if enabled by recipients)
+    // Only notify if user has "notify_chat_all_messages" enabled
+    try {
+      const allMembersResult = await pool.query(
+        `SELECT DISTINCT gm.user_id, u.expo_push_token, u.id,
+                COALESCE(u.notify_chat_all_messages, false) as notify_chat_all_messages
+         FROM group_members gm
+         JOIN users u ON gm.user_id = u.id
+         WHERE gm.group_id = $1 
+           AND gm.user_id != $2
+           AND gm.status = 'active'
+           AND u.is_active = true
+           AND COALESCE(u.notify_chat_all_messages, false) = true`,
+        [groupId, userId]
+      );
+
+      // Send notifications to members who have "all messages" enabled
+      for (const member of allMembersResult.rows) {
+        // Don't send if they were already notified via mention
+        if (!mentionedUserIds.has(member.id)) {
+          await createNotification(
+            member.id,
+            'chat_message',
+            `New message in ${group.name}`,
+            `${user.name}: ${message.substring(0, 100)}${message.length > 100 ? '...' : ''}`,
+            groupId,
+            userId
+          );
+        }
+      }
+    } catch (notifError) {
+      // Don't fail message creation if notification fails
+      console.error('Error sending all message notifications:', notifError);
     }
 
     res.status(201).json({

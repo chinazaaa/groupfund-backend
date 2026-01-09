@@ -132,7 +132,7 @@ async function createNotification(userId, type, title, message, groupId = null, 
         }
       }
 
-      if (type === 'chat_mention') {
+      if (type === 'chat_mention' || type === 'chat_message') {
         screen = 'GroupChat';
         if (groupId) {
           params = { groupId };

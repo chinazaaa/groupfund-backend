@@ -563,7 +563,8 @@ router.get('/notifications', authenticate, async (req, res) => {
     const userId = req.user.id;
 
     const result = await pool.query(
-      `SELECT notify_7_days_before, notify_1_day_before, notify_same_day
+      `SELECT notify_7_days_before, notify_1_day_before, notify_same_day,
+              notify_chat_mentions, notify_chat_all_messages
        FROM users WHERE id = $1`,
       [userId]
     );
@@ -576,6 +577,8 @@ router.get('/notifications', authenticate, async (req, res) => {
       notify_7_days_before: result.rows[0].notify_7_days_before ?? true,
       notify_1_day_before: result.rows[0].notify_1_day_before ?? true,
       notify_same_day: result.rows[0].notify_same_day ?? true,
+      notify_chat_mentions: result.rows[0].notify_chat_mentions ?? true,
+      notify_chat_all_messages: result.rows[0].notify_chat_all_messages ?? false,
     });
   } catch (error) {
     console.error('Get notification preferences error:', error);
@@ -588,6 +591,8 @@ router.put('/notifications', authenticate, [
   body('notify_7_days_before').optional().isBoolean(),
   body('notify_1_day_before').optional().isBoolean(),
   body('notify_same_day').optional().isBoolean(),
+  body('notify_chat_mentions').optional().isBoolean(),
+  body('notify_chat_all_messages').optional().isBoolean(),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -596,7 +601,7 @@ router.put('/notifications', authenticate, [
     }
 
     const userId = req.user.id;
-    const { notify_7_days_before, notify_1_day_before, notify_same_day } = req.body;
+    const { notify_7_days_before, notify_1_day_before, notify_same_day, notify_chat_mentions, notify_chat_all_messages } = req.body;
 
     const updates = [];
     const values = [];
@@ -614,6 +619,14 @@ router.put('/notifications', authenticate, [
       updates.push(`notify_same_day = $${paramCount++}`);
       values.push(notify_same_day);
     }
+    if (notify_chat_mentions !== undefined) {
+      updates.push(`notify_chat_mentions = $${paramCount++}`);
+      values.push(notify_chat_mentions);
+    }
+    if (notify_chat_all_messages !== undefined) {
+      updates.push(`notify_chat_all_messages = $${paramCount++}`);
+      values.push(notify_chat_all_messages);
+    }
 
     if (updates.length === 0) {
       return res.status(400).json({ error: 'No fields to update' });
@@ -622,7 +635,7 @@ router.put('/notifications', authenticate, [
     updates.push(`updated_at = CURRENT_TIMESTAMP`);
     values.push(userId);
 
-    const query = `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING notify_7_days_before, notify_1_day_before, notify_same_day`;
+    const query = `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING notify_7_days_before, notify_1_day_before, notify_same_day, notify_chat_mentions, notify_chat_all_messages`;
     const result = await pool.query(query, values);
 
     res.json({
@@ -631,6 +644,8 @@ router.put('/notifications', authenticate, [
         notify_7_days_before: result.rows[0].notify_7_days_before,
         notify_1_day_before: result.rows[0].notify_1_day_before,
         notify_same_day: result.rows[0].notify_same_day,
+        notify_chat_mentions: result.rows[0].notify_chat_mentions ?? true,
+        notify_chat_all_messages: result.rows[0].notify_chat_all_messages ?? false,
       },
     });
   } catch (error) {
