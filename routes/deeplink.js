@@ -10,11 +10,11 @@ router.get('/g/:inviteCode', async (req, res) => {
   try {
     const { inviteCode } = req.params;
 
-    // Verify the invite code exists
+    // Verify the invite code exists (case-insensitive search)
     const groupResult = await pool.query(
       `SELECT g.id, g.name, g.invite_code, g.status, g.accepting_requests
        FROM groups g
-       WHERE g.invite_code = $1`,
+       WHERE LOWER(g.invite_code) = LOWER($1)`,
       [inviteCode]
     );
 

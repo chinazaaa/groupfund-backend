@@ -185,7 +185,7 @@ router.get('/preview/:inviteCode', authenticate, async (req, res) => {
        FROM groups g
        LEFT JOIN group_members gm ON g.id = gm.group_id
        LEFT JOIN users u ON g.admin_id = u.id
-       WHERE g.invite_code = $1
+       WHERE LOWER(g.invite_code) = LOWER($1)
        GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.group_type,
                 g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline, g.notes, g.created_at, u.name`,
       [inviteCode]
@@ -238,12 +238,12 @@ router.post('/join', authenticate, [
     const { inviteCode } = req.body;
     const userId = req.user.id;
 
-    // Find group
+    // Find group (case-insensitive invite code lookup)
     const groupResult = await pool.query(
       `SELECT g.*, COUNT(gm.id) as current_members
        FROM groups g 
        LEFT JOIN group_members gm ON g.id = gm.group_id AND gm.status = 'active'
-       WHERE g.invite_code = $1 
+       WHERE LOWER(g.invite_code) = LOWER($1) 
        GROUP BY g.id`,
       [inviteCode]
     );
