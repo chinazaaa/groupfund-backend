@@ -163,6 +163,7 @@ app.use('/api/admin', require('./routes/admin'));
 app.use('/api/migrations', require('./routes/migrations'));
 app.use('/api/webhook', require('./routes/webhook'));
 app.use('/api/reports', require('./routes/reports'));
+app.use('/api/chat', require('./routes/chat'));
 
 // Error handling middleware
 app.use((err, req, res, next) => {

@@ -37,6 +37,8 @@ router.post('/create', authenticate, [
   body('deadline').optional().isISO8601().withMessage('Deadline must be a valid date'),
   // Notes/description field (optional for all group types)
   body('notes').optional().trim(),
+  // Chat enabled toggle (optional, defaults to false)
+  body('chatEnabled').optional().isBoolean().withMessage('chatEnabled must be a boolean'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -55,7 +57,8 @@ router.post('/create', authenticate, [
       subscriptionDeadlineDay,
       subscriptionDeadlineMonth,
       deadline,
-      notes
+      notes,
+      chatEnabled = false
     } = req.body;
     const adminId = req.user.id;
 
@@ -116,10 +119,10 @@ router.post('/create', authenticate, [
     }
 
     // Build insert query based on group type
-    let insertFields = 'name, invite_code, contribution_amount, max_members, admin_id, currency, group_type';
-    let insertValues = '$1, $2, $3, $4, $5, $6, $7';
-    let params = [name, inviteCode, contributionAmount, maxMembers, adminId, currency, groupType];
-    let paramCount = 8;
+    let insertFields = 'name, invite_code, contribution_amount, max_members, admin_id, currency, group_type, chat_enabled';
+    let insertValues = '$1, $2, $3, $4, $5, $6, $7, $8';
+    let params = [name, inviteCode, contributionAmount, maxMembers, adminId, currency, groupType, chatEnabled === true];
+    let paramCount = 9;
 
     // Add notes if provided
     if (notes !== undefined && notes !== null && notes.trim() !== '') {
@@ -148,7 +151,7 @@ router.post('/create', authenticate, [
     const groupResult = await pool.query(
       `INSERT INTO groups (${insertFields}) 
        VALUES (${insertValues}) 
-       RETURNING id, name, invite_code, contribution_amount, max_members, admin_id, currency, accepting_requests, group_type, is_public, subscription_frequency, subscription_platform, subscription_deadline_day, subscription_deadline_month, deadline, notes, created_at`,
+       RETURNING id, name, invite_code, contribution_amount, max_members, admin_id, currency, accepting_requests, group_type, is_public, subscription_frequency, subscription_platform, subscription_deadline_day, subscription_deadline_month, deadline, notes, chat_enabled, created_at`,
       params
     );
 
@@ -179,7 +182,7 @@ router.get('/preview/:inviteCode', authenticate, async (req, res) => {
     const groupResult = await pool.query(
       `SELECT 
         g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.group_type,
-        g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline, g.notes,
+        g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline, g.notes, g.chat_enabled,
         COUNT(gm.id) FILTER (WHERE gm.status = 'active') as current_members,
         u.name as admin_name
        FROM groups g
@@ -187,7 +190,7 @@ router.get('/preview/:inviteCode', authenticate, async (req, res) => {
        LEFT JOIN users u ON g.admin_id = u.id
        WHERE LOWER(g.invite_code) = LOWER($1)
        GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.group_type,
-                g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline, g.notes, g.created_at, u.name`,
+                g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline, g.notes, g.chat_enabled, g.created_at, u.name`,
       [inviteCode]
     );
 
@@ -216,6 +219,7 @@ router.get('/preview/:inviteCode', authenticate, async (req, res) => {
         subscription_deadline_month: group.subscription_deadline_month,
         deadline: group.deadline,
         notes: group.notes,
+        chat_enabled: group.chat_enabled === true,
         created_at: group.created_at,
       },
     });
@@ -2296,6 +2300,7 @@ router.put('/:groupId', authenticate, [
   body('deadline').optional().isISO8601().withMessage('Deadline must be a valid date'),
   body('subscriptionDeadlineDay').optional().isInt({ min: 1, max: 31 }).withMessage('Subscription deadline day must be between 1 and 31'),
   body('subscriptionDeadlineMonth').optional().isInt({ min: 1, max: 12 }).withMessage('Subscription deadline month must be between 1 and 12'),
+  body('chatEnabled').optional().isBoolean().withMessage('chatEnabled must be a boolean'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -2329,7 +2334,8 @@ router.put('/:groupId', authenticate, [
       notes,
       deadline,
       subscriptionDeadlineDay,
-      subscriptionDeadlineMonth
+      subscriptionDeadlineMonth,
+      chatEnabled
     } = req.body;
 
     // Validate isPublic can only be set for subscription groups
@@ -2466,6 +2472,12 @@ router.put('/:groupId', authenticate, [
         updates.push(`subscription_deadline_month = $${paramCount++}`);
         values.push(subscriptionDeadlineMonth);
       }
+    }
+
+    // Update chat enabled (for all group types)
+    if (chatEnabled !== undefined) {
+      updates.push(`chat_enabled = $${paramCount++}`);
+      values.push(chatEnabled === true);
     }
 
     if (updates.length === 0) {

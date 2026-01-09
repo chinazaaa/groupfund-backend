@@ -32,7 +32,9 @@ const migrations = [
   'add_notes_to_groups.sql',
   'add_reports.sql',
   'fix_reports_constraint.sql',
-  'add_closed_reason_to_groups.sql'
+  'add_closed_reason_to_groups.sql',
+  'add_chat_enabled_to_groups.sql',
+  'add_group_messages.sql'
 ];
 
 async function runAllMigrations() {
