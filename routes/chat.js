@@ -71,38 +71,86 @@ router.post('/:groupId/messages', authenticate, [
 
     const user = userResult.rows[0];
 
-    // Send notifications to other group members (optional - can be disabled if too noisy)
-    // Only notify if message is not from admin (to avoid spam)
-    // You can customize this logic based on your needs
-    try {
-      const membersResult = await pool.query(
-        `SELECT DISTINCT gm.user_id, u.expo_push_token
-         FROM group_members gm
-         JOIN users u ON gm.user_id = u.id
-         WHERE gm.group_id = $1 
-           AND gm.user_id != $2 
-           AND gm.status = 'active'
-           AND u.is_active = true`,
-        [groupId, userId]
-      );
+    // Detect mentions in the message (@username format)
+    // Extract all @mentions from the message - supports @FirstName, @FirstName LastName, @FullName
+    // Matches @ followed by word characters and spaces (until next space or end)
+    const mentionRegex = /@([\w\s]+?)(?=\s|$|@)/g;
+    const mentions = [];
+    let match;
+    while ((match = mentionRegex.exec(message)) !== null) {
+      const mentionText = match[1].trim().toLowerCase();
+      if (mentionText.length > 0) {
+        mentions.push(mentionText);
+      }
+    }
 
-      // Send push notifications to other members (optional)
-      // Uncomment if you want to notify members about new messages
-      // for (const member of membersResult.rows) {
-      //   if (member.expo_push_token) {
-      //     await createNotification(
-      //       member.user_id,
-      //       'group_message',
-      //       `New message in ${group.name}`,
-      //       `${user.name}: ${message.substring(0, 50)}${message.length > 50 ? '...' : ''}`,
-      //       groupId,
-      //       userId
-      //     );
-      //   }
-      // }
-    } catch (notifError) {
-      // Don't fail message creation if notification fails
-      console.error('Error sending message notifications:', notifError);
+    // Send notifications to mentioned users
+    if (mentions.length > 0) {
+      try {
+        // Get all active group members with their names
+        const membersResult = await pool.query(
+          `SELECT DISTINCT gm.user_id, u.name, u.expo_push_token, u.id
+           FROM group_members gm
+           JOIN users u ON gm.user_id = u.id
+           WHERE gm.group_id = $1 
+             AND gm.status = 'active'
+             AND u.is_active = true`,
+          [groupId]
+        );
+
+        // Find mentioned users by matching names (case-insensitive, supports partial matches)
+        const mentionedUserIds = new Set();
+        for (const member of membersResult.rows) {
+          const memberNameLower = member.name.toLowerCase();
+          // Check if any mention matches this member's name
+          for (const mention of mentions) {
+            // Match if:
+            // 1. Mention exactly matches the full name
+            // 2. Mention matches the first word(s) of the name (e.g., @John matches "John Doe")
+            // 3. Mention is contained in the name (for partial matches)
+            const nameWords = memberNameLower.split(/\s+/);
+            const mentionWords = mention.split(/\s+/);
+            
+            // Exact match
+            if (memberNameLower === mention) {
+              if (member.id !== userId) {
+                mentionedUserIds.add(member.id);
+              }
+              break;
+            }
+            
+            // Check if mention matches the beginning of the name
+            // e.g., "@John" matches "John Doe", "@John Doe" matches "John Doe Smith"
+            if (nameWords.length >= mentionWords.length) {
+              const nameStart = nameWords.slice(0, mentionWords.length).join(' ');
+              if (nameStart === mention) {
+                if (member.id !== userId) {
+                  mentionedUserIds.add(member.id);
+                }
+                break;
+              }
+            }
+          }
+        }
+
+        // Send notifications to mentioned users
+        for (const mentionedUserId of mentionedUserIds) {
+          const mentionedMember = membersResult.rows.find(m => m.id === mentionedUserId);
+          if (mentionedMember) {
+            await createNotification(
+              mentionedUserId,
+              'chat_mention',
+              `You were mentioned in ${group.name}`,
+              `${user.name} mentioned you: ${message.substring(0, 100)}${message.length > 100 ? '...' : ''}`,
+              groupId,
+              userId
+            );
+          }
+        }
+      } catch (notifError) {
+        // Don't fail message creation if notification fails
+        console.error('Error sending mention notifications:', notifError);
+      }
     }
 
     res.status(201).json({

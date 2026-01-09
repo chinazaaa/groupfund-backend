@@ -132,6 +132,13 @@ async function createNotification(userId, type, title, message, groupId = null, 
         }
       }
 
+      if (type === 'chat_mention') {
+        screen = 'GroupChat';
+        if (groupId) {
+          params = { groupId };
+        }
+      }
+
       // Send push notification
       await sendPushNotification(
         pushToken,
