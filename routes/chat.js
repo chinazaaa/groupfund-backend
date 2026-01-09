@@ -406,9 +406,23 @@ router.get('/:groupId/mentions', authenticate, async (req, res) => {
     }
 
     // Search for members matching the query (case-insensitive)
-    const searchTerm = `%${query.trim().toLowerCase()}%`;
+    const trimmedQuery = query.trim();
+    const searchTerm = `%${trimmedQuery.toLowerCase()}%`;
+    const exactMatch = trimmedQuery.toLowerCase();
+    const startsWithMatch = `${trimmedQuery.toLowerCase()}%`;
+    
     const membersResult = await pool.query(
-      `SELECT DISTINCT u.id, u.name, u.email, gm.role
+      `SELECT 
+         u.id, 
+         u.name, 
+         u.email, 
+         gm.role,
+         CASE WHEN gm.role = 'admin' THEN 0 ELSE 1 END as role_priority,
+         CASE 
+           WHEN LOWER(u.name) = $3 THEN 0
+           WHEN LOWER(u.name) LIKE $4 THEN 1
+           ELSE 2
+         END as match_priority
        FROM group_members gm
        JOIN users u ON gm.user_id = u.id
        WHERE gm.group_id = $1 
@@ -419,15 +433,11 @@ router.get('/:groupId/mentions', authenticate, async (req, res) => {
            OR LOWER(u.email) LIKE $2
          )
        ORDER BY 
-         CASE WHEN gm.role = 'admin' THEN 0 ELSE 1 END,
-         CASE 
-           WHEN LOWER(u.name) = LOWER($3) THEN 0
-           WHEN LOWER(u.name) LIKE LOWER($4) THEN 1
-           ELSE 2
-         END,
+         role_priority,
+         match_priority,
          u.name ASC
        LIMIT 10`,
-      [groupId, searchTerm, query.trim(), `${query.trim()}%`]
+      [groupId, searchTerm, exactMatch, startsWithMatch]
     );
 
     res.json({
