@@ -175,27 +175,34 @@ router.post('/contribute', authenticate, contributionLimiter, async (req, res) =
   }
 });
 
-// Confirm general contribution (admin confirms payment received)
+// Confirm general contribution (admin or co-admin confirms payment received)
 router.post('/contribute/:contributionId/confirm', authenticate, async (req, res) => {
   try {
     const { contributionId } = req.params;
-    const adminId = req.user.id;
+    const userId = req.user.id;
 
-    // Get contribution details and verify admin owns the group
+    // Get contribution details
     const contributionResult = await pool.query(
-      `SELECT gc.*, g.name as group_name, g.currency, g.status as group_status, g.admin_id, u.name as contributor_name
+      `SELECT gc.*, g.name as group_name, g.currency, g.status as group_status, g.id as group_id, u.name as contributor_name
        FROM general_contributions gc
        JOIN groups g ON gc.group_id = g.id
        JOIN users u ON gc.contributor_id = u.id
-       WHERE gc.id = $1 AND g.admin_id = $2`,
-      [contributionId, adminId]
+       WHERE gc.id = $1`,
+      [contributionId]
     );
 
     if (contributionResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Contribution not found or you are not the group admin' });
+      return res.status(404).json({ error: 'Contribution not found' });
     }
 
     const contribution = contributionResult.rows[0];
+
+    // Check if user is admin or co-admin
+    const { checkGroupAdminPermissions } = require('../utils/helpers');
+    const permissions = await checkGroupAdminPermissions(userId, contribution.group_id, pool);
+    if (!permissions.isAdminOrCoAdmin) {
+      return res.status(403).json({ error: 'Only admins or co-admins can confirm contributions' });
+    }
 
     if (contribution.group_status === 'closed') {
       return res.status(400).json({ error: 'This group is closed and no longer accepting contribution confirmations' });
@@ -240,7 +247,7 @@ router.post('/contribute/:contributionId/confirm', authenticate, async (req, res
       // Notify contributor
       const adminName = await pool.query(
         'SELECT name FROM users WHERE id = $1',
-        [adminId]
+        [userId]
       );
       const adminNameText = adminName.rows[0]?.name || 'The admin';
       const contributionCurrency = contribution.currency || 'NGN';
@@ -251,7 +258,7 @@ router.post('/contribute/:contributionId/confirm', authenticate, async (req, res
         'Payment Confirmed',
         `${adminNameText} confirmed your payment of ${formatAmount(parseFloat(contribution.amount), contributionCurrency)}. Thank you!`,
         contribution.group_id,
-        adminId
+        userId
       );
 
       res.json({ message: 'Contribution confirmed successfully' });
@@ -265,41 +272,20 @@ router.post('/contribute/:contributionId/confirm', authenticate, async (req, res
   }
 });
 
-// Mark general contribution as not received (admin marks payment as not received)
+// Mark general contribution as not received (admin or co-admin marks payment as not received)
 router.post('/contribute/:contributionId/reject', authenticate, async (req, res) => {
   try {
     const { contributionId } = req.params;
-    const adminId = req.user.id;
+    const userId = req.user.id;
 
-    // First check if contribution exists and verify admin access
-    const contributionCheck = await pool.query(
-      `SELECT gc.id, g.admin_id, g.group_type
-       FROM general_contributions gc
-       JOIN groups g ON gc.group_id = g.id
-       WHERE gc.id = $1`,
-      [contributionId]
-    );
-
-    if (contributionCheck.rows.length === 0) {
-      return res.status(404).json({ error: 'General contribution not found' });
-    }
-
-    if (contributionCheck.rows[0].group_type !== 'general') {
-      return res.status(400).json({ error: 'This is not a general group contribution' });
-    }
-
-    if (contributionCheck.rows[0].admin_id !== adminId) {
-      return res.status(403).json({ error: 'Only the group admin can reject contributions' });
-    }
-
-    // Get full contribution details
+    // Get contribution details
     const contributionResult = await pool.query(
-      `SELECT gc.*, g.name as group_name, g.currency, g.status as group_status, g.admin_id, u.name as contributor_name
+      `SELECT gc.*, g.name as group_name, g.currency, g.status as group_status, g.id as group_id, g.group_type, u.name as contributor_name
        FROM general_contributions gc
        JOIN groups g ON gc.group_id = g.id
        JOIN users u ON gc.contributor_id = u.id
-       WHERE gc.id = $1 AND g.admin_id = $2`,
-      [contributionId, adminId]
+       WHERE gc.id = $1`,
+      [contributionId]
     );
 
     if (contributionResult.rows.length === 0) {
@@ -307,6 +293,17 @@ router.post('/contribute/:contributionId/reject', authenticate, async (req, res)
     }
 
     const contribution = contributionResult.rows[0];
+
+    if (contribution.group_type !== 'general') {
+      return res.status(400).json({ error: 'This is not a general group contribution' });
+    }
+
+    // Check if user is admin or co-admin
+    const { checkGroupAdminPermissions } = require('../utils/helpers');
+    const permissions = await checkGroupAdminPermissions(userId, contribution.group_id, pool);
+    if (!permissions.isAdminOrCoAdmin) {
+      return res.status(403).json({ error: 'Only admins or co-admins can reject contributions' });
+    }
 
     if (contribution.group_status === 'closed') {
       return res.status(400).json({ error: 'This group is closed and no longer accepting contribution rejections' });
@@ -350,7 +347,7 @@ router.post('/contribute/:contributionId/reject', authenticate, async (req, res)
 
       const adminName = await pool.query(
         'SELECT name FROM users WHERE id = $1',
-        [adminId]
+        [userId]
       );
       const adminNameText = adminName.rows[0]?.name || 'The admin';
       
@@ -360,7 +357,7 @@ router.post('/contribute/:contributionId/reject', authenticate, async (req, res)
         'Payment Not Received',
         `${adminNameText} marked your payment as not received. Please check that you've paid correctly or try again.`,
         contribution.group_id,
-        adminId
+        userId
       );
 
       res.json({ message: 'Contribution marked as not received successfully' });

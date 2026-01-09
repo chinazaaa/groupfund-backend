@@ -420,7 +420,7 @@ router.get('/:groupId/mentions', authenticate, async (req, res) => {
     if (!query || query.trim().length === 0) {
       const allMembersResult = await pool.query(
         `SELECT u.id, u.name, u.email, gm.role,
-                CASE WHEN gm.role = 'admin' THEN 0 ELSE 1 END as role_priority
+                CASE WHEN gm.role = 'admin' THEN 0 WHEN gm.role = 'co-admin' THEN 1 ELSE 2 END as role_priority
          FROM group_members gm
          JOIN users u ON gm.user_id = u.id
          WHERE gm.group_id = $1 

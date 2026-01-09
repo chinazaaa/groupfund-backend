@@ -1,7 +1,9 @@
 const express = require('express');
+const { body, validationResult } = require('express-validator');
 const pool = require('../config/database');
 const { authenticate } = require('../middleware/auth');
 const { createNotification } = require('../utils/notifications');
+const { checkGroupAdminPermissions } = require('../utils/helpers');
 
 const router = express.Router();
 
@@ -22,10 +24,13 @@ router.get('/group/:groupId', authenticate, async (req, res) => {
     }
 
     const userStatus = memberCheck.rows[0].status;
-    const isAdmin = memberCheck.rows[0].role === 'admin';
+    const userRole = memberCheck.rows[0].role;
+    const isAdmin = userRole === 'admin';
+    const isCoAdmin = userRole === 'co-admin';
+    const isAdminOrCoAdmin = isAdmin || isCoAdmin;
 
-    // If user is pending and not admin, only return their own info
-    if (userStatus === 'pending' && !isAdmin) {
+    // If user is pending and not admin/co-admin, only return their own info
+    if (userStatus === 'pending' && !isAdminOrCoAdmin) {
       const result = await pool.query(
         `SELECT 
           gm.id as member_id,
@@ -39,7 +44,7 @@ router.get('/group/:groupId', authenticate, async (req, res) => {
       return res.json({ members: result.rows });
     }
 
-    // Get all members (admins can see active and pending, regular members can only see active)
+    // Get all members (admins/co-admins can see active and pending, regular members can only see active)
     // Never show inactive/rejected members
     const result = await pool.query(
       `SELECT 
@@ -50,9 +55,9 @@ router.get('/group/:groupId', authenticate, async (req, res) => {
        JOIN users u ON gm.user_id = u.id
        WHERE gm.group_id = $1
          AND gm.status != 'inactive'
-         ${!isAdmin ? "AND gm.status = 'active'" : ''}
+         ${!isAdminOrCoAdmin ? "AND gm.status = 'active'" : ''}
        ORDER BY 
-         CASE WHEN gm.role = 'admin' THEN 0 ELSE 1 END,
+         CASE WHEN gm.role = 'admin' THEN 0 WHEN gm.role = 'co-admin' THEN 1 ELSE 2 END,
          gm.joined_at ASC`,
       [groupId]
     );
@@ -412,7 +417,7 @@ router.get('/summary/:userId', authenticate, async (req, res) => {
   }
 });
 
-// Approve/Reject member (admin only)
+// Approve/Reject member (admin or co-admin)
 router.post('/:memberId/approve', authenticate, async (req, res) => {
   try {
     const { memberId } = req.params;
@@ -423,14 +428,10 @@ router.post('/:memberId/approve', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Invalid action. Use "approve" or "reject"' });
     }
 
-    // Check if requester is admin
-    const adminCheck = await pool.query(
-      'SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2 AND role = $3',
-      [groupId, userId, 'admin']
-    );
-
-    if (adminCheck.rows.length === 0) {
-      return res.status(403).json({ error: 'Only admins can approve members' });
+    // Check if requester is admin or co-admin
+    const permissions = await checkGroupAdminPermissions(userId, groupId, pool);
+    if (!permissions.isAdminOrCoAdmin) {
+      return res.status(403).json({ error: 'Only admins or co-admins can approve members' });
     }
 
     // Check if member exists and is pending
@@ -488,21 +489,17 @@ router.post('/:memberId/approve', authenticate, async (req, res) => {
   }
 });
 
-// Remove member (admin only)
+// Remove member (admin or co-admin, with restrictions)
 router.delete('/:memberId', authenticate, async (req, res) => {
   try {
     const { memberId } = req.params;
     const { groupId } = req.body;
     const userId = req.user.id;
 
-    // Check if requester is admin
-    const adminCheck = await pool.query(
-      'SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2 AND role = $3',
-      [groupId, userId, 'admin']
-    );
-
-    if (adminCheck.rows.length === 0) {
-      return res.status(403).json({ error: 'Only admins can remove members' });
+    // Check if requester is admin or co-admin
+    const permissions = await checkGroupAdminPermissions(userId, groupId, pool);
+    if (!permissions.isAdminOrCoAdmin) {
+      return res.status(403).json({ error: 'Only admins or co-admins can remove members' });
     }
 
     // Get member info and group details before removing
@@ -519,7 +516,15 @@ router.delete('/:memberId', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'Member not found' });
     }
 
-    if (memberCheck.rows[0].role === 'admin') {
+    const memberRole = memberCheck.rows[0].role;
+    
+    // Co-admins cannot remove admins or other co-admins (only regular members)
+    if (permissions.isCoAdmin && (memberRole === 'admin' || memberRole === 'co-admin')) {
+      return res.status(403).json({ error: 'Co-admins cannot remove admins or other co-admins' });
+    }
+    
+    // Admins cannot remove other admins (only co-admins and members)
+    if (permissions.isAdmin && memberRole === 'admin') {
       return res.status(400).json({ error: 'Cannot remove admin member' });
     }
 
@@ -614,7 +619,7 @@ router.post('/leave', authenticate, async (req, res) => {
     const subscriptionPlatform = memberInfo.subscription_platform;
     const userName = memberInfo.user_name;
 
-    // Don't allow admin to leave (or handle differently)
+    // Don't allow admin to leave if they're the only admin
     if (memberInfo.role === 'admin') {
       // Check if there are other admins
       const adminCount = await pool.query(
@@ -626,6 +631,8 @@ router.post('/leave', authenticate, async (req, res) => {
         return res.status(400).json({ error: 'Cannot leave group. You are the only admin. Transfer admin role first.' });
       }
     }
+    
+    // Co-admins can leave freely (no restrictions)
 
     await pool.query(
       'DELETE FROM group_members WHERE group_id = $1 AND user_id = $2',
@@ -673,6 +680,90 @@ router.post('/leave', authenticate, async (req, res) => {
     res.json({ message: 'Left group successfully' });
   } catch (error) {
     console.error('Leave group error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Promote/Demote member to/from co-admin (admin only)
+router.post('/:memberId/role', authenticate, [
+  body('groupId').notEmpty().withMessage('Group ID is required'),
+  body('role').isIn(['member', 'co-admin']).withMessage('Role must be "member" or "co-admin"'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { memberId } = req.params;
+    const { groupId, role } = req.body;
+    const userId = req.user.id;
+
+    // Check if requester is admin (only admins can promote/demote)
+    const permissions = await checkGroupAdminPermissions(userId, groupId, pool);
+    if (!permissions.isAdmin) {
+      return res.status(403).json({ error: 'Only admins can change member roles' });
+    }
+
+    // Get member info
+    const memberCheck = await pool.query(
+      `SELECT gm.role as current_role, gm.user_id, u.name as user_name, g.name as group_name
+       FROM group_members gm
+       JOIN users u ON gm.user_id = u.id
+       JOIN groups g ON gm.group_id = g.id
+       WHERE gm.id = $1 AND gm.group_id = $2`,
+      [memberId, groupId]
+    );
+
+    if (memberCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Member not found' });
+    }
+
+    const currentRole = memberCheck.rows[0].current_role;
+    const memberUserId = memberCheck.rows[0].user_id;
+    const memberName = memberCheck.rows[0].user_name;
+    const groupName = memberCheck.rows[0].group_name;
+
+    // Cannot change admin role (admins can only be changed by system admin or through transfer)
+    if (currentRole === 'admin') {
+      return res.status(400).json({ error: 'Cannot change admin role. Use transfer admin feature instead.' });
+    }
+
+    // Cannot change own role
+    if (memberUserId === userId) {
+      return res.status(400).json({ error: 'Cannot change your own role' });
+    }
+
+    // Update role
+    await pool.query(
+      'UPDATE group_members SET role = $1 WHERE id = $2',
+      [role, memberId]
+    );
+
+    // Notify the member about role change
+    const roleChangeMessage = role === 'co-admin' 
+      ? `You have been promoted to co-admin in ${groupName}`
+      : `You have been demoted to member in ${groupName}`;
+    
+    await createNotification(
+      memberUserId,
+      'role_changed',
+      role === 'co-admin' ? 'Promoted to Co-Admin' : 'Demoted to Member',
+      roleChangeMessage,
+      groupId,
+      userId
+    );
+
+    res.json({ 
+      message: `Member role updated to ${role} successfully`,
+      member: {
+        id: memberUserId,
+        name: memberName,
+        role: role
+      }
+    });
+  } catch (error) {
+    console.error('Change member role error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

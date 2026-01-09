@@ -357,7 +357,7 @@ router.get('/groups/:groupId/members', async (req, res) => {
        JOIN users u ON gm.user_id = u.id
        WHERE gm.group_id = $1
        ORDER BY 
-         CASE WHEN gm.role = 'admin' THEN 0 ELSE 1 END,
+         CASE WHEN gm.role = 'admin' THEN 0 WHEN gm.role = 'co-admin' THEN 1 ELSE 2 END,
          gm.joined_at ASC`,
       [groupId]
     );

@@ -37,7 +37,8 @@ const migrations = [
   'add_closed_reason_to_groups.sql',
   'add_chat_enabled_to_groups.sql',
   'add_group_messages.sql',
-  'add_chat_notification_preferences.sql'
+  'add_chat_notification_preferences.sql',
+  'add_co_admin_role.sql'
 ];
 
 // Migration endpoint - SECURE THIS IN PRODUCTION!

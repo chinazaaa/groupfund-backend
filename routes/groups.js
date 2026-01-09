@@ -3,7 +3,7 @@ const { body, validationResult } = require('express-validator');
 const pool = require('../config/database');
 const { authenticate } = require('../middleware/auth');
 const { createNotification } = require('../utils/notifications');
-const { generateInviteCode } = require('../utils/helpers');
+const { generateInviteCode, checkGroupAdminPermissions } = require('../utils/helpers');
 
 const router = express.Router();
 
@@ -2311,20 +2311,30 @@ router.put('/:groupId', authenticate, [
     const { groupId } = req.params;
     const userId = req.user.id;
 
-    // Check if user is admin and get group type
+    // Check if user is admin or co-admin and get group type
     const groupCheck = await pool.query(
-      `SELECT g.group_type, gm.role 
+      `SELECT g.group_type, gm.role, g.admin_id
        FROM groups g
        JOIN group_members gm ON g.id = gm.group_id
-       WHERE g.id = $1 AND gm.user_id = $2`,
+       WHERE g.id = $1 AND gm.user_id = $2 AND gm.status = 'active'`,
       [groupId, userId]
     );
 
-    if (groupCheck.rows.length === 0 || groupCheck.rows[0].role !== 'admin') {
-      return res.status(403).json({ error: 'Only admins can update group settings' });
+    if (groupCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'You are not an active member of this group' });
+    }
+
+    const userRole = groupCheck.rows[0].role;
+    const isAdmin = userRole === 'admin';
+    const isCoAdmin = userRole === 'co-admin';
+    const isAdminOrCoAdmin = isAdmin || isCoAdmin;
+
+    if (!isAdminOrCoAdmin) {
+      return res.status(403).json({ error: 'Only admins or co-admins can update group settings' });
     }
 
     const groupType = groupCheck.rows[0].group_type;
+    const adminId = groupCheck.rows[0].admin_id;
     const { 
       name, 
       contributionAmount, 
@@ -2337,6 +2347,16 @@ router.put('/:groupId', authenticate, [
       subscriptionDeadlineMonth,
       chatEnabled
     } = req.body;
+
+    // Co-admin restrictions: Cannot change critical settings
+    if (isCoAdmin) {
+      if (contributionAmount !== undefined) {
+        return res.status(403).json({ error: 'Co-admins cannot change contribution amount. Only admins can modify this setting.' });
+      }
+      if (maxMembers !== undefined) {
+        return res.status(403).json({ error: 'Co-admins cannot change max members. Only admins can modify this setting.' });
+      }
+    }
 
     // Validate isPublic can only be set for subscription groups
     if (isPublic !== undefined && groupType !== 'subscription') {
