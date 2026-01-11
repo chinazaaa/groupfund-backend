@@ -209,7 +209,11 @@ async function processBirthdayPayments(userId, groupId) {
 
         // Process payment
         const contributionAmount = parseFloat(group.contribution_amount);
-        const currency = group.currency || 'NGN';
+        const currency = group.currency;
+        if (!currency) {
+          console.error(`Group ${groupId} has no currency set`);
+          continue; // Skip this payment - group must have currency
+        }
 
         // Calculate fees
         const provider = member.provider || paymentService.selectProvider(currency, null);
@@ -510,7 +514,11 @@ async function processSubscriptionPayments(groupId) {
 
         // Process payment
         const contributionAmount = parseFloat(group.contribution_amount);
-        const currency = group.currency || 'NGN';
+        const currency = group.currency;
+        if (!currency) {
+          console.error(`Group ${groupId} has no currency set`);
+          continue; // Skip this payment - group must have currency
+        }
 
         const provider = member.provider || paymentService.selectProvider(currency, null);
         const fees = paymentService.calculateFees(contributionAmount, currency, provider, 1);
@@ -787,7 +795,11 @@ async function processGeneralPayments(groupId) {
 
         // Process payment
         const contributionAmount = parseFloat(group.contribution_amount);
-        const currency = group.currency || 'NGN';
+        const currency = group.currency;
+        if (!currency) {
+          console.error(`Group ${groupId} has no currency set`);
+          continue; // Skip this payment - group must have currency
+        }
 
         const provider = member.provider || paymentService.selectProvider(currency, null);
         const fees = paymentService.calculateFees(contributionAmount, currency, provider, 1);

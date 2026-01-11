@@ -423,36 +423,81 @@ router.put('/profile', authenticate, [
   }
 });
 
-// Get wallet balance
+// Get wallet balances (all currencies)
 router.get('/wallet', authenticate, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const result = await pool.query(
-      'SELECT balance, account_number, bank_name, account_name, iban, swift_bic, routing_number, sort_code, branch_code, branch_address, currency FROM wallets WHERE user_id = $1',
+    // Get wallet details (bank account info)
+    const walletResult = await pool.query(
+      'SELECT account_number, bank_name, account_name, iban, swift_bic, routing_number, sort_code, branch_code, branch_address FROM wallets WHERE user_id = $1',
       [userId]
     );
 
-    if (result.rows.length === 0) {
-      // Return empty wallet if not found
+    // Get all currency balances
+    const { getAllCurrencyBalances } = require('../utils/walletHelpers');
+    const balances = await getAllCurrencyBalances(userId);
+
+    // Get bank accounts per currency
+    const bankAccountsResult = await pool.query(
+      `SELECT currency, account_name, bank_name, account_number, iban, swift_bic,
+              routing_number, sort_code, branch_code, branch_address, bank_code, is_default,
+              created_at, updated_at
+       FROM wallet_bank_accounts
+       WHERE user_id = $1
+       ORDER BY currency, is_default DESC`,
+      [userId]
+    );
+
+    // Group bank accounts by currency
+    const bankAccountsByCurrency = {};
+    for (const account of bankAccountsResult.rows) {
+      if (!bankAccountsByCurrency[account.currency]) {
+        bankAccountsByCurrency[account.currency] = [];
+      }
+      bankAccountsByCurrency[account.currency].push({
+        account_name: account.account_name,
+        bank_name: account.bank_name,
+        account_number: account.account_number ? `****${account.account_number.slice(-4)}` : null, // Mask for security
+        iban: account.iban,
+        swift_bic: account.swift_bic,
+        routing_number: account.routing_number,
+        sort_code: account.sort_code,
+        branch_code: account.branch_code,
+        branch_address: account.branch_address,
+        bank_code: account.bank_code,
+        is_default: account.is_default,
+        createdAt: account.created_at,
+      });
+    }
+
+    // Merge balances with bank accounts per currency
+    const balancesWithAccounts = balances.map(balance => ({
+      ...balance,
+      bankAccount: bankAccountsByCurrency[balance.currency]?.[0] || null, // Default account for this currency
+      hasBankAccount: !!bankAccountsByCurrency[balance.currency]?.length,
+      bankAccountsCount: bankAccountsByCurrency[balance.currency]?.length || 0,
+    }));
+
+    // If no balances exist, return empty structure (user hasn't received any contributions yet)
+    if (balances.length === 0) {
       return res.json({
         wallet: {
-          balance: 0,
-          account_number: null,
-          bank_name: null,
-          account_name: null,
-          iban: null,
-          swift_bic: null,
-          routing_number: null,
-          sort_code: null,
-          branch_code: null,
-          branch_address: null,
-          currency: 'NGN',
+          balances: [], // Empty balances array - no contributions received yet
+          totalBalances: 0, // Count of currencies with balances
+          bankAccountsByCurrency: {}, // Empty bank accounts
         }
       });
     }
 
-    res.json({ wallet: result.rows[0] });
+    // Return wallet with balances and bank accounts per currency
+    res.json({
+      wallet: {
+        balances: balancesWithAccounts, // Array of { currency, balance, updatedAt, bankAccount, hasBankAccount }
+        totalBalances: balances.length, // Number of currencies
+        bankAccountsByCurrency, // All bank accounts grouped by currency
+      }
+    });
   } catch (error) {
     console.error('Get wallet error:', error);
     res.status(500).json({ error: 'Server error' });
@@ -688,11 +733,30 @@ router.put('/wallet', authenticate, contributionLimiter, [
     const userEmail = userResult.rows[0]?.email;
     const userName = userResult.rows[0]?.name;
 
-    // Return updated wallet
-    const result = await pool.query(
-      'SELECT balance, account_number, bank_name, account_name, iban, swift_bic, routing_number, sort_code, branch_code, branch_address FROM wallets WHERE user_id = $1',
+    // Return updated wallet with all currency balances
+    const walletDetailsResult = await pool.query(
+      'SELECT account_number, bank_name, account_name, iban, swift_bic, routing_number, sort_code, branch_code, branch_address FROM wallets WHERE user_id = $1',
       [userId]
     );
+
+    // Get all currency balances
+    const { getAllCurrencyBalances } = require('../utils/walletHelpers');
+    const balances = await getAllCurrencyBalances(userId);
+
+    const wallet = walletDetailsResult.rows[0] || {};
+    const result = {
+      account_number: wallet.account_number || null,
+      bank_name: wallet.bank_name || null,
+      account_name: wallet.account_name || null,
+      iban: wallet.iban || null,
+      swift_bic: wallet.swift_bic || null,
+      routing_number: wallet.routing_number || null,
+      sort_code: wallet.sort_code || null,
+      branch_code: wallet.branch_code || null,
+      branch_address: wallet.branch_address || null,
+      balances: balances,
+      totalBalances: balances.length,
+    };
 
     // Send security email notification
     try {
@@ -739,7 +803,7 @@ router.put('/wallet', authenticate, contributionLimiter, [
 
     res.json({
       message: 'Wallet details updated successfully',
-      wallet: result.rows[0],
+      wallet: result,
     });
   } catch (error) {
     console.error('Update wallet error:', error);

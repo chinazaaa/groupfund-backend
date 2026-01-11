@@ -103,6 +103,7 @@ router.post('/request', authenticate, contributionLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
   body('otp').notEmpty().isLength({ min: 6, max: 6 }).withMessage('OTP is required (6 digits)'),
   body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be greater than 0'),
+  body('currency').optional().isLength({ min: 3, max: 3 }).withMessage('Currency must be 3 characters (e.g., NGN, USD)'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -111,7 +112,7 @@ router.post('/request', authenticate, contributionLimiter, [
     }
 
     const userId = req.user.id;
-    const { password_verification_token, otp, amount } = req.body;
+    const { password_verification_token, otp, amount, currency: requestedCurrency } = req.body;
 
     // Verify password token
     const tokenData = verifyPasswordVerificationToken(password_verification_token);
@@ -125,32 +126,42 @@ router.post('/request', authenticate, contributionLimiter, [
       return res.status(401).json({ error: 'Invalid or expired OTP' });
     }
 
-    // Get user wallet and bank details
-    const walletResult = await pool.query(
-      `SELECT w.balance, w.account_name, w.bank_name, w.account_number, w.iban, w.swift_bic,
-              w.routing_number, w.sort_code, w.branch_code, w.branch_address,
-              u.email, u.name, u.currency
-       FROM wallets w
-       JOIN users u ON w.user_id = u.id
-       WHERE w.user_id = $1`,
-      [userId]
+    // Validate currency - MUST be provided (comes from user's groups)
+    if (!requestedCurrency) {
+      return res.status(400).json({
+        error: 'Currency is required. Please specify which currency you want to withdraw.',
+      });
+    }
+    const currency = requestedCurrency.toUpperCase();
+
+    // Get currency-specific bank account for withdrawal
+    const bankAccountResult = await pool.query(
+      `SELECT wba.id, wba.account_name, wba.bank_name, wba.account_number, wba.iban, wba.swift_bic,
+              wba.routing_number, wba.sort_code, wba.branch_code, wba.branch_address, wba.bank_code,
+              u.email, u.name
+       FROM wallet_bank_accounts wba
+       JOIN users u ON wba.user_id = u.id
+       WHERE wba.user_id = $1 AND wba.currency = $2
+       ORDER BY wba.is_default DESC, wba.created_at DESC
+       LIMIT 1`,
+      [userId, currency]
     );
 
-    if (walletResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Wallet not found. Please add bank details first.' });
-    }
-
-    const wallet = walletResult.rows[0];
-
-    // Validate bank details
-    if (!wallet.account_name || !wallet.account_number) {
-      return res.status(400).json({
-        error: 'Bank account details incomplete. Please update your bank details first.',
+    if (bankAccountResult.rows.length === 0) {
+      return res.status(404).json({
+        error: `No bank account found for ${currency}. Please add a bank account for ${currency} withdrawals first.`,
+        currency,
       });
     }
 
-    // Validate currency
-    const currency = wallet.currency || 'NGN';
+    const bankAccount = bankAccountResult.rows[0];
+
+    // Validate bank details
+    if (!bankAccount.account_name || !bankAccount.account_number || !bankAccount.bank_name) {
+      return res.status(400).json({
+        error: 'Bank account details incomplete. Please update your bank account details.',
+      });
+    }
     const withdrawalAmount = parseFloat(amount);
 
     // Check minimum withdrawal amount
@@ -162,13 +173,16 @@ router.post('/request', authenticate, contributionLimiter, [
       });
     }
 
-    // Check wallet balance
-    const currentBalance = parseFloat(wallet.balance || 0);
+    // Check wallet balance for the specific currency
+    const { getCurrencyBalance } = require('../utils/walletHelpers');
+    const currentBalance = await getCurrencyBalance(userId, currency);
+    
     if (currentBalance < withdrawalAmount) {
       return res.status(400).json({
         error: 'Insufficient balance',
         currentBalance,
         requested: withdrawalAmount,
+        currency,
       });
     }
 
@@ -193,10 +207,27 @@ router.post('/request', authenticate, contributionLimiter, [
     await pool.query('BEGIN');
 
     try {
-      // Deduct from wallet immediately (held for 24 hours)
+      // Deduct from currency-specific wallet balance immediately (held for 24 hours)
       await pool.query(
-        'UPDATE wallets SET balance = balance - $1 WHERE user_id = $2',
-        [withdrawalAmount, userId]
+        `UPDATE wallet_balances 
+         SET balance = balance - $1, updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = $2 AND currency = $3`,
+        [withdrawalAmount, userId, currency]
+      );
+
+      // Also update main wallet balance for backward compatibility (optional)
+      // Get total of all balances for primary currency
+      const primaryBalanceResult = await pool.query(
+        `SELECT COALESCE(SUM(balance), 0) as total_balance
+         FROM wallet_balances
+         WHERE user_id = $1 AND currency = $2`,
+        [userId, currency]
+      );
+      
+      const primaryBalance = parseFloat(primaryBalanceResult.rows[0]?.total_balance || 0);
+      await pool.query(
+        `UPDATE wallets SET balance = $1, currency = $2, updated_at = CURRENT_TIMESTAMP WHERE user_id = $3`,
+        [primaryBalance, currency, userId]
       );
 
       // Calculate scheduled time (24 hours from now)
@@ -206,34 +237,36 @@ router.post('/request', authenticate, contributionLimiter, [
       const withdrawalResult = await pool.query(
         `INSERT INTO withdrawals
          (user_id, amount, currency, bank_account_number, bank_name, account_name,
-          status, payment_provider, fee, net_amount, scheduled_at)
-         VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10)
+          status, payment_provider, fee, net_amount, scheduled_at, bank_account_id)
+         VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10, $11)
          RETURNING id, scheduled_at`,
         [
           userId,
           withdrawalAmount,
           currency,
-          wallet.account_number,
-          wallet.bank_name,
-          wallet.account_name,
+          bankAccount.account_number,
+          bankAccount.bank_name,
+          bankAccount.account_name,
           provider,
           feeCalculation.fee,
           netAmount,
           scheduledAt,
+          bankAccount.id, // Store bank account ID for reference
         ]
       );
 
       const withdrawal = withdrawalResult.rows[0];
 
-      // Create transaction record
+      // Create transaction record with currency
       await pool.query(
         `INSERT INTO transactions
-         (user_id, type, amount, description, status, reference, withdrawal_fee)
-         VALUES ($1, 'withdrawal', $2, $3, 'pending', $4, $5)`,
+         (user_id, type, amount, currency, description, status, reference, withdrawal_fee)
+         VALUES ($1, 'withdrawal', $2, $3, $4, 'pending', $5, $6)`,
         [
           userId,
           withdrawalAmount,
-          `Withdrawal to ${wallet.account_name} - ${wallet.account_number}`,
+          currency,
+          `Withdrawal to ${bankAccount.account_name} - ${bankAccount.bank_name} (****${bankAccount.account_number.slice(-4)})`,
           withdrawal.id,
           feeCalculation.fee,
         ]
@@ -245,8 +278,8 @@ router.post('/request', authenticate, contributionLimiter, [
       try {
         const currencySymbol = paymentService.formatCurrency(withdrawalAmount, currency).replace(/[\d.,]+/g, '');
         await sendWithdrawalRequestEmail(
-          wallet.email,
-          wallet.name,
+          bankAccount.email,
+          bankAccount.name,
           withdrawalAmount,
           currency,
           currencySymbol,
@@ -273,6 +306,9 @@ router.post('/request', authenticate, contributionLimiter, [
         },
       });
 
+      // Get updated balance for this currency
+      const updatedBalance = await getCurrencyBalance(userId, currency);
+
       res.json({
         message: 'Withdrawal request submitted successfully',
         withdrawal: {
@@ -284,7 +320,10 @@ router.post('/request', authenticate, contributionLimiter, [
           status: 'pending',
           scheduledAt: withdrawal.scheduled_at,
         },
-        walletBalance: currentBalance - withdrawalAmount,
+        walletBalance: {
+          currency,
+          balance: updatedBalance,
+        },
       });
     } catch (error) {
       await pool.query('ROLLBACK');

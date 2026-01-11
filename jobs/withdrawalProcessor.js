@@ -54,49 +54,68 @@ async function processPendingWithdrawals() {
           [withdrawal.user_id]
         );
 
-        // Prepare bank account details for payout
-        const currency = withdrawal.currency || withdrawal.user_currency || 'NGN';
+        // Get currency from withdrawal record (must be set)
+        const currency = withdrawal.currency;
+        if (!currency) {
+          throw new Error('Withdrawal has no currency specified');
+        }
         const provider = withdrawal.payment_provider || paymentService.selectProvider(currency, null);
 
-        // For Paystack, we need to get bank code
-        // For Stripe, we need routing number and other details
-        // Get full wallet details including international fields
-        const fullWalletResult = await pool.query(
-          `SELECT account_number, bank_name, account_name, iban, swift_bic,
-                  routing_number, sort_code, branch_code, branch_address
-           FROM wallets WHERE user_id = $1`,
-          [withdrawal.user_id]
-        );
-
-        if (fullWalletResult.rows.length === 0) {
-          throw new Error('Wallet not found');
+        // Get currency-specific bank account details
+        // If bank_account_id exists in withdrawal, use that; otherwise get default for currency
+        let bankAccountResult;
+        if (withdrawal.bank_account_id) {
+          bankAccountResult = await pool.query(
+            `SELECT account_number, bank_name, account_name, iban, swift_bic,
+                    routing_number, sort_code, branch_code, branch_address, bank_code
+             FROM wallet_bank_accounts 
+             WHERE id = $1 AND user_id = $2 AND currency = $3`,
+            [withdrawal.bank_account_id, withdrawal.user_id, currency]
+          );
+        } else {
+          // Fallback: Get default account for currency (for old withdrawals)
+          bankAccountResult = await pool.query(
+            `SELECT account_number, bank_name, account_name, iban, swift_bic,
+                    routing_number, sort_code, branch_code, branch_address, bank_code
+             FROM wallet_bank_accounts 
+             WHERE user_id = $1 AND currency = $2
+             ORDER BY is_default DESC, created_at DESC
+             LIMIT 1`,
+            [withdrawal.user_id, currency]
+          );
         }
 
-        const wallet = fullWalletResult.rows[0];
+        if (bankAccountResult.rows.length === 0) {
+          throw new Error(`No bank account found for ${currency}. User needs to add bank account for this currency.`);
+        }
+
+        const bankAccount = bankAccountResult.rows[0];
 
         // Prepare bank account object based on provider
-        let bankAccount;
+        let bankAccountForPayout;
         if (provider === 'paystack') {
-          // For Paystack, we need bank code (look up from bank name or use a mapping)
-          // For now, we'll use a placeholder - in production, you'd have a bank code lookup
-          bankAccount = {
-            accountNumber: wallet.account_number,
-            bankCode: withdrawal.bank_code || '000', // Placeholder - needs bank code lookup
-            accountName: wallet.account_name,
+          // For Paystack, we need bank code (required for Nigerian banks)
+          if (!bankAccount.bank_code) {
+            throw new Error(`Bank code required for ${currency} withdrawals via Paystack. Please update your bank account details.`);
+          }
+          bankAccountForPayout = {
+            accountNumber: bankAccount.account_number,
+            bankCode: bankAccount.bank_code,
+            accountName: bankAccount.account_name,
             country: currency === 'NGN' ? 'NG' : null,
             recipientCode: null, // Will be created if needed
           };
         } else {
           // For Stripe, use routing number and other international fields
-          bankAccount = {
-            accountNumber: wallet.account_number,
-            routingNumber: wallet.routing_number,
-            accountName: wallet.account_name,
-            country: currency === 'USD' ? 'US' : null,
-            iban: wallet.iban,
-            swiftBic: wallet.swift_bic,
-            sortCode: wallet.sort_code,
-            branchCode: wallet.branch_code,
+          bankAccountForPayout = {
+            accountNumber: bankAccount.account_number,
+            routingNumber: bankAccount.routing_number, // Required for US banks
+            accountName: bankAccount.account_name,
+            country: currency === 'USD' ? 'US' : (currency === 'GBP' ? 'GB' : null),
+            iban: bankAccount.iban, // For EU/UK banks
+            swiftBic: bankAccount.swift_bic,
+            sortCode: bankAccount.sort_code, // For UK banks
+            branchCode: bankAccount.branch_code,
           };
         }
 
@@ -104,7 +123,7 @@ async function processPendingWithdrawals() {
         const payoutResult = await paymentService.createPayout({
           amount: withdrawal.net_amount, // Net amount after fees
           currency,
-          bankAccount,
+          bankAccount: bankAccountForPayout,
           description: `Withdrawal #${withdrawal.id}`,
         }, provider);
 
@@ -185,10 +204,15 @@ async function processPendingWithdrawals() {
             [payoutResult.error || 'Payout processing failed', withdrawal.id]
           );
 
-          // Refund amount back to wallet
+          // Refund amount back to currency-specific wallet balance
           await pool.query(
-            'UPDATE wallets SET balance = balance + $1 WHERE user_id = $2',
-            [withdrawal.amount, withdrawal.user_id]
+            `INSERT INTO wallet_balances (user_id, currency, balance)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (user_id, currency)
+             DO UPDATE SET 
+               balance = wallet_balances.balance + $3,
+               updated_at = CURRENT_TIMESTAMP`,
+            [withdrawal.user_id, currency, withdrawal.amount]
           );
 
           // Update transaction status
@@ -261,10 +285,16 @@ async function processPendingWithdrawals() {
             [error.message, withdrawal.id]
           );
 
-          // Refund amount back to wallet
+          // Refund amount back to currency-specific wallet balance
+          const withdrawalCurrency = withdrawal.currency || 'NGN';
           await pool.query(
-            'UPDATE wallets SET balance = balance + $1 WHERE user_id = $2',
-            [withdrawal.amount, withdrawal.user_id]
+            `INSERT INTO wallet_balances (user_id, currency, balance)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (user_id, currency)
+             DO UPDATE SET 
+               balance = wallet_balances.balance + $3,
+               updated_at = CURRENT_TIMESTAMP`,
+            [withdrawal.user_id, withdrawalCurrency, withdrawal.amount]
           );
 
           failureCount++;

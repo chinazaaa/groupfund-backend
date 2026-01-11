@@ -48,7 +48,10 @@ router.post('/contribute', authenticate, contributionLimiter, async (req, res) =
     }
 
     const contributionAmount = parseFloat(group.contribution_amount);
-    const groupCurrency = group.currency || 'NGN';
+    const groupCurrency = group.currency; // Currency must come from the group
+    if (!groupCurrency) {
+      return res.status(400).json({ error: 'Group has no currency set. Please contact the admin.' });
+    }
     const actualAmount = amount || contributionAmount;
 
     // Get user names
@@ -115,19 +118,19 @@ router.post('/contribute', authenticate, contributionLimiter, async (req, res) =
       
       if (existingDebit.rows.length === 0) {
         await pool.query(
-          `INSERT INTO transactions (user_id, group_id, type, amount, description, status)
-           VALUES ($1, $2, 'debit', $3, $4, $5)`,
-          [contributorId, groupId, actualAmount, `Contribution for ${groupName}`, transactionStatus]
+          `INSERT INTO transactions (user_id, group_id, type, amount, currency, description, status)
+           VALUES ($1, $2, 'debit', $3, $4, $5, $6)`,
+          [contributorId, groupId, actualAmount, groupCurrency, `Contribution for ${groupName}`, transactionStatus]
         );
       }
 
       let creditTransactionId;
       if (existingCredit.rows.length === 0) {
         const creditTransaction = await pool.query(
-          `INSERT INTO transactions (user_id, group_id, type, amount, description, status)
-           VALUES ($1, $2, 'credit', $3, $4, $5)
+          `INSERT INTO transactions (user_id, group_id, type, amount, currency, description, status)
+           VALUES ($1, $2, 'credit', $3, $4, $5, $6)
            RETURNING id`,
-          [group.admin_id, groupId, actualAmount, `Contribution from ${contributorName} (${groupName})`, transactionStatus]
+          [group.admin_id, groupId, actualAmount, groupCurrency, `Contribution from ${contributorName} (${groupName})`, transactionStatus]
         );
         creditTransactionId = creditTransaction.rows[0].id;
       } else {
@@ -250,7 +253,13 @@ router.post('/contribute/:contributionId/confirm', authenticate, async (req, res
         [userId]
       );
       const adminNameText = adminName.rows[0]?.name || 'The admin';
-      const contributionCurrency = contribution.currency || 'NGN';
+      
+      // Get currency from group (not from contribution, as contribution may not have currency yet)
+      const groupCurrencyResult = await pool.query(
+        'SELECT currency FROM groups WHERE id = $1',
+        [contribution.group_id]
+      );
+      const contributionCurrency = groupCurrencyResult.rows[0]?.currency || 'NGN'; // Fallback for display only
       
       await createNotification(
         contribution.contributor_id,

@@ -489,7 +489,10 @@ router.post('/contribute', authenticate, require('../middleware/rateLimiter').co
     );
 
     const contributionAmount = parseFloat(groupResult.rows[0].contribution_amount);
-    const groupCurrency = groupResult.rows[0].currency || 'NGN';
+    const groupCurrency = groupResult.rows[0].currency; // Currency must come from the group
+    if (!groupCurrency) {
+      return res.status(400).json({ error: 'Group has no currency set. Please contact the admin.' });
+    }
     const actualAmount = amount || contributionAmount;
 
     // Get user names for transaction description
@@ -567,9 +570,9 @@ router.post('/contribute', authenticate, require('../middleware/rateLimiter').co
       if (existingDebit.rows.length === 0) {
         // Create debit transaction (contributor - sent) with status 'paid' (awaiting confirmation)
         await pool.query(
-          `INSERT INTO transactions (user_id, group_id, type, amount, description, status)
-           VALUES ($1, $2, 'debit', $3, $4, 'paid')`,
-          [contributorId, groupId, actualAmount, `Birthday contribution for ${birthdayUserName} (${groupName})`]
+          `INSERT INTO transactions (user_id, group_id, type, amount, currency, description, status)
+           VALUES ($1, $2, 'debit', $3, $4, $5, 'paid')`,
+          [contributorId, groupId, actualAmount, groupCurrency, `Birthday contribution for ${birthdayUserName} (${groupName})`]
         );
       }
 
@@ -577,10 +580,10 @@ router.post('/contribute', authenticate, require('../middleware/rateLimiter').co
       if (existingCredit.rows.length === 0) {
         // Create credit transaction (birthday user - received) with status 'paid' (awaiting confirmation)
         const creditTransaction = await pool.query(
-          `INSERT INTO transactions (user_id, group_id, type, amount, description, status)
-           VALUES ($1, $2, 'credit', $3, $4, 'paid')
+          `INSERT INTO transactions (user_id, group_id, type, amount, currency, description, status)
+           VALUES ($1, $2, 'credit', $3, $4, $5, 'paid')
            RETURNING id`,
-          [birthdayUserId, groupId, actualAmount, `Birthday gift from ${contributorName} (${groupName})`]
+          [birthdayUserId, groupId, actualAmount, groupCurrency, `Birthday gift from ${contributorName} (${groupName})`]
         );
         creditTransactionId = creditTransaction.rows[0].id;
       } else {
@@ -699,7 +702,10 @@ router.post('/contribute/:contributionId/confirm', authenticate, async (req, res
         [celebrantId]
       );
       const celebrantNameText = celebrantName.rows[0]?.name || 'The celebrant';
-      const contributionCurrency = contribution.currency || 'NGN';
+      
+      // Get currency from group (not from contribution, as contribution may not have currency yet)
+      // Currency is already in contribution object from the JOIN query above
+      const contributionCurrency = contribution.currency || 'NGN'; // Fallback for display only if not in group
       
       await createNotification(
         contribution.contributor_id,

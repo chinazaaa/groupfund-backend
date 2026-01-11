@@ -18,7 +18,7 @@ const pool = require('../config/database');
 async function creditWallet({
   recipientId,
   amount,
-  currency,
+  currency, // REQUIRED: Currency must come from the group
   groupId,
   description,
   contributionType,
@@ -27,11 +27,15 @@ async function creditWallet({
   paymentProvider,
   fees = {},
 }) {
+  // Validate currency is provided (should always come from group)
+  if (!currency) {
+    throw new Error('Currency is required. It should come from the group.');
+  }
   try {
     await pool.query('BEGIN');
 
     try {
-      // Ensure wallet exists
+      // Ensure main wallet exists (for backward compatibility)
       const walletCheck = await pool.query(
         'SELECT id, balance FROM wallets WHERE user_id = $1',
         [recipientId]
@@ -40,30 +44,49 @@ async function creditWallet({
       if (walletCheck.rows.length === 0) {
         // Create wallet if it doesn't exist
         await pool.query(
-          'INSERT INTO wallets (user_id, balance) VALUES ($1, $2)',
-          [recipientId, 0]
+          'INSERT INTO wallets (user_id, balance, currency) VALUES ($1, $2, $3)',
+          [recipientId, 0, currency]
         );
       }
 
-      // Credit wallet balance
+      // Credit currency-specific wallet balance
+      // Insert or update wallet_balances table
       await pool.query(
-        `UPDATE wallets
-         SET balance = balance + $1, updated_at = CURRENT_TIMESTAMP
-         WHERE user_id = $2`,
-        [amount, recipientId]
+        `INSERT INTO wallet_balances (user_id, currency, balance)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, currency)
+         DO UPDATE SET 
+           balance = wallet_balances.balance + $3,
+           updated_at = CURRENT_TIMESTAMP`,
+        [recipientId, currency, amount]
       );
 
-      // Create transaction record with fee tracking
+      // Also update main wallet balance for backward compatibility (use primary currency)
+      // This is optional - can be removed if we fully migrate to wallet_balances
+      const primaryCurrency = currency; // Use the credited currency as primary
+      await pool.query(
+        `UPDATE wallets
+         SET balance = (
+           SELECT COALESCE(SUM(balance), 0) 
+           FROM wallet_balances 
+           WHERE user_id = $1 AND currency = $2
+         ), currency = $2, updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = $1`,
+        [recipientId, primaryCurrency]
+      );
+
+      // Create transaction record with fee tracking and currency
       const transactionResult = await pool.query(
         `INSERT INTO transactions
-         (user_id, group_id, type, amount, description, status, payment_provider, payment_method_id,
+         (user_id, group_id, type, amount, currency, description, status, payment_provider, payment_method_id,
           platform_fee, processor_fee, gross_amount, net_amount)
-         VALUES ($1, $2, 'credit', $3, $4, 'completed', $5, $6, $7, $8, $9, $10)
+         VALUES ($1, $2, 'credit', $3, $4, $5, 'completed', $6, $7, $8, $9, $10, $11)
          RETURNING id, created_at`,
         [
           recipientId,
           groupId || null,
           amount,
+          currency,
           description || `Auto-debit contribution via ${paymentProvider}`,
           paymentProvider,
           providerTransactionId,
@@ -104,10 +127,10 @@ async function creditWallet({
         }
       }
 
-      // Get updated wallet balance
-      const updatedWallet = await pool.query(
-        'SELECT balance FROM wallets WHERE user_id = $1',
-        [recipientId]
+      // Get updated wallet balance for this currency
+      const updatedBalance = await pool.query(
+        'SELECT balance FROM wallet_balances WHERE user_id = $1 AND currency = $2',
+        [recipientId, currency]
       );
 
       await pool.query('COMMIT');
@@ -115,7 +138,7 @@ async function creditWallet({
       return {
         success: true,
         transactionId: transaction.id,
-        newBalance: parseFloat(updatedWallet.rows[0].balance),
+        newBalance: parseFloat(updatedBalance.rows[0]?.balance || 0),
         amount,
         currency,
       };
@@ -312,10 +335,62 @@ async function isContributionConfirmed(contributionType, contributionId) {
   }
 }
 
+/**
+ * Get all currency balances for a user
+ * @param {string} userId - User ID
+ * @returns {Promise<Array>} - Array of balance objects with currency and balance
+ */
+async function getAllCurrencyBalances(userId) {
+  try {
+    const result = await pool.query(
+      `SELECT currency, balance, updated_at
+       FROM wallet_balances
+       WHERE user_id = $1
+       ORDER BY currency`,
+      [userId]
+    );
+
+    return result.rows.map(row => ({
+      currency: row.currency,
+      balance: parseFloat(row.balance),
+      updatedAt: row.updated_at,
+    }));
+  } catch (error) {
+    console.error('Error getting currency balances:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get balance for a specific currency
+ * @param {string} userId - User ID
+ * @param {string} currency - Currency code
+ * @returns {Promise<number>} - Balance for the currency
+ */
+async function getCurrencyBalance(userId, currency) {
+  try {
+    const result = await pool.query(
+      'SELECT balance FROM wallet_balances WHERE user_id = $1 AND currency = $2',
+      [userId, currency]
+    );
+
+    if (result.rows.length === 0) {
+      return 0;
+    }
+
+    return parseFloat(result.rows[0].balance);
+  } catch (error) {
+    console.error('Error getting currency balance:', error);
+    throw error;
+  }
+}
+
 module.exports = {
   creditWallet,
   recordPaymentAttempt,
   updatePaymentAttempt,
   isWebhookProcessed,
   isContributionConfirmed,
+  getAllCurrencyBalances,
+  getCurrencyBalance,
 };
