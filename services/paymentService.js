@@ -101,6 +101,75 @@ class PaymentService {
   }
 
   /**
+   * Verify Paystack transaction and extract card details
+   * @param {string} transactionReference - Paystack transaction reference
+   * @returns {Promise<Object>} - Transaction details with authorization and card info
+   */
+  async verifyPaystackTransaction(transactionReference) {
+    try {
+      if (!this.paystack) {
+        throw new Error('Paystack not configured');
+      }
+
+      const response = await this.paystack.transaction.verify(transactionReference);
+
+      if (!response.status || !response.data) {
+        throw new Error(response.message || 'Failed to verify transaction');
+      }
+
+      const transaction = response.data;
+      
+      // Check if transaction was successful
+      if (transaction.status !== 'success') {
+        throw new Error(`Transaction not successful. Status: ${transaction.status}`);
+      }
+
+      // Extract authorization code (payment method ID for future charges)
+      const authorization = transaction.authorization;
+      if (!authorization) {
+        throw new Error('No authorization found in transaction. This may not be a card payment.');
+      }
+
+      const authorizationCode = authorization.authorization_code;
+      if (!authorizationCode) {
+        throw new Error('No authorization code found in transaction');
+      }
+
+      // Extract card details
+      const cardDetails = {
+        authorizationCode: authorizationCode,
+        last4: authorization.last4 || null,
+        brand: authorization.brand || null,
+        cardType: authorization.card_type || null,
+        bank: authorization.bank || null,
+        bin: authorization.bin || null,
+        // Note: Paystack doesn't provide expiry month/year in authorization
+        // We'll set these as null and they can be updated later if available
+        expiryMonth: null,
+        expiryYear: null,
+      };
+
+      return {
+        success: true,
+        transactionReference: transaction.reference,
+        transactionId: transaction.id.toString(),
+        amount: this.convertFromSmallestUnit(transaction.amount, transaction.currency),
+        currency: transaction.currency,
+        authorizationCode: authorizationCode,
+        cardDetails: cardDetails,
+        customer: transaction.customer || null,
+        metadata: transaction.metadata || {},
+      };
+    } catch (error) {
+      console.error('Error verifying Paystack transaction:', error);
+      return {
+        success: false,
+        error: error.message || 'Failed to verify transaction',
+      };
+    }
+  }
+
+  /**
    * Convert amount to smallest currency unit (cents/kobo)
    * @param {number} amount - Amount in main currency unit
    * @param {string} currency - Currency code
@@ -601,31 +670,73 @@ class PaymentService {
         };
       } else if (provider === 'paystack' && this.paystack) {
         // For Paystack, refund using transaction reference
-        let refund;
+        // The old Paystack SDK doesn't have transaction.refund, so we use the HTTP API directly
+        const https = require('https');
+        const secretKey = process.env.PAYSTACK_SECRET_KEY;
         
-        if (amount) {
-          // Partial refund
-          const amountInKobo = this.convertToSmallestUnit(amount, currency);
-          refund = await this.paystack.refund.create({
-            transaction: transactionId,
-            amount: amountInKobo,
-            currency: currency.toUpperCase(),
-          });
-        } else {
-          // Full refund
-          refund = await this.paystack.refund.create({
-            transaction: transactionId,
-            currency: currency.toUpperCase(),
-          });
+        if (!secretKey) {
+          throw new Error('Paystack secret key not configured');
         }
 
-        if (refund.status && refund.data.status === 'processed') {
+        // Prepare refund payload
+        const refundPayload = {
+          transaction: transactionId,
+          currency: currency.toUpperCase(),
+        };
+
+        // Add amount for partial refund
+        if (amount) {
+          refundPayload.amount = this.convertToSmallestUnit(amount, currency);
+        }
+
+        // Make HTTP request to Paystack refund API
+        const refund = await new Promise((resolve, reject) => {
+          const postData = JSON.stringify(refundPayload);
+          
+          const options = {
+            hostname: 'api.paystack.co',
+            port: 443,
+            path: '/refund',
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${secretKey}`,
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(postData),
+            },
+          };
+
+          const req = https.request(options, (res) => {
+            let data = '';
+
+            res.on('data', (chunk) => {
+              data += chunk;
+            });
+
+            res.on('end', () => {
+              try {
+                const response = JSON.parse(data);
+                resolve(response);
+              } catch (parseError) {
+                reject(new Error(`Failed to parse Paystack response: ${parseError.message}`));
+              }
+            });
+          });
+
+          req.on('error', (error) => {
+            reject(error);
+          });
+
+          req.write(postData);
+          req.end();
+        });
+
+        if (refund.status && refund.data && refund.data.status === 'processed') {
           return {
             success: true,
-            refundId: refund.data.id.toString(),
-            transactionRefunded: refund.data.transaction.reference,
-            amount: this.convertFromSmallestUnit(refund.data.amount, currency),
-            currency: refund.data.currency,
+            refundId: refund.data.id ? refund.data.id.toString() : null,
+            transactionRefunded: refund.data.transaction?.reference || transactionId,
+            amount: refund.data.amount ? this.convertFromSmallestUnit(refund.data.amount, currency) : amount,
+            currency: refund.data.currency || currency.toUpperCase(),
             status: refund.data.status,
           };
         }

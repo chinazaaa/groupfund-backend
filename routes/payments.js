@@ -111,11 +111,12 @@ router.post('/methods/request-otp', authenticate, otpLimiter, [
 router.post('/methods', authenticate, contributionLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
   body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
-  body('payment_method_data').notEmpty().withMessage('Payment method data is required'),
   body('provider').isIn(['stripe', 'paystack']).withMessage('Provider must be stripe or paystack'),
   body('currency').optional().isLength({ min: 3, max: 3 }).withMessage('Currency must be 3 characters (e.g., USD, NGN)'),
   body('currencies').optional().isArray().withMessage('Currencies must be an array'),
   body('currencies.*').optional().isLength({ min: 3, max: 3 }).withMessage('Each currency must be 3 characters'),
+  body('payment_method_data').optional().notEmpty().withMessage('Payment method data is required for Stripe'),
+  body('transaction_reference').optional().notEmpty().withMessage('Transaction reference is required for Paystack'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -124,7 +125,15 @@ router.post('/methods', authenticate, contributionLimiter, [
     }
 
     const userId = req.user.id;
-    const { password_verification_token, otp, payment_method_data, provider, currency: requestedCurrency, currencies: requestedCurrencies } = req.body;
+    const { password_verification_token, otp, payment_method_data, transaction_reference, provider, currency: requestedCurrency, currencies: requestedCurrencies } = req.body;
+
+    // Provider-specific validation
+    if (provider === 'stripe' && !payment_method_data) {
+      return res.status(400).json({ error: 'Payment method data is required for Stripe' });
+    }
+    if (provider === 'paystack' && !transaction_reference) {
+      return res.status(400).json({ error: 'Transaction reference is required for Paystack' });
+    }
 
     // Verify OTP
     const isOTPValid = await verifyPaymentOTP(userId, otp, password_verification_token, 'add_payment_method');
@@ -160,44 +169,94 @@ router.post('/methods', authenticate, contributionLimiter, [
       }
     }
 
-    // Note: Actual payment method creation happens on frontend
-    // Frontend handles card collection and returns payment method ID
-    const paymentMethodId = payment_method_data.payment_method_id || payment_method_data.authorization_code;
+    // Handle different flows for Stripe vs Paystack
+    let paymentMethodId;
+    let last4;
+    let brand;
+    let expiryMonth;
+    let expiryYear;
+    let paymentMethodType = 'card';
+    let isDefault = false;
+    let verificationTransactionId = null;
+    let verificationAmount = null;
+    let transactionCurrency = null;
 
-    if (!paymentMethodId) {
-      return res.status(400).json({ error: 'Payment method ID is required' });
-    }
-
-    // Extract card details from payment_method_data for display
-    let last4 = payment_method_data.last4 || payment_method_data.last_4 || null;
-    let brand = payment_method_data.brand || payment_method_data.card_brand || null;
-    let expiryMonth = payment_method_data.expiry_month || payment_method_data.exp_month || null;
-    let expiryYear = payment_method_data.expiry_year || payment_method_data.exp_year || null;
-    const paymentMethodType = payment_method_data.type || 'card';
-    const isDefault = payment_method_data.is_default || false;
-
-    // If card details are missing, try to fetch from provider
-    if ((!last4 || !brand) && provider === 'stripe' && paymentService.stripe) {
-      try {
-        const stripePaymentMethod = await paymentService.stripe.paymentMethods.retrieve(paymentMethodId);
-        if (stripePaymentMethod && stripePaymentMethod.card) {
-          last4 = last4 || stripePaymentMethod.card.last4 || null;
-          brand = brand || stripePaymentMethod.card.brand || null;
-          expiryMonth = expiryMonth || stripePaymentMethod.card.exp_month || null;
-          expiryYear = expiryYear || stripePaymentMethod.card.exp_year || null;
-        }
-      } catch (stripeError) {
-        console.warn('Could not fetch payment method details from Stripe:', stripeError.message);
-        // Continue with whatever was provided or null
+    if (provider === 'paystack') {
+      // For Paystack: Verify transaction and extract card details
+      if (!transaction_reference) {
+        return res.status(400).json({ error: 'Transaction reference is required for Paystack' });
       }
-    }
 
-    // Warn if critical fields are still missing (but don't fail the request)
-    if (!last4) {
-      console.warn(`Payment method ${paymentMethodId} added without last4. Frontend should provide this.`);
-    }
-    if (!brand) {
-      console.warn(`Payment method ${paymentMethodId} added without brand. Frontend should provide this.`);
+      console.log(`🔍 Verifying Paystack transaction: ${transaction_reference}`);
+      
+      const verificationResult = await paymentService.verifyPaystackTransaction(transaction_reference);
+      
+      if (!verificationResult.success) {
+        return res.status(400).json({
+          error: verificationResult.error || 'Failed to verify Paystack transaction',
+        });
+      }
+
+      // Extract payment method details from verification
+      paymentMethodId = verificationResult.authorizationCode;
+      last4 = verificationResult.cardDetails.last4;
+      brand = verificationResult.cardDetails.brand;
+      expiryMonth = verificationResult.cardDetails.expiryMonth;
+      expiryYear = verificationResult.cardDetails.expiryYear;
+      verificationTransactionId = verificationResult.transactionReference;
+      verificationAmount = verificationResult.amount;
+      transactionCurrency = verificationResult.currency;
+
+      // Extract is_default from request body if provided (Paystack doesn't provide this)
+      if (req.body.is_default !== undefined) {
+        isDefault = req.body.is_default === true;
+      }
+
+      console.log(`✅ Verified Paystack transaction. Authorization code: ${paymentMethodId}, Last4: ${last4}, Brand: ${brand}`);
+      
+    } else if (provider === 'stripe') {
+      // For Stripe: Use payment_method_data from frontend
+      if (!payment_method_data) {
+        return res.status(400).json({ error: 'Payment method data is required for Stripe' });
+      }
+
+      paymentMethodId = payment_method_data.payment_method_id;
+
+      if (!paymentMethodId) {
+        return res.status(400).json({ error: 'Payment method ID is required' });
+      }
+
+      // Extract card details from payment_method_data
+      last4 = payment_method_data.last4 || payment_method_data.last_4 || null;
+      brand = payment_method_data.brand || null;
+      expiryMonth = payment_method_data.expiry_month || payment_method_data.exp_month || null;
+      expiryYear = payment_method_data.expiry_year || payment_method_data.exp_year || null;
+      paymentMethodType = payment_method_data.type || 'card';
+      isDefault = payment_method_data.is_default || false;
+
+      // If card details are missing, try to fetch from Stripe
+      if ((!last4 || !brand) && paymentService.stripe) {
+        try {
+          const stripePaymentMethod = await paymentService.stripe.paymentMethods.retrieve(paymentMethodId);
+          if (stripePaymentMethod && stripePaymentMethod.card) {
+            last4 = last4 || stripePaymentMethod.card.last4 || null;
+            brand = brand || stripePaymentMethod.card.brand || null;
+            expiryMonth = expiryMonth || stripePaymentMethod.card.exp_month || null;
+            expiryYear = expiryYear || stripePaymentMethod.card.exp_year || null;
+          }
+        } catch (stripeError) {
+          console.warn('Could not fetch payment method details from Stripe:', stripeError.message);
+          // Continue with whatever was provided or null
+        }
+      }
+
+      // Warn if critical fields are still missing (but don't fail the request)
+      if (!last4) {
+        console.warn(`Payment method ${paymentMethodId} added without last4. Frontend should provide this.`);
+      }
+      if (!brand) {
+        console.warn(`Payment method ${paymentMethodId} added without brand. Frontend should provide this.`);
+      }
     }
 
     // Determine currencies to process
@@ -210,9 +269,10 @@ router.post('/methods', authenticate, contributionLimiter, [
       // Use single currency if provided (backward compatibility)
       currencies = [requestedCurrency.toUpperCase()];
     } else {
-      // Default based on provider
+      // Default based on provider or use transaction currency (for Paystack)
       if (provider === 'paystack') {
-        currencies = ['NGN'];
+        // Use currency from verified transaction if available, otherwise default to NGN
+        currencies = [transactionCurrency || 'NGN'];
       } else {
         currencies = ['USD'];
       }
@@ -305,9 +365,7 @@ router.post('/methods', authenticate, contributionLimiter, [
       await client.query('COMMIT');
 
       // Auto-refund Paystack verification charges
-      // Check if this was a verification charge that needs to be refunded
-      const verificationTransactionId = payment_method_data.verification_transaction_id || payment_method_data.transaction_reference;
-      const verificationAmount = payment_method_data.verification_amount;
+      // For Paystack, we always refund the verification charge after saving the payment method
       let refundResult = null;
       
       if (provider === 'paystack' && verificationTransactionId && verificationAmount) {
