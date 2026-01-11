@@ -61,21 +61,21 @@ router.post('/create', authenticate, [
       chatEnabled = false
     } = req.body;
     const adminId = req.user.id;
+    const groupCurrency = currency.toUpperCase();
 
-    // Validate bank details required for group creation
-    const walletCheck = await pool.query(
-      'SELECT account_name, bank_name, account_number FROM wallets WHERE user_id = $1',
-      [adminId]
+    // Validate bank account required for group creation (per-currency)
+    // Check for a bank account in wallet_bank_accounts for the group's currency
+    const bankAccountCheck = await pool.query(
+      `SELECT id FROM wallet_bank_accounts 
+       WHERE user_id = $1 AND currency = $2`,
+      [adminId, groupCurrency]
     );
 
-    const hasBankDetails = walletCheck.rows.length > 0 &&
-      walletCheck.rows[0].account_name &&
-      walletCheck.rows[0].bank_name &&
-      walletCheck.rows[0].account_number;
-
-    if (!hasBankDetails) {
+    if (bankAccountCheck.rows.length === 0) {
       return res.status(400).json({
-        error: 'Bank details required to create groups. Please add your bank account in your profile.',
+        error: `Bank account required for ${groupCurrency} to create groups. Please add a bank account for ${groupCurrency} in your wallet.`,
+        currency: groupCurrency,
+        code: 'BANK_ACCOUNT_REQUIRED',
       });
     }
 
@@ -275,20 +275,19 @@ router.post('/join', authenticate, [
 
     const group = groupResult.rows[0];
 
-    // Validate bank details required for group joining
-    const walletCheck = await pool.query(
-      'SELECT account_name, bank_name, account_number FROM wallets WHERE user_id = $1',
-      [userId]
+    // Validate bank account required for group joining (per-currency)
+    // Check for a bank account in wallet_bank_accounts for the group's currency
+    const bankAccountCheck = await pool.query(
+      `SELECT id FROM wallet_bank_accounts 
+       WHERE user_id = $1 AND currency = $2`,
+      [userId, group.currency]
     );
 
-    const hasBankDetails = walletCheck.rows.length > 0 &&
-      walletCheck.rows[0].account_name &&
-      walletCheck.rows[0].bank_name &&
-      walletCheck.rows[0].account_number;
-
-    if (!hasBankDetails) {
+    if (bankAccountCheck.rows.length === 0) {
       return res.status(400).json({
-        error: 'Bank details required to join groups. Please add your bank account in your profile.',
+        error: `Bank account required for ${group.currency} to join groups. Please add a bank account for ${group.currency} in your wallet.`,
+        currency: group.currency,
+        code: 'BANK_ACCOUNT_REQUIRED',
       });
     }
 

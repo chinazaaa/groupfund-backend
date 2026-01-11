@@ -440,7 +440,7 @@ router.get('/wallet', authenticate, async (req, res) => {
 
     // Get bank accounts per currency
     const bankAccountsResult = await pool.query(
-      `SELECT currency, account_name, bank_name, account_number, iban, swift_bic,
+      `SELECT id, currency, account_name, bank_name, account_number, iban, swift_bic,
               routing_number, sort_code, branch_code, branch_address, bank_code, is_default,
               created_at, updated_at
        FROM wallet_bank_accounts
@@ -449,13 +449,18 @@ router.get('/wallet', authenticate, async (req, res) => {
       [userId]
     );
 
+    // Debug: Log bank accounts found
+    console.log(`[Wallet] Found ${bankAccountsResult.rows.length} bank accounts for user ${userId}`);
+
     // Group bank accounts by currency
     const bankAccountsByCurrency = {};
     for (const account of bankAccountsResult.rows) {
-      if (!bankAccountsByCurrency[account.currency]) {
-        bankAccountsByCurrency[account.currency] = [];
+      const currency = account.currency;
+      if (!bankAccountsByCurrency[currency]) {
+        bankAccountsByCurrency[currency] = [];
       }
-      bankAccountsByCurrency[account.currency].push({
+      bankAccountsByCurrency[currency].push({
+        id: account.id,
         account_name: account.account_name,
         bank_name: account.bank_name,
         account_number: account.account_number ? `****${account.account_number.slice(-4)}` : null, // Mask for security
@@ -468,8 +473,12 @@ router.get('/wallet', authenticate, async (req, res) => {
         bank_code: account.bank_code,
         is_default: account.is_default,
         createdAt: account.created_at,
+        updatedAt: account.updated_at,
       });
     }
+
+    // Debug: Log grouped bank accounts
+    console.log(`[Wallet] Bank accounts by currency:`, Object.keys(bankAccountsByCurrency));
 
     // Merge balances with bank accounts per currency
     const balancesWithAccounts = balances.map(balance => ({
@@ -479,23 +488,13 @@ router.get('/wallet', authenticate, async (req, res) => {
       bankAccountsCount: bankAccountsByCurrency[balance.currency]?.length || 0,
     }));
 
-    // If no balances exist, return empty structure (user hasn't received any contributions yet)
-    if (balances.length === 0) {
-      return res.json({
-        wallet: {
-          balances: [], // Empty balances array - no contributions received yet
-          totalBalances: 0, // Count of currencies with balances
-          bankAccountsByCurrency: {}, // Empty bank accounts
-        }
-      });
-    }
-
-    // Return wallet with balances and bank accounts per currency
+    // Always return bank accounts, even if no balances exist
+    // This allows users to see their bank accounts and create groups before receiving contributions
     res.json({
       wallet: {
         balances: balancesWithAccounts, // Array of { currency, balance, updatedAt, bankAccount, hasBankAccount }
-        totalBalances: balances.length, // Number of currencies
-        bankAccountsByCurrency, // All bank accounts grouped by currency
+        totalBalances: balances.length, // Number of currencies with balances
+        bankAccountsByCurrency, // All bank accounts grouped by currency (always included, even if empty)
       }
     });
   } catch (error) {

@@ -156,7 +156,7 @@ router.post('/:groupId/auto-pay/enable', authenticate, contributionLimiter, [
 
     // Get group details
     const groupResult = await pool.query(
-      'SELECT id, name, group_type, deadline, currency FROM groups WHERE id = $1',
+      'SELECT id, name, group_type, deadline, currency, admin_id FROM groups WHERE id = $1',
       [groupId]
     );
 
@@ -197,6 +197,27 @@ router.post('/:groupId/auto-pay/enable', authenticate, contributionLimiter, [
 
     const groupCurrency = group.currency;
     const provider = paymentService.selectProvider(groupCurrency, null);
+
+    // Validate bank account required for group's currency
+    // Check for a bank account in wallet_bank_accounts for the group's currency
+    // This ensures the recipient (group admin) can receive funds from auto-pay
+    const recipientBankAccountCheck = await pool.query(
+      `SELECT id FROM wallet_bank_accounts 
+       WHERE user_id = $1 AND currency = $2`,
+      [group.admin_id, groupCurrency]
+    );
+
+    // Debug logging
+    console.log(`[Auto-Pay Enable] Checking bank account for admin ${group.admin_id}, currency: ${groupCurrency}`);
+    console.log(`[Auto-Pay Enable] Found ${recipientBankAccountCheck.rows.length} bank account(s) for admin`);
+
+    if (recipientBankAccountCheck.rows.length === 0) {
+      return res.status(400).json({
+        error: `Group admin needs a bank account for ${groupCurrency} to receive auto-pay contributions. Please ask the group admin to add a bank account for ${groupCurrency}.`,
+        currency: groupCurrency,
+        code: 'RECIPIENT_BANK_ACCOUNT_REQUIRED',
+      });
+    }
 
     let paymentMethod;
 
@@ -335,21 +356,27 @@ router.post('/:groupId/auto-pay/enable', authenticate, contributionLimiter, [
     if (preferenceCheck.rows.length > 0) {
       // Update existing preference
       // Store provider's payment_method_id (not our UUID) in user_payment_preferences
-      await pool.query(
+      const updateResult = await pool.query(
         `UPDATE user_payment_preferences
          SET auto_pay_enabled = TRUE, payment_method_id = $1, payment_timing = $2, provider = $3, updated_at = CURRENT_TIMESTAMP
-         WHERE user_id = $4 AND group_id = $5`,
+         WHERE user_id = $4 AND group_id = $5
+         RETURNING auto_pay_enabled, payment_method_id, payment_timing, provider`,
         [providerPaymentMethodId, payment_timing, provider, userId, groupId]
       );
+      
+      console.log(`[Auto-Pay Enable] Updated preference for user ${userId}, group ${groupId}:`, updateResult.rows[0]);
     } else {
       // Create new preference
       // Store provider's payment_method_id (not our UUID) in user_payment_preferences
-      await pool.query(
+      const insertResult = await pool.query(
         `INSERT INTO user_payment_preferences
          (user_id, group_id, auto_pay_enabled, payment_method_id, payment_timing, provider)
-         VALUES ($1, $2, TRUE, $3, $4, $5)`,
+         VALUES ($1, $2, TRUE, $3, $4, $5)
+         RETURNING auto_pay_enabled, payment_method_id, payment_timing, provider`,
         [userId, groupId, providerPaymentMethodId, payment_timing, provider]
       );
+      
+      console.log(`[Auto-Pay Enable] Created preference for user ${userId}, group ${groupId}:`, insertResult.rows[0]);
     }
 
     // Log action
@@ -679,6 +706,8 @@ router.get('/:groupId/auto-pay/status', authenticate, async (req, res) => {
       [userId, groupId]
     );
 
+    console.log(`[Auto-Pay Status] Checking preference for user ${userId}, group ${groupId}:`, preferenceResult.rows.length > 0 ? preferenceResult.rows[0] : 'No preference found');
+
     if (preferenceResult.rows.length === 0) {
       return res.json({
         auto_pay_enabled: false,
@@ -689,6 +718,7 @@ router.get('/:groupId/auto-pay/status', authenticate, async (req, res) => {
     }
 
     const preference = preferenceResult.rows[0];
+    console.log(`[Auto-Pay Status] Preference found: auto_pay_enabled=${preference.auto_pay_enabled}, payment_method_id=${preference.payment_method_id}`);
 
     // Get payment method details if auto-pay is enabled
     let paymentMethod = null;
@@ -722,8 +752,13 @@ router.get('/:groupId/auto-pay/status', authenticate, async (req, res) => {
       }
     }
 
+    // Explicitly convert boolean to ensure it's true/false, not 't'/'f' or null
+    const autoPayEnabled = preference.auto_pay_enabled === true || preference.auto_pay_enabled === 't' || preference.auto_pay_enabled === 'true';
+    
+    console.log(`[Auto-Pay Status] Returning: auto_pay_enabled=${autoPayEnabled} (raw: ${preference.auto_pay_enabled}, type: ${typeof preference.auto_pay_enabled})`);
+
     res.json({
-      auto_pay_enabled: preference.auto_pay_enabled,
+      auto_pay_enabled: autoPayEnabled,
       payment_timing: preference.payment_timing,
       payment_method: paymentMethod,
       provider: preference.provider,
