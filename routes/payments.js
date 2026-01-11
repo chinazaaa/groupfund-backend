@@ -60,7 +60,7 @@ router.post('/methods/verify-password', authenticate, contributionLimiter, [
 // Step 2: Request OTP after password verification
 router.post('/methods/request-otp', authenticate, otpLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
-  body('action').optional().isIn(['add-payment-method', 'edit-payment-method', 'update-payment-method', 'update-currencies']).withMessage('Invalid action. Must be one of: add-payment-method, edit-payment-method, update-payment-method, update-currencies'),
+  body('action').optional().isIn(['add-payment-method', 'edit-payment-method', 'update-payment-method', 'delete-payment-method', 'update-currencies']).withMessage('Invalid action. Must be one of: add-payment-method, edit-payment-method, update-payment-method, delete-payment-method, update-currencies'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -89,6 +89,7 @@ router.post('/methods/request-otp', authenticate, otpLimiter, [
       'add-payment-method': 'add_payment_method',
       'edit-payment-method': 'edit_payment_method',
       'update-payment-method': 'edit_payment_method', // Alias for edit-payment-method
+      'delete-payment-method': 'delete_payment_method',
       'update-currencies': 'update_payment_method_currencies',
     };
 
