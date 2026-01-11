@@ -137,18 +137,48 @@ async function verifyPaymentOTP(userId, otp, passwordToken, action) {
   try {
     // Verify password token first
     const decoded = verifyPasswordVerificationToken(passwordToken);
-    if (!decoded || decoded.userId !== userId || decoded.action !== action) {
-      throw new Error('Invalid or expired password verification token');
+    if (!decoded) {
+      console.error(`OTP verification failed: Invalid password verification token for user ${userId}, action ${action}`);
+      return false;
+    }
+    
+    if (decoded.userId !== userId) {
+      console.error(`OTP verification failed: User ID mismatch. Token userId: ${decoded.userId}, provided userId: ${userId}, action: ${action}`);
+      return false;
+    }
+    
+    if (decoded.action !== action) {
+      console.error(`OTP verification failed: Action mismatch. Token action: ${decoded.action}, provided action: ${action}, userId: ${userId}`);
+      return false;
     }
 
     // Find valid OTP
     const otpResult = await pool.query(
       `SELECT * FROM otps
-       WHERE user_id = $1 AND code = $2 AND type = $3 AND is_used = FALSE AND expires_at > NOW()`,
+       WHERE user_id = $1 AND code = $2 AND type = $3 AND is_used = FALSE AND expires_at > NOW()
+       ORDER BY created_at DESC LIMIT 1`,
       [userId, otp, 'payment-action']
     );
 
     if (otpResult.rows.length === 0) {
+      // Check if OTP exists but is used or expired
+      const otpCheck = await pool.query(
+        `SELECT is_used, expires_at FROM otps
+         WHERE user_id = $1 AND code = $2 AND type = $3
+         ORDER BY created_at DESC LIMIT 1`,
+        [userId, otp, 'payment-action']
+      );
+      
+      if (otpCheck.rows.length > 0) {
+        const otpRecord = otpCheck.rows[0];
+        if (otpRecord.is_used) {
+          console.error(`OTP verification failed: OTP already used. userId: ${userId}, action: ${action}`);
+        } else if (new Date(otpRecord.expires_at) < new Date()) {
+          console.error(`OTP verification failed: OTP expired. userId: ${userId}, action: ${action}, expiredAt: ${otpRecord.expires_at}`);
+        }
+      } else {
+        console.error(`OTP verification failed: OTP not found. userId: ${userId}, action: ${action}`);
+      }
       return false;
     }
 

@@ -456,6 +456,234 @@ router.get('/methods', authenticate, async (req, res) => {
   }
 });
 
+// Verify password before bulk updating currencies
+// IMPORTANT: This must come BEFORE /methods/:methodId to avoid route matching conflicts
+router.post('/methods/bulk-update-currencies/verify-password', authenticate, contributionLimiter, [
+  body('password').notEmpty().withMessage('Password is required'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const userId = req.user.id;
+    const { password } = req.body;
+
+    // Verify password
+    const isValid = await verifyPassword(userId, password);
+    if (!isValid) {
+      return res.status(401).json({ error: 'Invalid password' });
+    }
+
+    // Generate password verification token
+    const token = generatePasswordVerificationToken(userId, 'update_payment_method_currencies');
+
+    // Store token in database
+    await storePasswordVerificationToken(userId, token, 'update_payment_method_currencies');
+
+    res.json({
+      verified: true,
+      token,
+      expiresIn: 300,
+    });
+  } catch (error) {
+    console.error('Password verification error:', error);
+    res.status(500).json({ error: 'Server error during password verification' });
+  }
+});
+
+// Bulk update currencies for a payment method (add/remove currencies)
+// IMPORTANT: This must come BEFORE /methods/:methodId to avoid route matching conflicts
+router.put('/methods/bulk-update-currencies', authenticate, contributionLimiter, [
+  body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
+  body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
+  body('payment_method_id').notEmpty().withMessage('Payment method ID is required'),
+  body('currencies').isArray({ min: 0 }).withMessage('Currencies must be an array'),
+  body('currencies.*').isLength({ min: 3, max: 3 }).withMessage('Each currency must be 3 characters'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const userId = req.user.id;
+    const { password_verification_token, otp, payment_method_id, currencies: requestedCurrencies } = req.body;
+
+    // Verify OTP
+    const isOTPValid = await verifyPaymentOTP(userId, otp, password_verification_token, 'update_payment_method_currencies');
+    if (!isOTPValid) {
+      return res.status(401).json({ error: 'Invalid or expired OTP' });
+    }
+
+    // Get existing payment method entries for this payment_method_id
+    const existingMethods = await pool.query(
+      `SELECT id, currency, provider, last4, brand, expiry_month, expiry_year, is_default
+       FROM user_payment_methods
+       WHERE user_id = $1 AND payment_method_id = $2 AND is_active = TRUE`,
+      [userId, payment_method_id]
+    );
+
+    if (existingMethods.rows.length === 0) {
+      return res.status(404).json({ error: 'Payment method not found' });
+    }
+
+    const existingMethod = existingMethods.rows[0]; // Use first entry to get provider info
+    const provider = existingMethod.provider;
+
+    // Normalize requested currencies
+    const requestedCurrenciesUpper = [...new Set(requestedCurrencies.map(c => c.toUpperCase()))];
+
+    // Validate all currencies are compatible with provider
+    const paystackCurrencies = ['NGN', 'KES', 'GHS', 'ZAR'];
+    const invalidCurrencies = [];
+    for (const currency of requestedCurrenciesUpper) {
+      const currencyProvider = paymentService.selectProvider(currency, null);
+      if (currencyProvider !== provider) {
+        invalidCurrencies.push(currency);
+      }
+    }
+
+    if (invalidCurrencies.length > 0) {
+      return res.status(400).json({
+        error: `The following currencies are not compatible with ${provider}: ${invalidCurrencies.join(', ')}. ${provider === 'paystack' ? 'Paystack supports: NGN, KES, GHS, ZAR' : 'Stripe supports: USD, EUR, GBP, CAD, AUD, JPY, and other international currencies'}.`,
+        invalidCurrencies,
+        provider,
+      });
+    }
+
+    // Get existing currencies
+    const existingCurrencies = existingMethods.rows.map(m => m.currency);
+    
+    // Determine what to add and what to remove
+    const currenciesToAdd = requestedCurrenciesUpper.filter(c => !existingCurrencies.includes(c));
+    const currenciesToRemove = existingCurrencies.filter(c => !requestedCurrenciesUpper.includes(c));
+
+    const client = await pool.connect();
+
+    try {
+      await client.query('BEGIN');
+
+      // Remove currencies (soft delete)
+      if (currenciesToRemove.length > 0) {
+        const methodsToRemove = existingMethods.rows.filter(m => currenciesToRemove.includes(m.currency));
+        
+        for (const methodToRemove of methodsToRemove) {
+          // Check if this payment method is used for auto-pay in groups with this currency
+          const affectedGroups = await client.query(
+            `SELECT upp.group_id, g.name as group_name, g.currency
+             FROM user_payment_preferences upp
+             JOIN groups g ON upp.group_id = g.id
+             WHERE upp.user_id = $1 AND upp.payment_method_id = $2 AND upp.auto_pay_enabled = TRUE AND g.currency = $3`,
+            [userId, payment_method_id, methodToRemove.currency]
+          );
+
+          // Soft delete the entry
+          await client.query(
+            `UPDATE user_payment_methods
+             SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1`,
+            [methodToRemove.id]
+          );
+
+          // If it was used for auto-pay in groups with this currency, disable auto-pay for those groups
+          if (affectedGroups.rows.length > 0) {
+            await client.query(
+              `UPDATE user_payment_preferences
+               SET auto_pay_enabled = FALSE, payment_method_id = NULL
+               WHERE user_id = $1 AND payment_method_id = $2 AND group_id = ANY($3::uuid[])`,
+              [userId, payment_method_id, affectedGroups.rows.map(g => g.group_id)]
+            );
+          }
+        }
+      }
+
+      // Add new currencies (create new entries)
+      if (currenciesToAdd.length > 0) {
+        for (const currency of currenciesToAdd) {
+          // Use display details from existing entry
+          await client.query(
+            `INSERT INTO user_payment_methods
+             (user_id, payment_method_id, provider, payment_method_type, currency, last4, brand, expiry_month, expiry_year, is_default)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            [
+              userId,
+              payment_method_id,
+              provider,
+              'card',
+              currency,
+              existingMethod.last4,
+              existingMethod.brand,
+              existingMethod.expiry_month,
+              existingMethod.expiry_year,
+              false, // New entries are not default
+            ]
+          );
+        }
+      }
+
+      await client.query('COMMIT');
+
+      // Fetch all active entries for this payment method
+      const updatedMethods = await client.query(
+        `SELECT id, payment_method_id, provider, payment_method_type, currency, last4, brand,
+                expiry_month, expiry_year, is_default, is_active, created_at, updated_at
+         FROM user_payment_methods
+         WHERE user_id = $1 AND payment_method_id = $2 AND is_active = TRUE
+         ORDER BY currency`,
+        [userId, payment_method_id]
+      );
+
+      // Log action
+      await logPaymentAction({
+        userId,
+        action: 'update_payment_method_currencies',
+        status: 'success',
+        paymentProvider: provider,
+        providerTransactionId: payment_method_id,
+        metadata: {
+          added: currenciesToAdd,
+          removed: currenciesToRemove,
+          finalCurrencies: requestedCurrenciesUpper,
+        },
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+      });
+
+      res.json({
+        message: `Payment method currencies updated successfully. ${currenciesToAdd.length > 0 ? `Added: ${currenciesToAdd.join(', ')}. ` : ''}${currenciesToRemove.length > 0 ? `Removed: ${currenciesToRemove.join(', ')}.` : ''}`,
+        added: currenciesToAdd,
+        removed: currenciesToRemove,
+        paymentMethods: updatedMethods.rows.map(method => ({
+          id: method.id,
+          paymentMethodId: method.payment_method_id,
+          provider: method.provider,
+          paymentMethodType: method.payment_method_type,
+          currency: method.currency,
+          last4: method.last4,
+          last_4_digits: method.last4,
+          brand: method.brand,
+          expiryMonth: method.expiry_month,
+          expiryYear: method.expiry_year,
+          isDefault: method.is_default,
+          isActive: method.is_active,
+          createdAt: method.created_at,
+          updatedAt: method.updated_at,
+        })),
+      });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Bulk update payment method currencies error:', error);
+    res.status(500).json({ error: error.message || 'Server error updating payment method currencies' });
+  }
+});
+
 // Verify password before editing payment method
 router.put('/methods/:methodId/verify-password', authenticate, contributionLimiter, [
   body('password').notEmpty().withMessage('Password is required'),
@@ -708,232 +936,6 @@ router.put('/methods/:methodId', authenticate, contributionLimiter, [
   }
 });
 
-// Bulk update currencies for a payment method (add/remove currencies)
-// This endpoint manages all currency entries for a single card
-router.put('/methods/bulk-update-currencies', authenticate, contributionLimiter, [
-  body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
-  body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
-  body('payment_method_id').notEmpty().withMessage('Payment method ID is required'),
-  body('currencies').isArray({ min: 0 }).withMessage('Currencies must be an array'),
-  body('currencies.*').isLength({ min: 3, max: 3 }).withMessage('Each currency must be 3 characters'),
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
-
-    const userId = req.user.id;
-    const { password_verification_token, otp, payment_method_id, currencies: requestedCurrencies } = req.body;
-
-    // Verify OTP
-    const isOTPValid = await verifyPaymentOTP(userId, otp, password_verification_token, 'update_payment_method_currencies');
-    if (!isOTPValid) {
-      return res.status(401).json({ error: 'Invalid or expired OTP' });
-    }
-
-    // Get existing payment method entries for this payment_method_id
-    const existingMethods = await pool.query(
-      `SELECT id, currency, provider, last4, brand, expiry_month, expiry_year, is_default
-       FROM user_payment_methods
-       WHERE user_id = $1 AND payment_method_id = $2 AND is_active = TRUE`,
-      [userId, payment_method_id]
-    );
-
-    if (existingMethods.rows.length === 0) {
-      return res.status(404).json({ error: 'Payment method not found' });
-    }
-
-    const existingMethod = existingMethods.rows[0]; // Use first entry to get provider info
-    const provider = existingMethod.provider;
-
-    // Normalize requested currencies
-    const requestedCurrenciesUpper = [...new Set(requestedCurrencies.map(c => c.toUpperCase()))];
-
-    // Validate all currencies are compatible with provider
-    const paystackCurrencies = ['NGN', 'KES', 'GHS', 'ZAR'];
-    const invalidCurrencies = [];
-    for (const currency of requestedCurrenciesUpper) {
-      const currencyProvider = paymentService.selectProvider(currency, null);
-      if (currencyProvider !== provider) {
-        invalidCurrencies.push(currency);
-      }
-    }
-
-    if (invalidCurrencies.length > 0) {
-      return res.status(400).json({
-        error: `The following currencies are not compatible with ${provider}: ${invalidCurrencies.join(', ')}. ${provider === 'paystack' ? 'Paystack supports: NGN, KES, GHS, ZAR' : 'Stripe supports: USD, EUR, GBP, CAD, AUD, JPY, and other international currencies'}.`,
-        invalidCurrencies,
-        provider,
-      });
-    }
-
-    // Get existing currencies
-    const existingCurrencies = existingMethods.rows.map(m => m.currency);
-    
-    // Determine what to add and what to remove
-    const currenciesToAdd = requestedCurrenciesUpper.filter(c => !existingCurrencies.includes(c));
-    const currenciesToRemove = existingCurrencies.filter(c => !requestedCurrenciesUpper.includes(c));
-
-    const client = await pool.connect();
-
-    try {
-      await client.query('BEGIN');
-
-      // Remove currencies (soft delete)
-      if (currenciesToRemove.length > 0) {
-        const methodsToRemove = existingMethods.rows.filter(m => currenciesToRemove.includes(m.currency));
-        
-        for (const methodToRemove of methodsToRemove) {
-          // Check if this payment method is used for auto-pay in groups with this currency
-          const affectedGroups = await client.query(
-            `SELECT upp.group_id, g.name as group_name, g.currency
-             FROM user_payment_preferences upp
-             JOIN groups g ON upp.group_id = g.id
-             WHERE upp.user_id = $1 AND upp.payment_method_id = $2 AND upp.auto_pay_enabled = TRUE AND g.currency = $3`,
-            [userId, payment_method_id, methodToRemove.currency]
-          );
-
-          // Soft delete the entry
-          await client.query(
-            `UPDATE user_payment_methods
-             SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
-             WHERE id = $1`,
-            [methodToRemove.id]
-          );
-
-          // If it was used for auto-pay in groups with this currency, disable auto-pay for those groups
-          if (affectedGroups.rows.length > 0) {
-            await client.query(
-              `UPDATE user_payment_preferences
-               SET auto_pay_enabled = FALSE, payment_method_id = NULL
-               WHERE user_id = $1 AND payment_method_id = $2 AND group_id = ANY($3::uuid[])`,
-              [userId, payment_method_id, affectedGroups.rows.map(g => g.group_id)]
-            );
-          }
-        }
-      }
-
-      // Add new currencies (create new entries)
-      if (currenciesToAdd.length > 0) {
-        for (const currency of currenciesToAdd) {
-          // Use display details from existing entry
-          await client.query(
-            `INSERT INTO user_payment_methods
-             (user_id, payment_method_id, provider, payment_method_type, currency, last4, brand, expiry_month, expiry_year, is_default)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-            [
-              userId,
-              payment_method_id,
-              provider,
-              'card',
-              currency,
-              existingMethod.last4,
-              existingMethod.brand,
-              existingMethod.expiry_month,
-              existingMethod.expiry_year,
-              false, // New entries are not default
-            ]
-          );
-        }
-      }
-
-      await client.query('COMMIT');
-
-      // Fetch all active entries for this payment method
-      const updatedMethods = await client.query(
-        `SELECT id, payment_method_id, provider, payment_method_type, currency, last4, brand,
-                expiry_month, expiry_year, is_default, is_active, created_at, updated_at
-         FROM user_payment_methods
-         WHERE user_id = $1 AND payment_method_id = $2 AND is_active = TRUE
-         ORDER BY currency`,
-        [userId, payment_method_id]
-      );
-
-      // Log action
-      await logPaymentAction({
-        userId,
-        action: 'update_payment_method_currencies',
-        status: 'success',
-        paymentProvider: provider,
-        providerTransactionId: payment_method_id,
-        metadata: {
-          added: currenciesToAdd,
-          removed: currenciesToRemove,
-          finalCurrencies: requestedCurrenciesUpper,
-        },
-        ipAddress: req.ip,
-        userAgent: req.get('user-agent'),
-      });
-
-      res.json({
-        message: `Payment method currencies updated successfully. ${currenciesToAdd.length > 0 ? `Added: ${currenciesToAdd.join(', ')}. ` : ''}${currenciesToRemove.length > 0 ? `Removed: ${currenciesToRemove.join(', ')}.` : ''}`,
-        added: currenciesToAdd,
-        removed: currenciesToRemove,
-        paymentMethods: updatedMethods.rows.map(method => ({
-          id: method.id,
-          paymentMethodId: method.payment_method_id,
-          provider: method.provider,
-          paymentMethodType: method.payment_method_type,
-          currency: method.currency,
-          last4: method.last4,
-          last_4_digits: method.last4,
-          brand: method.brand,
-          expiryMonth: method.expiry_month,
-          expiryYear: method.expiry_year,
-          isDefault: method.is_default,
-          isActive: method.is_active,
-          createdAt: method.created_at,
-          updatedAt: method.updated_at,
-        })),
-      });
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-  } catch (error) {
-    console.error('Bulk update payment method currencies error:', error);
-    res.status(500).json({ error: error.message || 'Server error updating payment method currencies' });
-  }
-});
-
-// Verify password before bulk updating currencies
-router.post('/methods/bulk-update-currencies/verify-password', authenticate, contributionLimiter, [
-  body('password').notEmpty().withMessage('Password is required'),
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
-
-    const userId = req.user.id;
-    const { password } = req.body;
-
-    // Verify password
-    const isValid = await verifyPassword(userId, password);
-    if (!isValid) {
-      return res.status(401).json({ error: 'Invalid password' });
-    }
-
-    // Generate password verification token
-    const token = generatePasswordVerificationToken(userId, 'update_payment_method_currencies');
-
-    // Store token in database
-    await storePasswordVerificationToken(userId, token, 'update_payment_method_currencies');
-
-    res.json({
-      verified: true,
-      token,
-      expiresIn: 300,
-    });
-  } catch (error) {
-    console.error('Password verification error:', error);
-    res.status(500).json({ error: 'Server error during password verification' });
-  }
-});
 
 // Verify password before deleting payment method
 router.delete('/methods/:methodId/verify-password', authenticate, contributionLimiter, [
