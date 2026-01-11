@@ -809,11 +809,9 @@ router.put('/:groupId/auto-pay/preferences/verify-password', authenticate, contr
   }
 });
 
-// Step 3: Update payment timing preference for group (requires password + OTP verification)
-router.put('/:groupId/auto-pay/preferences', authenticate, contributionLimiter, [
+// Step 2: Request OTP after password verification for updating preferences
+router.put('/:groupId/auto-pay/preferences/request-otp', authenticate, otpLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
-  body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
-  body('payment_timing').isIn(['1_day_before', 'same_day']).withMessage('Payment timing must be 1_day_before or same_day'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -823,7 +821,59 @@ router.put('/:groupId/auto-pay/preferences', authenticate, contributionLimiter, 
 
     const userId = req.user.id;
     const { groupId } = req.params;
-    const { password_verification_token, otp, payment_timing } = req.body;
+    const { password_verification_token } = req.body;
+
+    // Verify user is member of group
+    const memberCheck = await pool.query(
+      'SELECT status FROM group_members WHERE group_id = $1 AND user_id = $2 AND status = $3',
+      [groupId, userId, 'active']
+    );
+
+    if (memberCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'You must be an active member of this group' });
+    }
+
+    // Get user email
+    const userResult = await pool.query(
+      'SELECT email FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const email = userResult.rows[0].email;
+
+    // Request OTP
+    await requestPaymentOTP(userId, email, 'update_auto_pay_preferences', password_verification_token);
+
+    res.json({
+      message: 'OTP sent to your email',
+    });
+  } catch (error) {
+    console.error('OTP request error:', error);
+    res.status(500).json({ error: error.message || 'Server error during OTP request' });
+  }
+});
+
+// Step 3: Update auto-pay preferences for group (requires password + OTP verification)
+// Can update payment_timing and/or payment_method_id
+router.put('/:groupId/auto-pay/preferences', authenticate, contributionLimiter, [
+  body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
+  body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
+  body('payment_timing').optional().isIn(['1_day_before', 'same_day']).withMessage('Payment timing must be 1_day_before or same_day'),
+  body('payment_method_id').optional().isUUID().withMessage('Payment method ID must be a valid UUID'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const userId = req.user.id;
+    const { groupId } = req.params;
+    const { password_verification_token, otp, payment_timing, payment_method_id } = req.body;
 
     // Verify OTP
     const isOTPValid = await verifyPaymentOTP(userId, otp, password_verification_token, 'update_auto_pay_preferences');
@@ -841,6 +891,78 @@ router.put('/:groupId/auto-pay/preferences', authenticate, contributionLimiter, 
       return res.status(403).json({ error: 'You must be an active member of this group' });
     }
 
+    // Check that auto-pay is enabled for this group
+    const preferenceCheck = await pool.query(
+      'SELECT auto_pay_enabled, provider FROM user_payment_preferences WHERE user_id = $1 AND group_id = $2',
+      [userId, groupId]
+    );
+
+    if (preferenceCheck.rows.length === 0 || !preferenceCheck.rows[0].auto_pay_enabled) {
+      return res.status(400).json({
+        error: 'Auto-pay is not enabled for this group. Please enable auto-pay first.',
+        code: 'AUTO_PAY_NOT_ENABLED',
+      });
+    }
+
+    const existingPreference = preferenceCheck.rows[0];
+    const currentProvider = existingPreference.provider;
+
+    // Get group details to validate currency and provider
+    const groupResult = await pool.query(
+      'SELECT id, name, currency FROM groups WHERE id = $1',
+      [groupId]
+    );
+
+    if (groupResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const group = groupResult.rows[0];
+    const groupCurrency = group.currency;
+    const requiredProvider = paymentService.selectProvider(groupCurrency, null);
+
+    // If updating payment method, validate it
+    let providerPaymentMethodId = null;
+    if (payment_method_id) {
+      // Verify payment method exists and belongs to user
+      const paymentMethodCheck = await pool.query(
+        `SELECT id, payment_method_id, provider, currency, is_active
+         FROM user_payment_methods
+         WHERE id = $1 AND user_id = $2 AND is_active = TRUE`,
+        [payment_method_id, userId]
+      );
+
+      if (paymentMethodCheck.rows.length === 0) {
+        return res.status(404).json({
+          error: 'Payment method not found or inactive.',
+        });
+      }
+
+      const newPaymentMethod = paymentMethodCheck.rows[0];
+
+      // Validate provider match
+      if (newPaymentMethod.provider !== requiredProvider) {
+        return res.status(400).json({
+          error: `Payment method provider (${newPaymentMethod.provider}) does not match group currency provider (${requiredProvider}). Please use a ${requiredProvider} payment method for ${groupCurrency} groups.`,
+          groupCurrency: groupCurrency,
+          paymentMethodCurrency: newPaymentMethod.currency,
+          requiredProvider: requiredProvider,
+          paymentMethodProvider: newPaymentMethod.provider,
+        });
+      }
+
+      // For Paystack, validate currency matches
+      if (requiredProvider === 'paystack' && newPaymentMethod.currency && newPaymentMethod.currency !== groupCurrency) {
+        return res.status(400).json({
+          error: `Payment method currency (${newPaymentMethod.currency}) does not match group currency (${groupCurrency}). Please use a ${groupCurrency} payment method for this group.`,
+          groupCurrency: groupCurrency,
+          paymentMethodCurrency: newPaymentMethod.currency,
+        });
+      }
+
+      providerPaymentMethodId = newPaymentMethod.payment_method_id;
+    }
+
     // Check for overdue payments
     const defaulterStatus = await checkDefaulterStatus(userId, groupId);
     if (defaulterStatus.hasOverdue) {
@@ -850,27 +972,57 @@ router.put('/:groupId/auto-pay/preferences', authenticate, contributionLimiter, 
       });
     }
 
+    // Build update query dynamically based on what's being updated
+    const updates = [];
+    const values = [];
+    let paramCount = 1;
+
+    if (payment_timing !== undefined) {
+      updates.push(`payment_timing = $${paramCount++}`);
+      values.push(payment_timing);
+    }
+
+    if (providerPaymentMethodId !== null) {
+      updates.push(`payment_method_id = $${paramCount++}`);
+      values.push(providerPaymentMethodId);
+      // Also update provider if payment method changed (should match, but ensure consistency)
+      if (requiredProvider !== currentProvider) {
+        updates.push(`provider = $${paramCount++}`);
+        values.push(requiredProvider);
+      }
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No fields to update. Please provide payment_timing and/or payment_method_id.' });
+    }
+
+    updates.push(`updated_at = CURRENT_TIMESTAMP`);
+    values.push(userId, groupId);
+
     // Update preference
     await pool.query(
       `UPDATE user_payment_preferences
-       SET payment_timing = $1, updated_at = CURRENT_TIMESTAMP
-       WHERE user_id = $2 AND group_id = $3`,
-      [payment_timing, userId, groupId]
+       SET ${updates.join(', ')}
+       WHERE user_id = $${paramCount++} AND group_id = $${paramCount++}`,
+      values
     );
 
-    // Get group name for email
-    const groupResult = await pool.query(
-      'SELECT name FROM groups WHERE id = $1',
-      [groupId]
-    );
-    const groupName = groupResult.rows[0]?.name || 'Group';
+    const groupName = group.name;
 
     // Log action
+    const updateMetadata = { groupId, groupName };
+    if (payment_timing !== undefined) {
+      updateMetadata.paymentTiming = payment_timing;
+    }
+    if (payment_method_id) {
+      updateMetadata.paymentMethodId = payment_method_id;
+    }
+
     await logPaymentAction({
       userId,
       action: 'update_auto_pay_preferences',
       status: 'success',
-      metadata: { groupId, paymentTiming: payment_timing, groupName },
+      metadata: updateMetadata,
       ipAddress: req.ip,
       userAgent: req.get('user-agent'),
     });
@@ -886,15 +1038,20 @@ router.put('/:groupId/auto-pay/preferences', authenticate, contributionLimiter, 
         const userEmail = userResult.rows[0].email;
         const userName = userResult.rows[0].name;
 
+        const emailMetadata = { groupName };
+        if (payment_timing !== undefined) {
+          emailMetadata.paymentTiming = payment_timing;
+        }
+        if (payment_method_id) {
+          emailMetadata.paymentMethodChanged = true;
+        }
+
         await sendSecurityEmail(
           userEmail,
           userName,
           'update_auto_pay_preferences',
           `auto-pay preferences were updated for the group "${groupName}"`,
-          {
-            groupName,
-            paymentTiming: payment_timing,
-          }
+          emailMetadata
         );
       }
     } catch (emailError) {
@@ -902,11 +1059,38 @@ router.put('/:groupId/auto-pay/preferences', authenticate, contributionLimiter, 
       // Don't fail the request if email fails
     }
 
-    res.json({
-      message: 'Payment timing preference updated successfully',
-      payment_timing,
+    // Build response message
+    const updateMessages = [];
+    if (payment_timing !== undefined) {
+      updateMessages.push('payment timing');
+    }
+    if (payment_method_id) {
+      updateMessages.push('payment method');
+    }
+    const message = `${updateMessages.join(' and ')} ${updateMessages.length === 1 ? 'was' : 'were'} updated successfully`;
+
+    // Get updated preference to return
+    const updatedPreference = await pool.query(
+      `SELECT auto_pay_enabled, payment_timing, payment_method_id, provider
+       FROM user_payment_preferences
+       WHERE user_id = $1 AND group_id = $2`,
+      [userId, groupId]
+    );
+
+    const response = {
+      message: message.charAt(0).toUpperCase() + message.slice(1),
       group_id: groupId,
-    });
+    };
+
+    if (payment_timing !== undefined) {
+      response.payment_timing = updatedPreference.rows[0]?.payment_timing;
+    }
+
+    if (payment_method_id) {
+      response.payment_method_id = payment_method_id;
+    }
+
+    res.json(response);
   } catch (error) {
     console.error('Update auto-pay preferences error:', error);
     res.status(500).json({ error: error.message || 'Server error updating preferences' });

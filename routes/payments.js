@@ -850,6 +850,9 @@ router.put('/methods/:methodId', authenticate, contributionLimiter, [
     try {
       // If setting as default, mark ALL currency entries for this card as default
       // This ensures the card is default for all currencies it supports
+      // NOTE: Setting a card as default does NOT change existing auto-pay preferences.
+      // Auto-pay preferences are only updated when explicitly changed via the preferences endpoint
+      // or when a payment method is deleted/currencies are removed.
       if (is_default === true) {
         // Get all currency entries for this payment method (same payment_method_id)
         const allCardEntries = await pool.query(
@@ -1085,6 +1088,14 @@ router.delete('/methods/:methodId', authenticate, contributionLimiter, [
       [userId, providerPaymentMethodId]
     );
 
+    // Get all currency entries for this card (same payment_method_id)
+    // This ensures we delete the entire card, not just one currency entry
+    const allCardEntries = await pool.query(
+      `SELECT id, currency FROM user_payment_methods
+       WHERE user_id = $1 AND payment_method_id = $2 AND is_active = TRUE`,
+      [userId, providerPaymentMethodId]
+    );
+
     await pool.query('BEGIN');
 
     try {
@@ -1106,30 +1117,90 @@ router.delete('/methods/:methodId', authenticate, contributionLimiter, [
         [userId, providerPaymentMethodId]
       );
 
-      // Soft delete payment method (set is_active = FALSE)
+      // Soft delete ALL currency entries for this card (entire card deletion)
+      // This ensures the entire card is removed, not just one currency entry
       await pool.query(
         `UPDATE user_payment_methods
          SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1`,
-        [methodId]
+         WHERE user_id = $1 AND payment_method_id = $2 AND is_active = TRUE`,
+        [userId, providerPaymentMethodId]
       );
 
       await pool.query('COMMIT');
+
+      // Notify user if auto-pay was disabled
+      if (autoPayCheck.rows.length > 0) {
+        const { createNotification } = require('../utils/notifications');
+        const { sendAutoPayDisabledEmail } = require('../utils/email');
+
+        // Get group names for notification
+        const groupNamesResult = await pool.query(
+          `SELECT id, name FROM groups WHERE id = ANY($1::uuid[])`,
+          [autoPayCheck.rows.map(r => r.group_id)]
+        );
+
+        const groupNames = groupNamesResult.rows.map(g => g.name).join(', ');
+
+        // Send in-app notification
+        try {
+          await createNotification(
+            userId,
+            'auto_pay_disabled_card_deleted',
+            'Auto-Pay Disabled',
+            `Auto-pay has been disabled for ${autoPayCheck.rows.length} group(s) because the payment method was removed. Please add a new payment method and re-enable auto-pay.`,
+            null, // No specific group_id since multiple groups affected
+            null
+          );
+        } catch (notifError) {
+          console.error('Error creating notification:', notifError);
+        }
+
+        // Send email notification for each affected group
+        try {
+          const userResult = await pool.query(
+            'SELECT email, name FROM users WHERE id = $1',
+            [userId]
+          );
+
+          if (userResult.rows.length > 0 && userResult.rows[0].email) {
+            // Send email for each group
+            for (const groupInfo of groupNamesResult.rows) {
+              await sendAutoPayDisabledEmail(
+                userResult.rows[0].email,
+                userResult.rows[0].name,
+                groupInfo.name,
+                'Payment method was removed'
+              );
+            }
+          }
+        } catch (emailError) {
+          console.error('Error sending auto-pay disabled email:', emailError);
+          // Don't fail the request if email fails
+        }
+      }
 
       // Log action
       await logPaymentAction({
         userId,
         action: 'delete_payment_method',
         status: 'success',
-        metadata: { methodId, autoPayDisabled: autoPayCheck.rows.length > 0 },
+        metadata: { 
+          methodId, 
+          payment_method_id: providerPaymentMethodId,
+          deletedEntries: allCardEntries.rows.length,
+          currencies: allCardEntries.rows.map(e => e.currency),
+          autoPayDisabled: autoPayCheck.rows.length > 0 
+        },
         ipAddress: req.ip,
         userAgent: req.get('user-agent'),
       });
 
       res.json({
-        message: 'Payment method removed successfully',
+        message: `Payment method removed successfully${allCardEntries.rows.length > 1 ? ` (${allCardEntries.rows.length} currency entries deleted)` : ''}`,
         autoPayDisabled: autoPayCheck.rows.length > 0,
         affectedGroups: autoPayCheck.rows.map(r => r.group_id),
+        deletedCurrencies: allCardEntries.rows.map(e => e.currency),
+        deletedEntriesCount: allCardEntries.rows.length,
       });
     } catch (error) {
       await pool.query('ROLLBACK');
