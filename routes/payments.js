@@ -244,20 +244,20 @@ router.post('/methods', authenticate, contributionLimiter, [
     try {
       await client.query('BEGIN');
 
-      // If setting as default, unset other defaults
-      if (isDefault) {
-        await client.query(
-          `UPDATE user_payment_methods 
-           SET is_default = FALSE, updated_at = CURRENT_TIMESTAMP
-           WHERE user_id = $1`,
-          [userId]
-        );
-      }
-
       const createdPaymentMethods = [];
 
       // Create or update payment method for each currency
       for (const currency of currencies) {
+        // If setting as default, unset other defaults for this currency and provider
+        // This ensures only one default payment method per currency per provider
+        if (isDefault) {
+          await client.query(
+            `UPDATE user_payment_methods 
+             SET is_default = FALSE, updated_at = CURRENT_TIMESTAMP
+             WHERE user_id = $1 AND currency = $2 AND provider = $3`,
+            [userId, currency, provider]
+          );
+        }
         // Check if payment method already exists for this user, provider, and currency
         const existingMethod = await client.query(
           `SELECT id FROM user_payment_methods 
@@ -811,13 +811,15 @@ router.put('/methods/:methodId', authenticate, contributionLimiter, [
     await pool.query('BEGIN');
 
     try {
-      // If setting as default, unset other defaults
+      // If setting as default, unset other defaults for the same currency and provider
+      // This ensures only one default payment method per currency per provider
       if (is_default === true) {
+        const targetCurrency = newCurrency !== undefined ? newCurrency.toUpperCase() : currentMethod.currency;
         await pool.query(
           `UPDATE user_payment_methods 
            SET is_default = FALSE, updated_at = CURRENT_TIMESTAMP
-           WHERE user_id = $1 AND id != $2`,
-          [userId, methodId]
+           WHERE user_id = $1 AND currency = $2 AND provider = $3 AND id != $4`,
+          [userId, targetCurrency, currentMethod.provider, methodId]
         );
       }
 
