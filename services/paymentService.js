@@ -26,13 +26,7 @@ class PaymentService {
    * @returns {string} - Provider name: 'stripe' or 'paystack'
    */
   selectProvider(currency, country) {
-    // Paystack for Africa
-    if (currency === 'NGN' || country === 'NG') return 'paystack'; // Nigeria
-    if (currency === 'KES' || country === 'KE') return 'paystack'; // Kenya
-    if (currency === 'GHS' || country === 'GH') return 'paystack'; // Ghana
-    if (currency === 'ZAR' || country === 'ZA') return 'paystack'; // South Africa
-    
-    // Stripe for rest of world
+    // Always use Stripe for all currencies
     return 'stripe';
   }
 
@@ -440,9 +434,11 @@ class PaymentService {
         return !!event;
       } else if (provider === 'paystack' && this.paystack) {
         const crypto = require('crypto');
-        const webhookSecret = process.env.PAYSTACK_WEBHOOK_SECRET;
+        // Paystack uses the same Secret Key for API calls and webhook verification
+        // Use PAYSTACK_WEBHOOK_SECRET if set, otherwise fall back to PAYSTACK_SECRET_KEY
+        const webhookSecret = process.env.PAYSTACK_WEBHOOK_SECRET || process.env.PAYSTACK_SECRET_KEY;
         if (!webhookSecret) {
-          console.error('PAYSTACK_WEBHOOK_SECRET not configured');
+          console.error('PAYSTACK_WEBHOOK_SECRET or PAYSTACK_SECRET_KEY not configured');
           return false;
         }
 

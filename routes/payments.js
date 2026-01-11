@@ -111,7 +111,7 @@ router.post('/methods/request-otp', authenticate, otpLimiter, [
 router.post('/methods', authenticate, contributionLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
   body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
-  body('provider').isIn(['stripe', 'paystack']).withMessage('Provider must be stripe or paystack'),
+  body('provider').optional().isIn(['stripe']).withMessage('Provider must be stripe (Paystack is no longer supported)'),
   body('currency').optional().isLength({ min: 3, max: 3 }).withMessage('Currency must be 3 characters (e.g., USD, NGN)'),
   body('currencies').optional().isArray().withMessage('Currencies must be an array'),
   body('currencies.*').optional().isLength({ min: 3, max: 3 }).withMessage('Each currency must be 3 characters'),
@@ -127,12 +127,19 @@ router.post('/methods', authenticate, contributionLimiter, [
     const userId = req.user.id;
     const { password_verification_token, otp, payment_method_data, transaction_reference, provider, currency: requestedCurrency, currencies: requestedCurrencies } = req.body;
 
+    // Default to Stripe if no provider specified
+    if (!provider) {
+      provider = 'stripe';
+    }
+    
+    // Only Stripe is supported now
+    if (provider !== 'stripe') {
+      return res.status(400).json({ error: 'Only Stripe is supported. Please use provider: "stripe"' });
+    }
+    
     // Provider-specific validation
     if (provider === 'stripe' && !payment_method_data) {
       return res.status(400).json({ error: 'Payment method data is required for Stripe' });
-    }
-    if (provider === 'paystack' && !transaction_reference) {
-      return res.status(400).json({ error: 'Transaction reference is required for Paystack' });
     }
 
     // Verify OTP
@@ -269,17 +276,13 @@ router.post('/methods', authenticate, contributionLimiter, [
       // Use single currency if provided (backward compatibility)
       currencies = [requestedCurrency.toUpperCase()];
     } else {
-      // Default based on provider or use transaction currency (for Paystack)
-      if (provider === 'paystack') {
-        // Use currency from verified transaction if available, otherwise default to NGN
-        currencies = [transactionCurrency || 'NGN'];
-      } else {
-        currencies = ['USD'];
-      }
+      // Default to USD for Stripe (can be changed to any supported currency)
+      currencies = ['USD'];
     }
 
-    // Validate currencies are compatible with provider
-    const paystackCurrencies = ['NGN', 'KES', 'GHS', 'ZAR'];
+    // Validate currencies are compatible with provider (Stripe supports most currencies)
+    // Note: Stripe supports NGN for accepting payments from Nigerian customers (if merchant is US-based)
+    // All currencies will use Stripe now
     const invalidCurrencies = [];
     for (const currency of currencies) {
       const currencyProvider = paymentService.selectProvider(currency, null);
@@ -290,7 +293,7 @@ router.post('/methods', authenticate, contributionLimiter, [
 
     if (invalidCurrencies.length > 0) {
       return res.status(400).json({
-        error: `The following currencies are not compatible with ${provider}: ${invalidCurrencies.join(', ')}. ${provider === 'paystack' ? 'Paystack supports: NGN, KES, GHS, ZAR' : 'Stripe supports: USD, EUR, GBP, CAD, AUD, JPY, and other international currencies'}.`,
+        error: `The following currencies are not compatible with ${provider}: ${invalidCurrencies.join(', ')}. Stripe supports most international currencies including USD, EUR, GBP, NGN, CAD, AUD, JPY, etc.`,
         invalidCurrencies,
         provider,
       });
