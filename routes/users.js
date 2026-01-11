@@ -503,7 +503,10 @@ router.get('/wallet/history', authenticate, async (req, res) => {
     const userId = req.user.id;
     const { currency, type, limit = 50, offset = 0 } = req.query;
 
-    // Build query to get wallet transactions (credits and withdrawals)
+    // Build query to get wallet transactions (credits that entered wallet and withdrawals)
+    // Only include transactions that actually affected wallet_balances:
+    // 1. Credits with payment_provider (created via creditWallet - money entered wallet)
+    // 2. Withdrawals (money left wallet)
     let query = `
       SELECT 
         t.id, t.type, t.amount, t.currency, t.description, t.status, t.created_at,
@@ -515,7 +518,10 @@ router.get('/wallet/history', authenticate, async (req, res) => {
       LEFT JOIN groups g ON t.group_id = g.id
       LEFT JOIN withdrawals w ON w.id::text = t.reference::text AND t.type = 'withdrawal'
       WHERE t.user_id = $1
-        AND (t.type = 'credit' OR t.type = 'withdrawal' OR t.type = 'debit')
+        AND (
+          (t.type = 'credit' AND t.payment_provider IS NOT NULL) -- Credits that entered wallet via creditWallet
+          OR t.type = 'withdrawal' -- Withdrawals from wallet
+        )
     `;
     const params = [userId];
     let paramCount = 2;
@@ -526,18 +532,15 @@ router.get('/wallet/history', authenticate, async (req, res) => {
       params.push(currency.toUpperCase());
     }
 
-    // Filter by type if provided (credit or withdrawal/debit)
+    // Filter by type if provided (credit or withdrawal)
     if (type) {
-      if (type === 'debit') {
-        // Include both 'withdrawal' and 'debit' types
-        query += ` AND (t.type = 'withdrawal' OR t.type = 'debit')`;
-      } else if (type === 'credit') {
-        query += ` AND t.type = $${paramCount++}`;
-        params.push(type);
+      if (type === 'credit') {
+        query += ` AND t.type = 'credit' AND t.payment_provider IS NOT NULL`;
       } else if (type === 'withdrawal') {
         query += ` AND t.type = $${paramCount++}`;
         params.push(type);
       }
+      // Note: 'debit' type is not used for wallet history (only withdrawals)
     }
 
     query += ` ORDER BY t.created_at DESC LIMIT $${paramCount++} OFFSET $${paramCount++}`;
@@ -597,7 +600,10 @@ router.get('/wallet/history', authenticate, async (req, res) => {
       SELECT COUNT(*) as total
       FROM transactions
       WHERE user_id = $1
-        AND (type = 'credit' OR type = 'withdrawal' OR type = 'debit')
+        AND (
+          (type = 'credit' AND payment_provider IS NOT NULL)
+          OR type = 'withdrawal'
+        )
     `;
     const countParams = [userId];
     let countParamCount = 2;
@@ -608,11 +614,8 @@ router.get('/wallet/history', authenticate, async (req, res) => {
     }
 
     if (type) {
-      if (type === 'debit') {
-        countQuery += ` AND (type = 'withdrawal' OR type = 'debit')`;
-      } else if (type === 'credit') {
-        countQuery += ` AND type = $${countParamCount++}`;
-        countParams.push(type);
+      if (type === 'credit') {
+        countQuery += ` AND type = 'credit' AND payment_provider IS NOT NULL`;
       } else if (type === 'withdrawal') {
         countQuery += ` AND type = $${countParamCount++}`;
         countParams.push(type);
