@@ -811,15 +811,41 @@ router.put('/methods/:methodId', authenticate, contributionLimiter, [
     await pool.query('BEGIN');
 
     try {
-      // If setting as default, unset other defaults for the same currency and provider
-      // This ensures only one default payment method per currency per provider
+      // If setting as default, mark ALL currency entries for this card as default
+      // This ensures the card is default for all currencies it supports
       if (is_default === true) {
-        const targetCurrency = newCurrency !== undefined ? newCurrency.toUpperCase() : currentMethod.currency;
+        // Get all currency entries for this payment method (same payment_method_id)
+        const allCardEntries = await pool.query(
+          `SELECT currency FROM user_payment_methods
+           WHERE user_id = $1 AND payment_method_id = $2 AND is_active = TRUE`,
+          [userId, currentMethod.payment_method_id]
+        );
+
+        // For each currency this card supports, unset other defaults
+        for (const entry of allCardEntries.rows) {
+          await pool.query(
+            `UPDATE user_payment_methods 
+             SET is_default = FALSE, updated_at = CURRENT_TIMESTAMP
+             WHERE user_id = $1 AND currency = $2 AND provider = $3 
+             AND payment_method_id != $4`,
+            [userId, entry.currency, currentMethod.provider, currentMethod.payment_method_id]
+          );
+        }
+
+        // Set ALL entries for this card as default
+        await pool.query(
+          `UPDATE user_payment_methods 
+           SET is_default = TRUE, updated_at = CURRENT_TIMESTAMP
+           WHERE user_id = $1 AND payment_method_id = $2 AND is_active = TRUE`,
+          [userId, currentMethod.payment_method_id]
+        );
+      } else if (is_default === false) {
+        // If unsetting default, unset for ALL currency entries of this card
         await pool.query(
           `UPDATE user_payment_methods 
            SET is_default = FALSE, updated_at = CURRENT_TIMESTAMP
-           WHERE user_id = $1 AND currency = $2 AND provider = $3 AND id != $4`,
-          [userId, targetCurrency, currentMethod.provider, methodId]
+           WHERE user_id = $1 AND payment_method_id = $2 AND is_active = TRUE`,
+          [userId, currentMethod.payment_method_id]
         );
       }
 
@@ -837,11 +863,9 @@ router.put('/methods/:methodId', authenticate, contributionLimiter, [
         }
       }
 
-      // Update is_default flag
-      if (is_default !== undefined) {
-        updates.push(`is_default = $${paramCount++}`);
-        values.push(is_default);
-      }
+      // Note: is_default is handled above for ALL entries of this card
+      // We don't need to update it here for the single entry since we've already
+      // updated all entries for this payment_method_id
 
       // Update display details (only if provided and different from current)
       if (last4 !== undefined && last4 !== currentMethod.last4) {
@@ -864,6 +888,8 @@ router.put('/methods/:methodId', authenticate, contributionLimiter, [
         values.push(expiry_year);
       }
 
+      // If is_default was the only update, we've already handled it above
+      // Otherwise, update the specific entry with other fields
       if (updates.length > 0) {
         updates.push(`updated_at = CURRENT_TIMESTAMP`);
         values.push(methodId);
@@ -871,13 +897,14 @@ router.put('/methods/:methodId', authenticate, contributionLimiter, [
           `UPDATE user_payment_methods SET ${updates.join(', ')} WHERE id = $${paramCount}`,
           values
         );
-      } else {
-        // No updates provided
+      } else if (is_default === undefined) {
+        // No updates provided and is_default wasn't set
         await pool.query('ROLLBACK');
         return res.status(400).json({ 
           error: 'No valid fields to update. Provide at least one of: currency, is_default, last4, brand, expiry_month, expiry_year' 
         });
       }
+      // If only is_default was provided, we've already updated all entries above, so no need to update the single entry
 
       await pool.query('COMMIT');
 

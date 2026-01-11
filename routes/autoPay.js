@@ -125,7 +125,7 @@ router.post('/:groupId/auto-pay/enable/request-otp', authenticate, otpLimiter, [
 router.post('/:groupId/auto-pay/enable', authenticate, contributionLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
   body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
-  body('payment_method_id').notEmpty().withMessage('Payment method ID is required'),
+  body('payment_method_id').optional().isUUID().withMessage('Payment method ID must be a valid UUID'),
   body('payment_timing').isIn(['1_day_before', 'same_day']).withMessage('Payment timing must be 1_day_before or same_day'),
 ], async (req, res) => {
   try {
@@ -195,33 +195,95 @@ router.post('/:groupId/auto-pay/enable', authenticate, contributionLimiter, [
       });
     }
 
-    // Verify payment method exists and belongs to user
-    // payment_method_id is the UUID from user_payment_methods table
-    const paymentMethodCheck = await pool.query(
-      `SELECT id, payment_method_id, provider, currency, is_active
-       FROM user_payment_methods
-       WHERE id = $1 AND user_id = $2 AND is_active = TRUE`,
-      [payment_method_id, userId]
-    );
+    const groupCurrency = group.currency;
+    const provider = paymentService.selectProvider(groupCurrency, null);
 
-    if (paymentMethodCheck.rows.length === 0) {
-      return res.status(404).json({
-        error: 'Payment method not found or inactive.',
-      });
+    let paymentMethod;
+
+    // If payment_method_id is provided, use it
+    if (payment_method_id) {
+      // Verify payment method exists and belongs to user
+      // payment_method_id is the UUID from user_payment_methods table
+      const paymentMethodCheck = await pool.query(
+        `SELECT id, payment_method_id, provider, currency, is_active
+         FROM user_payment_methods
+         WHERE id = $1 AND user_id = $2 AND is_active = TRUE`,
+        [payment_method_id, userId]
+      );
+
+      if (paymentMethodCheck.rows.length === 0) {
+        return res.status(404).json({
+          error: 'Payment method not found or inactive.',
+        });
+      }
+
+      paymentMethod = paymentMethodCheck.rows[0];
+    } else {
+      // Auto-select default payment method for this currency
+      // First, try to find a default payment method for this currency
+      let defaultMethodQuery = `
+        SELECT id, payment_method_id, provider, currency, is_active
+        FROM user_payment_methods
+        WHERE user_id = $1 AND is_active = TRUE AND provider = $2 AND is_default = TRUE
+      `;
+      const defaultMethodParams = [userId, provider];
+
+      // For Paystack, require exact currency match
+      if (provider === 'paystack') {
+        defaultMethodQuery += ` AND currency = $3`;
+        defaultMethodParams.push(groupCurrency);
+      } else {
+        // For Stripe, prefer matching currency but allow any Stripe card (they can charge in multiple currencies)
+        defaultMethodQuery += ` ORDER BY CASE WHEN currency = $3 THEN 0 ELSE 1 END, created_at ASC LIMIT 1`;
+        defaultMethodParams.push(groupCurrency);
+      }
+
+      const defaultMethodResult = await pool.query(defaultMethodQuery, defaultMethodParams);
+
+      if (defaultMethodResult.rows.length > 0) {
+        // Found a default payment method
+        paymentMethod = defaultMethodResult.rows[0];
+      } else {
+        // No default found, try to find any payment method for this currency
+        let anyMethodQuery = `
+          SELECT id, payment_method_id, provider, currency, is_active
+          FROM user_payment_methods
+          WHERE user_id = $1 AND is_active = TRUE AND provider = $2
+        `;
+        const anyMethodParams = [userId, provider];
+
+        if (provider === 'paystack') {
+          anyMethodQuery += ` AND currency = $3`;
+          anyMethodParams.push(groupCurrency);
+        } else {
+          // For Stripe, show all cards (they can charge in multiple currencies)
+          anyMethodQuery += ` ORDER BY CASE WHEN currency = $3 THEN 0 ELSE 1 END, created_at ASC LIMIT 1`;
+          anyMethodParams.push(groupCurrency);
+        }
+
+        const anyMethodResult = await pool.query(anyMethodQuery, anyMethodParams);
+
+        if (anyMethodResult.rows.length === 0) {
+          // No payment method found for this currency
+          return res.status(400).json({
+            error: `No payment method found for ${groupCurrency}. Please add a payment method first.`,
+            code: 'NO_PAYMENT_METHOD',
+            currency: groupCurrency,
+            provider: provider,
+            action: 'add_payment_method',
+          });
+        }
+
+        // Use the first available payment method
+        paymentMethod = anyMethodResult.rows[0];
+      }
     }
 
-    const paymentMethod = paymentMethodCheck.rows[0];
-
-    // Validate provider match
-    // Note: One card works with ONE provider (Stripe OR Paystack), not both
-    // - European/international cards → Stripe → Can charge in multiple currencies (USD, EUR, GBP, etc.)
-    // - African cards → Paystack → Typically currency-specific (NGN, KES, etc.)
-    const provider = paymentService.selectProvider(group.currency, null);
-    
+    // Validate provider match (should already match from our query, but double-check)
     if (paymentMethod.provider !== provider) {
       return res.status(400).json({
-        error: `Payment method provider (${paymentMethod.provider}) does not match group currency provider (${provider}). Please use a ${provider} payment method for ${group.currency} groups.`,
-        groupCurrency: group.currency,
+        error: `Payment method provider (${paymentMethod.provider}) does not match group currency provider (${provider}). Please use a ${provider} payment method for ${groupCurrency} groups.`,
+        groupCurrency: groupCurrency,
         paymentMethodCurrency: paymentMethod.currency,
         requiredProvider: provider,
         paymentMethodProvider: paymentMethod.provider,
@@ -230,10 +292,10 @@ router.post('/:groupId/auto-pay/enable', authenticate, contributionLimiter, [
 
     // For Paystack, validate currency matches (Paystack cards are currency-specific)
     // For Stripe, allow any currency (Stripe cards can charge in multiple currencies)
-    if (provider === 'paystack' && paymentMethod.currency && paymentMethod.currency !== group.currency) {
+    if (provider === 'paystack' && paymentMethod.currency && paymentMethod.currency !== groupCurrency) {
       return res.status(400).json({
-        error: `Payment method currency (${paymentMethod.currency}) does not match group currency (${group.currency}). Please use a ${group.currency} payment method for this group.`,
-        groupCurrency: group.currency,
+        error: `Payment method currency (${paymentMethod.currency}) does not match group currency (${groupCurrency}). Please use a ${groupCurrency} payment method for this group.`,
+        groupCurrency: groupCurrency,
         paymentMethodCurrency: paymentMethod.currency,
       });
     }
