@@ -101,7 +101,7 @@ CREATE INDEX IF NOT EXISTS idx_payment_audit_log_created_at ON payment_audit_log
 CREATE TABLE IF NOT EXISTS password_verification_tokens (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
-  token VARCHAR(255) NOT NULL UNIQUE,
+  token TEXT NOT NULL UNIQUE, -- JWT tokens can be longer than 255 characters
   action VARCHAR(50) NOT NULL, -- 'add_payment_method', 'enable_auto_pay', 'withdraw', etc.
   expires_at TIMESTAMP NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

@@ -39,6 +39,7 @@ const migrations = [
   'add_chat_notification_preferences.sql',
   'add_co_admin_role.sql',
   'add_payment_automation.sql',
+  'fix_password_verification_token_length.sql',
   'add_currency_bank_accounts.sql'
 ];
 
