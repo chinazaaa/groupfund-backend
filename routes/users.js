@@ -449,9 +449,6 @@ router.get('/wallet', authenticate, async (req, res) => {
       [userId]
     );
 
-    // Debug: Log bank accounts found
-    console.log(`[Wallet] Found ${bankAccountsResult.rows.length} bank accounts for user ${userId}`);
-
     // Group bank accounts by currency
     const bankAccountsByCurrency = {};
     for (const account of bankAccountsResult.rows) {
@@ -476,9 +473,6 @@ router.get('/wallet', authenticate, async (req, res) => {
         updatedAt: account.updated_at,
       });
     }
-
-    // Debug: Log grouped bank accounts
-    console.log(`[Wallet] Bank accounts by currency:`, Object.keys(bankAccountsByCurrency));
 
     // Merge balances with bank accounts per currency
     const balancesWithAccounts = balances.map(balance => ({
