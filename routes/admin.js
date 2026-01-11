@@ -2699,5 +2699,211 @@ router.post('/notifications/send-custom', [
   }
 });
 
+/**
+ * AUTOMATIC PAYMENT PROCESSING ENDPOINTS
+ */
+
+// Process automatic payments for birthday
+router.post('/payments/process-birthday/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { groupId } = req.body;
+
+    if (!groupId) {
+      return res.status(400).json({ error: 'Group ID is required' });
+    }
+
+    const { processBirthdayPayments } = require('../services/autoPaymentProcessor');
+    const result = await processBirthdayPayments(userId, groupId);
+
+    if (result.error) {
+      return res.status(400).json(result);
+    }
+
+    res.json({
+      message: 'Birthday payments processed',
+      ...result,
+    });
+  } catch (error) {
+    console.error('Process birthday payments error:', error);
+    res.status(500).json({ error: 'Server error processing birthday payments', message: error.message });
+  }
+});
+
+// Process automatic payments for subscription deadline
+router.post('/payments/process-subscription/:groupId', async (req, res) => {
+  try {
+    const { groupId } = req.params;
+
+    const { processSubscriptionPayments } = require('../services/autoPaymentProcessor');
+    const result = await processSubscriptionPayments(groupId);
+
+    if (result.error) {
+      return res.status(400).json(result);
+    }
+
+    res.json({
+      message: 'Subscription payments processed',
+      ...result,
+    });
+  } catch (error) {
+    console.error('Process subscription payments error:', error);
+    res.status(500).json({ error: 'Server error processing subscription payments', message: error.message });
+  }
+});
+
+// Process automatic payments for general group deadline
+router.post('/payments/process-general/:groupId', async (req, res) => {
+  try {
+    const { groupId } = req.params;
+
+    const { processGeneralPayments } = require('../services/autoPaymentProcessor');
+    const result = await processGeneralPayments(groupId);
+
+    if (result.error) {
+      return res.status(400).json(result);
+    }
+
+    res.json({
+      message: 'General group payments processed',
+      ...result,
+    });
+  } catch (error) {
+    console.error('Process general payments error:', error);
+    res.status(500).json({ error: 'Server error processing general payments', message: error.message });
+  }
+});
+
+// Trigger all automatic payment processing (for scheduled jobs)
+router.post('/payments/process-all', async (req, res) => {
+  try {
+    const { processAllAutoPayments } = require('../jobs/autoPaymentProcessor');
+    const result = await processAllAutoPayments();
+
+    if (!result.success) {
+      return res.status(500).json(result);
+    }
+
+    res.json({
+      message: 'All automatic payments processed',
+      ...result,
+    });
+  } catch (error) {
+    console.error('Process all payments error:', error);
+    res.status(500).json({ error: 'Server error processing all payments', message: error.message });
+  }
+});
+
+// Retry failed payment attempts
+router.post('/payments/retry-failed', async (req, res) => {
+  try {
+    const { retryFailedPayments } = require('../jobs/paymentRetryProcessor');
+    const result = await retryFailedPayments();
+
+    if (!result.success) {
+      return res.status(500).json(result);
+    }
+
+    res.json({
+      message: 'Failed payment retries processed',
+      ...result,
+    });
+  } catch (error) {
+    console.error('Retry failed payments error:', error);
+    res.status(500).json({ error: 'Server error retrying failed payments', message: error.message });
+  }
+});
+
+/**
+ * WITHDRAWAL MANAGEMENT ENDPOINTS
+ */
+
+// Process pending withdrawals (for scheduled jobs or manual trigger)
+router.post('/withdrawals/process-pending', async (req, res) => {
+  try {
+    const { processPendingWithdrawals } = require('../jobs/withdrawalProcessor');
+    const result = await processPendingWithdrawals();
+
+    if (!result.success) {
+      return res.status(500).json(result);
+    }
+
+    res.json({
+      message: 'Pending withdrawals processed',
+      ...result,
+    });
+  } catch (error) {
+    console.error('Process pending withdrawals error:', error);
+    res.status(500).json({ error: 'Server error processing withdrawals', message: error.message });
+  }
+});
+
+// Get all withdrawals (with filters)
+router.get('/withdrawals', async (req, res) => {
+  try {
+    const { status, limit = 50, offset = 0 } = req.query;
+
+    let query = `
+      SELECT w.*, u.name, u.email
+      FROM withdrawals w
+      JOIN users u ON w.user_id = u.id
+      WHERE 1=1
+    `;
+    const params = [];
+    let paramCount = 1;
+
+    if (status) {
+      query += ` AND w.status = $${paramCount++}`;
+      params.push(status);
+    }
+
+    query += ` ORDER BY w.created_at DESC LIMIT $${paramCount++} OFFSET $${paramCount++}`;
+    params.push(parseInt(limit), parseInt(offset));
+
+    const result = await pool.query(query, params);
+
+    const totalResult = await pool.query(
+      `SELECT COUNT(*) as total FROM withdrawals ${status ? 'WHERE status = $1' : ''}`,
+      status ? [status] : []
+    );
+
+    res.json({
+      withdrawals: result.rows,
+      total: parseInt(totalResult.rows[0].total),
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+    });
+  } catch (error) {
+    console.error('Get withdrawals error:', error);
+    res.status(500).json({ error: 'Server error retrieving withdrawals', message: error.message });
+  }
+});
+
+// Get withdrawal details
+router.get('/withdrawals/:withdrawalId', async (req, res) => {
+  try {
+    const { withdrawalId } = req.params;
+
+    const result = await pool.query(
+      `SELECT w.*, u.name, u.email
+       FROM withdrawals w
+       JOIN users u ON w.user_id = u.id
+       WHERE w.id = $1`,
+      [withdrawalId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Withdrawal not found' });
+    }
+
+    res.json({
+      withdrawal: result.rows[0],
+    });
+  } catch (error) {
+    console.error('Get withdrawal details error:', error);
+    res.status(500).json({ error: 'Server error retrieving withdrawal details', message: error.message });
+  }
+});
+
 module.exports = router;
 

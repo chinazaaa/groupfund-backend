@@ -62,6 +62,23 @@ router.post('/create', authenticate, [
     } = req.body;
     const adminId = req.user.id;
 
+    // Validate bank details required for group creation
+    const walletCheck = await pool.query(
+      'SELECT account_name, bank_name, account_number FROM wallets WHERE user_id = $1',
+      [adminId]
+    );
+
+    const hasBankDetails = walletCheck.rows.length > 0 &&
+      walletCheck.rows[0].account_name &&
+      walletCheck.rows[0].bank_name &&
+      walletCheck.rows[0].account_number;
+
+    if (!hasBankDetails) {
+      return res.status(400).json({
+        error: 'Bank details required to create groups. Please add your bank account in your profile.',
+      });
+    }
+
     // Validate birthday group: user must have birthday set
     if (groupType === 'birthday') {
       const userResult = await pool.query(
@@ -257,6 +274,23 @@ router.post('/join', authenticate, [
     }
 
     const group = groupResult.rows[0];
+
+    // Validate bank details required for group joining
+    const walletCheck = await pool.query(
+      'SELECT account_name, bank_name, account_number FROM wallets WHERE user_id = $1',
+      [userId]
+    );
+
+    const hasBankDetails = walletCheck.rows.length > 0 &&
+      walletCheck.rows[0].account_name &&
+      walletCheck.rows[0].bank_name &&
+      walletCheck.rows[0].account_number;
+
+    if (!hasBankDetails) {
+      return res.status(400).json({
+        error: 'Bank details required to join groups. Please add your bank account in your profile.',
+      });
+    }
 
     // Check birthday requirement for birthday groups
     if (group.group_type === 'birthday') {

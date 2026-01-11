@@ -2,6 +2,17 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const pool = require('../config/database');
 const { authenticate } = require('../middleware/auth');
+const { otpLimiter, contributionLimiter } = require('../middleware/rateLimiter');
+const {
+  verifyPassword,
+  generatePasswordVerificationToken,
+  verifyPasswordVerificationToken,
+  storePasswordVerificationToken,
+  requestPaymentOTP,
+  verifyPaymentOTP,
+  logPaymentAction,
+} = require('../utils/paymentHelpers');
+const { sendSecurityEmail } = require('../utils/email');
 
 const router = express.Router();
 
@@ -418,23 +429,113 @@ router.get('/wallet', authenticate, async (req, res) => {
     const userId = req.user.id;
 
     const result = await pool.query(
-      'SELECT balance, account_number, bank_name, account_name, iban, swift_bic, routing_number, sort_code, branch_code, branch_address FROM wallets WHERE user_id = $1',
+      'SELECT balance, account_number, bank_name, account_name, iban, swift_bic, routing_number, sort_code, branch_code, branch_address, currency FROM wallets WHERE user_id = $1',
       [userId]
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Wallet not found' });
+      // Return empty wallet if not found
+      return res.json({
+        wallet: {
+          balance: 0,
+          account_number: null,
+          bank_name: null,
+          account_name: null,
+          iban: null,
+          swift_bic: null,
+          routing_number: null,
+          sort_code: null,
+          branch_code: null,
+          branch_address: null,
+          currency: 'NGN',
+        }
+      });
     }
 
-    res.json(result.rows[0]);
+    res.json({ wallet: result.rows[0] });
   } catch (error) {
     console.error('Get wallet error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Update wallet/payment details
-router.put('/wallet', authenticate, [
+// Step 1: Verify password before updating wallet
+router.post('/wallet/verify-password', authenticate, contributionLimiter, [
+  body('password').notEmpty().withMessage('Password is required'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const userId = req.user.id;
+    const { password } = req.body;
+
+    // Verify password
+    const isValid = await verifyPassword(userId, password);
+    if (!isValid) {
+      return res.status(401).json({ error: 'Invalid password' });
+    }
+
+    // Generate password verification token
+    const token = generatePasswordVerificationToken(userId, 'update_wallet');
+
+    // Store token in database
+    await storePasswordVerificationToken(userId, token, 'update_wallet');
+
+    res.json({
+      verified: true,
+      token,
+      expiresIn: 300, // 5 minutes in seconds
+    });
+  } catch (error) {
+    console.error('Password verification error:', error);
+    res.status(500).json({ error: 'Server error during password verification' });
+  }
+});
+
+// Step 2: Request OTP after password verification
+router.post('/wallet/request-otp', authenticate, otpLimiter, [
+  body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const userId = req.user.id;
+    const { password_verification_token } = req.body;
+
+    // Get user email
+    const userResult = await pool.query(
+      'SELECT email FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const email = userResult.rows[0].email;
+
+    // Request OTP
+    await requestPaymentOTP(userId, email, 'update_wallet', password_verification_token);
+
+    res.json({
+      message: 'OTP sent to your email',
+    });
+  } catch (error) {
+    console.error('OTP request error:', error);
+    res.status(500).json({ error: error.message || 'Server error during OTP request' });
+  }
+});
+
+// Step 3: Update wallet/payment details (requires password + OTP verification)
+router.put('/wallet', authenticate, contributionLimiter, [
+  body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
+  body('otp').notEmpty().isLength({ min: 6, max: 6 }).withMessage('OTP is required (6 digits)'),
   body('account_name').optional().trim().notEmpty().withMessage('Account name is required if provided'),
   body('bank_name').optional().trim().notEmpty().withMessage('Bank name is required if provided'),
   body('account_number').optional().trim().notEmpty().withMessage('Account number is required if provided'),
@@ -452,15 +553,65 @@ router.put('/wallet', authenticate, [
     }
 
     const userId = req.user.id;
-    const { account_name, bank_name, account_number, iban, swift_bic, routing_number, sort_code, branch_code, branch_address } = req.body;
+    const { password_verification_token, otp, account_name, bank_name, account_number, iban, swift_bic, routing_number, sort_code, branch_code, branch_address } = req.body;
 
-    // Check if wallet exists
+    // Verify password token
+    const tokenData = verifyPasswordVerificationToken(password_verification_token);
+    if (!tokenData || tokenData.action !== 'update_wallet' || tokenData.userId !== userId) {
+      return res.status(401).json({ error: 'Invalid or expired password verification token' });
+    }
+
+    // Verify OTP
+    const isValidOTP = await verifyPaymentOTP(userId, otp, password_verification_token, 'update_wallet');
+    if (!isValidOTP) {
+      return res.status(401).json({ error: 'Invalid or expired OTP' });
+    }
+
+    // Check if wallet exists and get current bank details
     const walletCheck = await pool.query(
-      'SELECT id FROM wallets WHERE user_id = $1',
+      'SELECT id, account_name, bank_name, account_number FROM wallets WHERE user_id = $1',
       [userId]
     );
 
+    const currentWallet = walletCheck.rows.length > 0 ? walletCheck.rows[0] : null;
+
+    // Check if user is trying to remove bank details (setting to null/empty)
+    // Only check removal if wallet exists and has bank details currently
+    if (currentWallet && currentWallet.account_name && currentWallet.bank_name && currentWallet.account_number) {
+      const isRemovingAccountName = account_name !== undefined && (!account_name || account_name.trim() === '');
+      const isRemovingBankName = bank_name !== undefined && (!bank_name || bank_name.trim() === '');
+      const isRemovingAccountNumber = account_number !== undefined && (!account_number || account_number.trim() === '');
+
+      // If trying to remove any critical bank detail, check if user is in active groups
+      if (isRemovingAccountName || isRemovingBankName || isRemovingAccountNumber) {
+        // Check if user is in any active groups
+        const activeGroupsCheck = await pool.query(
+          `SELECT COUNT(*) as group_count
+           FROM group_members gm
+           JOIN groups g ON gm.group_id = g.id
+           WHERE gm.user_id = $1 AND gm.status = $2 AND g.status != $3`,
+          [userId, 'active', 'closed']
+        );
+
+        const activeGroupsCount = parseInt(activeGroupsCheck.rows[0].group_count) || 0;
+
+        if (activeGroupsCount > 0) {
+          return res.status(400).json({
+            error: `Cannot remove bank details. You must leave all groups first. You are currently a member of ${activeGroupsCount} group(s).`,
+            activeGroupsCount,
+          });
+        }
+      }
+    }
+
     if (walletCheck.rows.length === 0) {
+      // Validate that required bank details are provided when creating wallet
+      if (!account_name || !bank_name || !account_number) {
+        return res.status(400).json({
+          error: 'Account name, bank name, and account number are required',
+        });
+      }
+
       // Create wallet if it doesn't exist (only when user explicitly adds payment details)
       await pool.query(
         'INSERT INTO wallets (user_id, account_name, bank_name, account_number, iban, swift_bic, routing_number, sort_code, branch_code, branch_address, balance) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0)',
@@ -528,13 +679,68 @@ router.put('/wallet', authenticate, [
       );
     }
 
+    // Get user info for email notification
+    const userResult = await pool.query(
+      'SELECT email, name FROM users WHERE id = $1',
+      [userId]
+    );
+
+    const userEmail = userResult.rows[0]?.email;
+    const userName = userResult.rows[0]?.name;
+
     // Return updated wallet
     const result = await pool.query(
       'SELECT balance, account_number, bank_name, account_name, iban, swift_bic, routing_number, sort_code, branch_code, branch_address FROM wallets WHERE user_id = $1',
       [userId]
     );
 
-    res.json({ wallet: result.rows[0] });
+    // Send security email notification
+    try {
+      if (userEmail && userName) {
+        const updatedFields = [];
+        if (account_name !== undefined) updatedFields.push('account name');
+        if (bank_name !== undefined) updatedFields.push('bank name');
+        if (account_number !== undefined) updatedFields.push('account number');
+        if (iban !== undefined) updatedFields.push('IBAN');
+        if (swift_bic !== undefined) updatedFields.push('SWIFT/BIC');
+        if (routing_number !== undefined) updatedFields.push('routing number');
+        if (sort_code !== undefined) updatedFields.push('sort code');
+        if (branch_code !== undefined) updatedFields.push('branch code');
+        if (branch_address !== undefined) updatedFields.push('branch address');
+
+        await sendSecurityEmail(
+          userEmail,
+          userName,
+          'wallet_details_updated',
+          `You updated your wallet details: ${updatedFields.join(', ')}`,
+          {
+            updatedFields,
+            timestamp: new Date().toISOString(),
+          }
+        );
+      }
+    } catch (emailError) {
+      console.error('Error sending security email:', emailError);
+      // Don't fail the request if email fails
+    }
+
+    // Log action
+    await logPaymentAction({
+      userId,
+      action: 'wallet_details_updated',
+      amount: 0,
+      currency: null,
+      status: 'success',
+      paymentProvider: null,
+      metadata: {
+        updatedFields: account_name !== undefined ? 'account_name' : null,
+      },
+    });
+
+    res.json({
+      message: 'Wallet details updated successfully',
+      wallet: result.rows[0],
+    });
   } catch (error) {
     console.error('Update wallet error:', error);
     res.status(500).json({ error: 'Server error updating wallet' });
