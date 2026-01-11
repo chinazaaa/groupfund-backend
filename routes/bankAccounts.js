@@ -113,10 +113,11 @@ router.get('/:currency', authenticate, async (req, res) => {
   }
 });
 
-// Step 1: Verify password before adding/updating bank account
+// Step 1: Verify password before adding/updating/deleting bank account
 router.post('/verify-password', authenticate, contributionLimiter, [
   body('password').notEmpty().withMessage('Password is required'),
   body('currency').optional().isLength({ min: 3, max: 3 }).withMessage('Currency must be 3 characters'),
+  body('action').optional().isIn(['add', 'delete', 'update']).withMessage('Action must be "add", "delete", or "update"'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -125,7 +126,7 @@ router.post('/verify-password', authenticate, contributionLimiter, [
     }
 
     const userId = req.user.id;
-    const { password, currency } = req.body;
+    const { password, currency, action: requestedAction } = req.body;
 
     // Verify password
     const isValid = await verifyPassword(userId, password);
@@ -133,8 +134,21 @@ router.post('/verify-password', authenticate, contributionLimiter, [
       return res.status(401).json({ error: 'Invalid password' });
     }
 
+    // Determine action based on parameter or default to 'add'
+    // Format: {action}_bank_account_{currency} or {action}_bank_account if no currency
+    let action;
+    if (requestedAction) {
+      if (currency) {
+        action = `${requestedAction}_bank_account_${currency.toUpperCase()}`;
+      } else {
+        action = `${requestedAction}_bank_account`;
+      }
+    } else {
+      // Default to 'add' for backward compatibility
+      action = currency ? `add_bank_account_${currency.toUpperCase()}` : 'add_bank_account';
+    }
+
     // Generate password verification token
-    const action = currency ? `add_bank_account_${currency.toUpperCase()}` : 'add_bank_account';
     const token = generatePasswordVerificationToken(userId, action);
 
     // Store token in database
@@ -143,6 +157,7 @@ router.post('/verify-password', authenticate, contributionLimiter, [
     res.json({
       verified: true,
       token,
+      action, // Return the action so client knows which action was authorized
       expiresIn: 300, // 5 minutes in seconds
     });
   } catch (error) {
@@ -154,7 +169,6 @@ router.post('/verify-password', authenticate, contributionLimiter, [
 // Step 2: Request OTP after password verification
 router.post('/request-otp', authenticate, otpLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
-  body('currency').optional().isLength({ min: 3, max: 3 }).withMessage('Currency must be 3 characters'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -163,7 +177,13 @@ router.post('/request-otp', authenticate, otpLimiter, [
     }
 
     const userId = req.user.id;
-    const { password_verification_token, currency } = req.body;
+    const { password_verification_token } = req.body;
+
+    // Verify token and extract action from it
+    const tokenData = verifyPasswordVerificationToken(password_verification_token);
+    if (!tokenData || tokenData.userId !== userId) {
+      return res.status(401).json({ error: 'Invalid or expired password verification token' });
+    }
 
     // Get user email
     const userResult = await pool.query(
@@ -176,7 +196,7 @@ router.post('/request-otp', authenticate, otpLimiter, [
     }
 
     const email = userResult.rows[0].email;
-    const action = currency ? `add_bank_account_${currency.toUpperCase()}` : 'add_bank_account';
+    const action = tokenData.action; // Use action from the token (already set during verify-password)
 
     // Request OTP
     await requestPaymentOTP(userId, email, action, password_verification_token);
