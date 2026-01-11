@@ -567,7 +567,8 @@ router.get('/:groupId/auto-pay/payment-methods', authenticate, async (req, res) 
       provider: method.provider,
       paymentMethodType: method.payment_method_type,
       currency: method.currency,
-      last4: method.last4,
+      last4: method.last4, // camelCase (primary)
+      last_4_digits: method.last4, // snake_case (alias for compatibility)
       brand: method.brand,
       expiryMonth: method.expiry_month,
       expiryYear: method.expiry_year,
@@ -646,7 +647,8 @@ router.get('/:groupId/auto-pay/status', authenticate, async (req, res) => {
           provider: method.provider,
           paymentMethodType: method.payment_method_type,
           currency: method.currency,
-          last4: method.last4,
+          last4: method.last4, // camelCase (primary)
+          last_4_digits: method.last4, // snake_case (alias for compatibility)
           brand: method.brand,
           expiryMonth: method.expiry_month,
           expiryYear: method.expiry_year,

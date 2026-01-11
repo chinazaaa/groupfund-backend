@@ -102,6 +102,8 @@ router.post('/methods', authenticate, contributionLimiter, [
   body('payment_method_data').notEmpty().withMessage('Payment method data is required'),
   body('provider').isIn(['stripe', 'paystack']).withMessage('Provider must be stripe or paystack'),
   body('currency').optional().isLength({ min: 3, max: 3 }).withMessage('Currency must be 3 characters (e.g., USD, NGN)'),
+  body('currencies').optional().isArray().withMessage('Currencies must be an array'),
+  body('currencies.*').optional().isLength({ min: 3, max: 3 }).withMessage('Each currency must be 3 characters'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -110,7 +112,7 @@ router.post('/methods', authenticate, contributionLimiter, [
     }
 
     const userId = req.user.id;
-    const { password_verification_token, otp, payment_method_data, provider, currency: requestedCurrency } = req.body;
+    const { password_verification_token, otp, payment_method_data, provider, currency: requestedCurrency, currencies: requestedCurrencies } = req.body;
 
     // Verify OTP
     const isOTPValid = await verifyPaymentOTP(userId, otp, password_verification_token, 'add_payment_method');
@@ -155,33 +157,84 @@ router.post('/methods', authenticate, contributionLimiter, [
     }
 
     // Extract card details from payment_method_data for display
-    const last4 = payment_method_data.last4 || payment_method_data.last_4 || null;
-    const brand = payment_method_data.brand || payment_method_data.card_brand || null;
-    const expiryMonth = payment_method_data.expiry_month || payment_method_data.exp_month || null;
-    const expiryYear = payment_method_data.expiry_year || payment_method_data.exp_year || null;
+    let last4 = payment_method_data.last4 || payment_method_data.last_4 || null;
+    let brand = payment_method_data.brand || payment_method_data.card_brand || null;
+    let expiryMonth = payment_method_data.expiry_month || payment_method_data.exp_month || null;
+    let expiryYear = payment_method_data.expiry_year || payment_method_data.exp_year || null;
     const paymentMethodType = payment_method_data.type || 'card';
     const isDefault = payment_method_data.is_default || false;
 
-    // Determine currency for this payment method
-    // If not provided, infer from provider:
-    // - Paystack: typically NGN (or other African currencies)
-    // - Stripe: typically USD (but can be any)
-    let currency = requestedCurrency?.toUpperCase();
-    if (!currency) {
-      // Infer from provider
-      if (provider === 'paystack') {
-        currency = 'NGN'; // Default for Paystack (African currencies)
-      } else {
-        currency = 'USD'; // Default for Stripe (but can charge in multiple currencies)
+    // If card details are missing, try to fetch from provider
+    if ((!last4 || !brand) && provider === 'stripe' && paymentService.stripe) {
+      try {
+        const stripePaymentMethod = await paymentService.stripe.paymentMethods.retrieve(paymentMethodId);
+        if (stripePaymentMethod && stripePaymentMethod.card) {
+          last4 = last4 || stripePaymentMethod.card.last4 || null;
+          brand = brand || stripePaymentMethod.card.brand || null;
+          expiryMonth = expiryMonth || stripePaymentMethod.card.exp_month || null;
+          expiryYear = expiryYear || stripePaymentMethod.card.exp_year || null;
+        }
+      } catch (stripeError) {
+        console.warn('Could not fetch payment method details from Stripe:', stripeError.message);
+        // Continue with whatever was provided or null
       }
     }
 
-    await pool.query('BEGIN');
+    // Warn if critical fields are still missing (but don't fail the request)
+    if (!last4) {
+      console.warn(`Payment method ${paymentMethodId} added without last4. Frontend should provide this.`);
+    }
+    if (!brand) {
+      console.warn(`Payment method ${paymentMethodId} added without brand. Frontend should provide this.`);
+    }
+
+    // Determine currencies to process
+    // Support both single currency (backward compatibility) and multiple currencies
+    let currencies = [];
+    if (requestedCurrencies && Array.isArray(requestedCurrencies) && requestedCurrencies.length > 0) {
+      // Use currencies array if provided
+      currencies = requestedCurrencies.map(c => c.toUpperCase());
+    } else if (requestedCurrency) {
+      // Use single currency if provided (backward compatibility)
+      currencies = [requestedCurrency.toUpperCase()];
+    } else {
+      // Default based on provider
+      if (provider === 'paystack') {
+        currencies = ['NGN'];
+      } else {
+        currencies = ['USD'];
+      }
+    }
+
+    // Validate currencies are compatible with provider
+    const paystackCurrencies = ['NGN', 'KES', 'GHS', 'ZAR'];
+    const invalidCurrencies = [];
+    for (const currency of currencies) {
+      const currencyProvider = paymentService.selectProvider(currency, null);
+      if (currencyProvider !== provider) {
+        invalidCurrencies.push(currency);
+      }
+    }
+
+    if (invalidCurrencies.length > 0) {
+      return res.status(400).json({
+        error: `The following currencies are not compatible with ${provider}: ${invalidCurrencies.join(', ')}. ${provider === 'paystack' ? 'Paystack supports: NGN, KES, GHS, ZAR' : 'Stripe supports: USD, EUR, GBP, CAD, AUD, JPY, and other international currencies'}.`,
+        invalidCurrencies,
+        provider,
+      });
+    }
+
+    // Remove duplicates
+    currencies = [...new Set(currencies)];
+
+    const client = await pool.connect();
 
     try {
+      await client.query('BEGIN');
+
       // If setting as default, unset other defaults
       if (isDefault) {
-        await pool.query(
+        await client.query(
           `UPDATE user_payment_methods 
            SET is_default = FALSE, updated_at = CURRENT_TIMESTAMP
            WHERE user_id = $1`,
@@ -189,37 +242,54 @@ router.post('/methods', authenticate, contributionLimiter, [
         );
       }
 
-      // Check if payment method already exists for this user
-      const existingMethod = await pool.query(
-        'SELECT id FROM user_payment_methods WHERE user_id = $1 AND payment_method_id = $2',
-        [userId, paymentMethodId]
-      );
+      const createdPaymentMethods = [];
 
-      let savedMethodId;
-      if (existingMethod.rows.length > 0) {
-        // Update existing method (reactivate if it was soft-deleted)
-        await pool.query(
-          `UPDATE user_payment_methods
-           SET provider = $1, payment_method_type = $2, currency = $3, last4 = $4, brand = $5,
-               expiry_month = $6, expiry_year = $7, is_default = $8, is_active = TRUE,
-               updated_at = CURRENT_TIMESTAMP
-           WHERE id = $9`,
-          [provider, paymentMethodType, currency, last4, brand, expiryMonth, expiryYear, isDefault, existingMethod.rows[0].id]
+      // Create or update payment method for each currency
+      for (const currency of currencies) {
+        // Check if payment method already exists for this user, provider, and currency
+        const existingMethod = await client.query(
+          `SELECT id FROM user_payment_methods 
+           WHERE user_id = $1 AND payment_method_id = $2 AND currency = $3`,
+          [userId, paymentMethodId, currency]
         );
-        savedMethodId = existingMethod.rows[0].id;
-      } else {
-        // Create new payment method record
-        const insertResult = await pool.query(
-          `INSERT INTO user_payment_methods
-           (user_id, payment_method_id, provider, payment_method_type, currency, last4, brand, expiry_month, expiry_year, is_default)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-           RETURNING id`,
-          [userId, paymentMethodId, provider, paymentMethodType, currency, last4, brand, expiryMonth, expiryYear, isDefault]
+
+        let savedMethodId;
+        if (existingMethod.rows.length > 0) {
+          // Update existing method (reactivate if it was soft-deleted)
+          await client.query(
+            `UPDATE user_payment_methods
+             SET provider = $1, payment_method_type = $2, last4 = $3, brand = $4,
+                 expiry_month = $5, expiry_year = $6, is_default = $7, is_active = TRUE,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $8`,
+            [provider, paymentMethodType, last4, brand, expiryMonth, expiryYear, isDefault, existingMethod.rows[0].id]
+          );
+          savedMethodId = existingMethod.rows[0].id;
+        } else {
+          // Create new payment method record for this currency
+          const insertResult = await client.query(
+            `INSERT INTO user_payment_methods
+             (user_id, payment_method_id, provider, payment_method_type, currency, last4, brand, expiry_month, expiry_year, is_default)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             RETURNING id, currency, created_at, updated_at`,
+            [userId, paymentMethodId, provider, paymentMethodType, currency, last4, brand, expiryMonth, expiryYear, isDefault]
+          );
+          savedMethodId = insertResult.rows[0].id;
+        }
+
+        // Fetch the created/updated method for response
+        const methodResult = await client.query(
+          `SELECT id, payment_method_id, provider, payment_method_type, currency, last4, brand,
+                  expiry_month, expiry_year, is_default, is_active, created_at, updated_at
+           FROM user_payment_methods
+           WHERE id = $1`,
+          [savedMethodId]
         );
-        savedMethodId = insertResult.rows[0].id;
+
+        createdPaymentMethods.push(methodResult.rows[0]);
       }
 
-      await pool.query('COMMIT');
+      await client.query('COMMIT');
 
       // Log action
       await logPaymentAction({
@@ -231,7 +301,8 @@ router.post('/methods', authenticate, contributionLimiter, [
         metadata: { 
           provider, 
           paymentMethodType,
-          savedMethodId,
+          currencies: currencies.join(','),
+          count: createdPaymentMethods.length,
           last4,
           brand,
         },
@@ -239,25 +310,35 @@ router.post('/methods', authenticate, contributionLimiter, [
         userAgent: req.get('user-agent'),
       });
 
+      // Format response
+      const formattedMethods = createdPaymentMethods.map(method => ({
+        id: method.id,
+        paymentMethodId: method.payment_method_id,
+        provider: method.provider,
+        paymentMethodType: method.payment_method_type,
+        currency: method.currency,
+        last4: method.last4, // camelCase (primary)
+        last_4_digits: method.last4, // snake_case (alias for compatibility)
+        brand: method.brand,
+        expiryMonth: method.expiry_month,
+        expiryYear: method.expiry_year,
+        isDefault: method.is_default,
+        isActive: method.is_active,
+        createdAt: method.created_at,
+        updatedAt: method.updated_at,
+      }));
+
       res.json({
-        message: 'Payment method added successfully',
-          paymentMethod: {
-            id: savedMethodId,
-            paymentMethodId,
-            provider,
-            paymentMethodType,
-            currency,
-            last4,
-            brand,
-            expiryMonth,
-            expiryYear,
-            isDefault,
-          },
+        message: `Payment method added successfully for ${currencies.length} ${currencies.length === 1 ? 'currency' : 'currencies'}`,
+        paymentMethod: formattedMethods[0], // First method for backward compatibility
+        paymentMethods: formattedMethods, // All methods
         customerId,
       });
     } catch (error) {
-      await pool.query('ROLLBACK');
+      await client.query('ROLLBACK');
       throw error;
+    } finally {
+      client.release();
     }
   } catch (error) {
     console.error('Add payment method error:', error);
@@ -328,14 +409,19 @@ router.get('/methods', authenticate, async (req, res) => {
           [userId, method.payment_method_id]
         );
 
+        // Handle null values - return null instead of undefined
+        const last4Value = method.last4 || null;
+        const brandValue = method.brand || null;
+
         return {
           id: method.id,
           paymentMethodId: method.payment_method_id,
           provider: method.provider,
           paymentMethodType: method.payment_method_type,
           currency: method.currency,
-          last4: method.last4,
-          brand: method.brand,
+          last4: last4Value, // camelCase (primary) - null if not available
+          last_4_digits: last4Value, // snake_case (alias for compatibility) - null if not available
+          brand: brandValue, // null if not available
           expiryMonth: method.expiry_month,
           expiryYear: method.expiry_year,
           isDefault: method.is_default,
