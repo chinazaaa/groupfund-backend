@@ -472,6 +472,54 @@ router.post('/:groupId/auto-pay/disable/verify-password', authenticate, contribu
   }
 });
 
+// Step 2: Request OTP after password verification for disabling auto-pay
+router.post('/:groupId/auto-pay/disable/request-otp', authenticate, otpLimiter, [
+  body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const userId = req.user.id;
+    const { groupId } = req.params;
+    const { password_verification_token } = req.body;
+
+    // Verify user is member of group
+    const memberCheck = await pool.query(
+      'SELECT status FROM group_members WHERE group_id = $1 AND user_id = $2 AND status = $3',
+      [groupId, userId, 'active']
+    );
+
+    if (memberCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'You must be an active member of this group' });
+    }
+
+    // Get user email
+    const userResult = await pool.query(
+      'SELECT email FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const email = userResult.rows[0].email;
+
+    // Request OTP
+    await requestPaymentOTP(userId, email, 'disable_auto_pay', password_verification_token);
+
+    res.json({
+      message: 'OTP sent to your email',
+    });
+  } catch (error) {
+    console.error('OTP request error:', error);
+    res.status(500).json({ error: error.message || 'Server error during OTP request' });
+  }
+});
+
 // Step 3: Disable auto-pay for user in group (requires password + OTP verification)
 router.post('/:groupId/auto-pay/disable', authenticate, contributionLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),

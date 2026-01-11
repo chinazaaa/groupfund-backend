@@ -309,6 +309,33 @@ class PaymentService {
       }
 
       if (provider === 'stripe' && this.stripe) {
+        // Validate card funding type - only allow debit cards
+        try {
+          const paymentMethod = await this.stripe.paymentMethods.retrieve(paymentMethodId);
+          if (paymentMethod && paymentMethod.card && paymentMethod.card.funding) {
+            const funding = paymentMethod.card.funding;
+            if (funding === 'credit') {
+              return {
+                success: false,
+                error: 'Credit cards are not accepted. Please use a debit card.',
+                status: 'failed',
+              };
+            }
+            if (funding === 'prepaid') {
+              return {
+                success: false,
+                error: 'Prepaid cards are not accepted. Please use a debit card.',
+                status: 'failed',
+              };
+            }
+            // Allow 'debit' and 'unknown' (some cards may not have funding type available)
+          }
+        } catch (retrieveError) {
+          // If we can't retrieve the payment method, log warning but continue
+          // (payment method might be valid but retrieval failed)
+          console.warn('Could not retrieve payment method to check funding type:', retrieveError.message);
+        }
+
         // Convert amount to cents
         const amountInCents = this.convertToSmallestUnit(amount, currency);
 

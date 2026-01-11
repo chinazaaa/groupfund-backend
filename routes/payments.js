@@ -242,7 +242,9 @@ router.post('/methods', authenticate, contributionLimiter, [
       isDefault = payment_method_data.is_default || false;
 
       // If card details are missing, try to fetch from Stripe
-      if ((!last4 || !brand) && paymentService.stripe) {
+      // Also check card funding type (debit vs credit)
+      let cardFunding = null;
+      if (paymentService.stripe) {
         try {
           const stripePaymentMethod = await paymentService.stripe.paymentMethods.retrieve(paymentMethodId);
           if (stripePaymentMethod && stripePaymentMethod.card) {
@@ -250,11 +252,39 @@ router.post('/methods', authenticate, contributionLimiter, [
             brand = brand || stripePaymentMethod.card.brand || null;
             expiryMonth = expiryMonth || stripePaymentMethod.card.exp_month || null;
             expiryYear = expiryYear || stripePaymentMethod.card.exp_year || null;
+            cardFunding = stripePaymentMethod.card.funding || null;
           }
         } catch (stripeError) {
           console.warn('Could not fetch payment method details from Stripe:', stripeError.message);
           // Continue with whatever was provided or null
         }
+      }
+
+      // Validate card funding type - only allow debit cards
+      if (cardFunding) {
+        if (cardFunding === 'credit') {
+          return res.status(400).json({
+            error: 'Credit cards are not accepted. Please use a debit card.',
+            cardFunding,
+          });
+        }
+        if (cardFunding === 'prepaid') {
+          return res.status(400).json({
+            error: 'Prepaid cards are not accepted. Please use a debit card.',
+            cardFunding,
+          });
+        }
+        if (cardFunding !== 'debit' && cardFunding !== 'unknown') {
+          // Allow 'unknown' as some cards may not have funding type available
+          return res.status(400).json({
+            error: 'Only debit cards are accepted.',
+            cardFunding,
+          });
+        }
+      } else {
+        // If funding type is not available, log a warning but allow it
+        // (Some cards may not have funding type available immediately)
+        console.warn(`Payment method ${paymentMethodId} added without funding type. Card will be accepted but funding type should be verified.`);
       }
 
       // Warn if critical fields are still missing (but don't fail the request)

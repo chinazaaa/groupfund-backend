@@ -18,6 +18,7 @@ const {
   sendWithdrawalCompletedEmail,
   sendWithdrawalFailedEmail,
 } = require('../utils/email');
+const { createNotification } = require('../utils/notifications');
 
 const router = express.Router();
 
@@ -289,6 +290,22 @@ router.post('/request', authenticate, contributionLimiter, [
       } catch (emailError) {
         console.error('Error sending withdrawal request email:', emailError);
         // Don't fail the request if email fails
+      }
+
+      // Create in-app and push notification
+      try {
+        const currencySymbol = paymentService.formatCurrency(withdrawalAmount, currency).replace(/[\d.,]+/g, '');
+        await createNotification(
+          userId,
+          'withdrawal_requested',
+          'Withdrawal Requested',
+          `Your withdrawal of ${currencySymbol}${withdrawalAmount.toLocaleString()} ${currency} has been submitted and will be processed in 24 hours.`,
+          null,
+          null
+        );
+      } catch (notificationError) {
+        console.error('Error creating withdrawal request notification:', notificationError);
+        // Don't fail the request if notification fails
       }
 
       // Log action

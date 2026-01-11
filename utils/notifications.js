@@ -139,6 +139,11 @@ async function createNotification(userId, type, title, message, groupId = null, 
         }
       }
 
+      if (type === 'withdrawal_requested' || type === 'withdrawal_completed' || type === 'withdrawal_failed') {
+        screen = 'Wallet';
+        params = {};
+      }
+
       // Send push notification
       await sendPushNotification(
         pushToken,
