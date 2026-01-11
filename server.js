@@ -173,11 +173,7 @@ app.use('/api/migrations', require('./routes/migrations'));
 app.use('/api/webhook', require('./routes/webhook'));
 app.use('/api/reports', require('./routes/reports'));
 app.use('/api/chat', require('./routes/chat'));
-app.use('/api/payments', require('./routes/payments'));
-app.use('/api/groups', require('./routes/autoPay'));
-app.use('/api/users', require('./routes/paymentPreferences'));
-app.use('/api/withdrawals', require('./routes/withdrawals'));
-app.use('/api/bank-accounts', require('./routes/bankAccounts'));
+
 
 // Error handling middleware
 app.use((err, req, res, next) => {
