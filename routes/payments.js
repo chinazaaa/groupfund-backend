@@ -60,7 +60,7 @@ router.post('/methods/verify-password', authenticate, contributionLimiter, [
 // Step 2: Request OTP after password verification
 router.post('/methods/request-otp', authenticate, otpLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
-  body('action').optional().isIn(['add-payment-method', 'update-currencies']).withMessage('Invalid action'),
+  body('action').optional().isIn(['add-payment-method', 'edit-payment-method', 'update-payment-method', 'update-currencies']).withMessage('Invalid action. Must be one of: add-payment-method, edit-payment-method, update-payment-method, update-currencies'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -84,8 +84,11 @@ router.post('/methods/request-otp', authenticate, otpLimiter, [
     const email = userResult.rows[0].email;
 
     // Map action to internal action name
+    // Note: 'update-payment-method' is an alias for 'edit-payment-method' for backward compatibility
     const actionMap = {
       'add-payment-method': 'add_payment_method',
+      'edit-payment-method': 'edit_payment_method',
+      'update-payment-method': 'edit_payment_method', // Alias for edit-payment-method
       'update-currencies': 'update_payment_method_currencies',
     };
 
