@@ -485,17 +485,36 @@ class PaymentService {
         processorFeeFixed = 2; // R2
       }
     } else if (provider === 'stripe') {
-      // Stripe fees (approximate, varies by country)
-      processorFeePercent = 2.9;
-      // Convert fixed fee based on currency
-      if (currency === 'USD') {
-        processorFeeFixed = 0.30;
-      } else if (currency === 'GBP') {
-        processorFeeFixed = 0.20;
+      // Stripe fees for UK merchants
+      // UK cards: 1.4% + £0.20
+      // European (EEA) cards: 2.5% + £0.20
+      // International (non-EEA) cards: 3.25% + £0.20
+      // Currency conversion: +2% if currency differs from settlement currency
+      
+      // Use conservative estimate (international rate) since we can't know card origin in advance
+      // For NGN and other non-GBP currencies, add currency conversion fee
+      if (currency === 'GBP') {
+        // UK currency - no conversion fee
+        processorFeePercent = 2.5; // Average between UK (1.4%) and EEA (2.5%)
+        processorFeeFixed = 0.20; // £0.20
+      } else if (currency === 'USD') {
+        // US currency - likely international card + conversion
+        processorFeePercent = 5.25; // 3.25% + 2% conversion
+        processorFeeFixed = 0.20; // £0.20 equivalent
       } else if (currency === 'EUR') {
-        processorFeeFixed = 0.25;
+        // European currency - EEA card + conversion
+        processorFeePercent = 4.5; // 2.5% + 2% conversion
+        processorFeeFixed = 0.20; // £0.20 equivalent
+      } else if (currency === 'NGN') {
+        // Nigerian currency - international card + conversion
+        processorFeePercent = 5.25; // 3.25% + 2% conversion (conservative estimate)
+        // Fixed fee: £0.20 ≈ ₦250-300 (using approximate exchange rate)
+        // Using ₦250 as a conservative estimate (actual will vary with exchange rate)
+        processorFeeFixed = 250; // ₦250 (approximately £0.20 at current rates)
       } else {
-        processorFeeFixed = 0.30; // Default
+        // Other currencies - use international rate + conversion
+        processorFeePercent = 5.25; // 3.25% + 2% conversion
+        processorFeeFixed = 0.20; // £0.20 equivalent
       }
     }
 
