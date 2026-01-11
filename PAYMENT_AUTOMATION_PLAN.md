@@ -379,6 +379,11 @@ DELETE /api/payments/methods/:methodId
 - Step 3: Remove payment method (requires password + OTP verification)
 - Body: { password_verification_token, otp }
 - Verify password token and OTP before proceeding
+- **Auto-disable auto-pay**: Before deletion, check if this payment method is used for auto-pay
+  - If used for auto-pay: Automatically disable auto-pay for all groups using this card
+  - Update: Set `auto_pay_enabled = false` for all affected groups in `user_payment_preferences`
+  - Notification: Send email/notification "Auto-pay disabled: Your debit card was removed. Please add a new card to re-enable auto-pay."
+  - Result: Contributions revert to manual payment (user must mark as paid manually)
 
 POST /api/payments/methods/:methodId/set-default
 - Set default payment method for group
@@ -541,6 +546,10 @@ PUT /api/users/wallet
 - Step 3: Update wallet/account details (requires password + OTP verification)
 - Body: { password_verification_token, otp, account_name, bank_name, account_number, ... }
 - Verify password token and OTP before proceeding
+- **Bank details removal check**: If removing bank details (setting to null/empty), check if user is in any active groups
+  - If in active groups: Return error 400 "Cannot remove bank details. You must leave all groups first. You are currently a member of [X] group(s)."
+  - If not in any groups: Allow removal
+- **Always allow UPDATE/EDIT**: Users can update/edit bank details (change bank name, account number, etc.) - only removal is blocked
 - Updates bank account details for withdrawals
 
 GET /api/users/wallet
@@ -567,7 +576,12 @@ POST /api/contributions/withdraw
 - Step 3: Withdraw money (requires password + OTP verification)
 - Body: { password_verification_token, otp, amount, bank_account, bank_name, account_name }
 - Verify password token and OTP before proceeding
-- Uses Stripe Payouts API or Paystack Transfer API
+- **24-hour hold period**: Mark withdrawal as 'pending' (status = 'pending')
+- **Email notification**: Send security email to user
+  - Subject: "Withdrawal Request Received"
+  - Content: "Your withdrawal request of {amount} {currency_symbol} has been received. Funds will be sent to your bank account within 24 hours. If you didn't make this withdrawal, please contact security@groupfund.app immediately."
+- **Scheduled processing**: Process withdrawal after 24-hour hold (scheduled job)
+- Uses Stripe Payouts API or Paystack Transfer API after hold period
 ```
 
 ### 4. Webhooks (Provider Callbacks)
@@ -600,6 +614,7 @@ POST /api/webhooks/paystack
 - [ ] Fee calculation logic
 - [ ] Wallet credit on successful payment
 - [ ] Webhook handlers for payment confirmation
+- [ ] **Webhook handler for payment failures** - Handle final failure webhooks, auto-disable auto-pay, send email notification
 - [ ] Transaction recording with fees
 - [ ] **Security**: Webhook signature verification (critical!)
 - [ ] **Security**: Idempotency handling (prevent duplicate processing)
@@ -609,6 +624,8 @@ POST /api/webhooks/paystack
 
 ### Phase 3: Auto-Pay Setup (Week 5-6)
 - [ ] Bank details validation (required for join/create groups)
+- [ ] **Bank details removal check** - Prevent removal if user is in any active group (must leave groups first)
+- [ ] **Bank details update** - Always allow update/edit of bank details (only removal is blocked)
 - [ ] **Security**: Two-factor verification (password + email OTP) for critical actions
 - [ ] **Security**: Password verification endpoints for critical actions
 - [ ] **Security**: OTP generation and email sending for payment actions
@@ -623,7 +640,7 @@ POST /api/webhooks/paystack
 - [ ] Validation and error handling
 
 ### Phase 4: Automatic Processing (Week 7-8)
-- [ ] Scheduled job to check birthdays/deadlines
+- [ ] Scheduled job to check birthdays/deadlines (recommended: run at 9 AM local time)
 - [ ] Payment timing logic (1 day before vs same day)
 - [ ] Automatic payment trigger logic (respects payment_timing preference)
 - [ ] **Defaulter check logic** - Check recipient for overdue payments first
@@ -641,9 +658,11 @@ POST /api/webhooks/paystack
 ### Phase 5: Withdrawals (Week 9-10)
 - [ ] Stripe Payouts API integration
 - [ ] Paystack Transfer API integration
-- [ ] Withdrawal request handling
+- [ ] Withdrawal request handling (24-hour hold period)
+- [ ] **Security email notification** - Send email when withdrawal requested (with security warning)
+- [ ] **Scheduled job** - Process pending withdrawals after 24-hour hold period
 - [ ] Bank account verification
-- [ ] Withdrawal status tracking
+- [ ] Withdrawal status tracking (pending → processing → completed/failed)
 
 ### Phase 6: Testing & Polish (Week 11-12)
 - [ ] End-to-end testing
@@ -676,11 +695,19 @@ POST /api/webhooks/paystack
   - Group join time
 - Ensures recipient can receive funds (withdrawal account must exist)
 - Error message: "Please add your bank details in your profile to join/create groups"
+- **Bank details removal restriction**:
+  - **Prevent removal if user is in any active group**
+  - Check if user is member of any active group before allowing removal
+  - If in active groups: Block removal, return error "Cannot remove bank details. You must leave all groups first. You are currently a member of [X] group(s)."
+  - If not in any groups (or only in closed groups): Allow removal
+  - **Always allow UPDATE/EDIT**: Users can update/edit bank details (change bank name, account number, etc.) - only removal is blocked
+  - **Rationale**: Prevents money from getting stuck, prevents payment failures, consistent with validation requirement
 
 ### 3. **Failed Payment Handling**
-- Retry logic (3 attempts with exponential backoff)
+- **Stripe/Paystack automatic retries**: Stripe uses Smart Retries (multiple attempts over days/weeks), Paystack has similar retry logic
+- **After retries exhausted**: Auto-disable auto-pay, send email notification, revert to manual payment
+- **User can re-enable**: User can re-enable auto-pay after fixing the issue (add new card, update card, add funds, etc.)
 - Email notifications for failures
-- Fallback to manual payment
 - User-friendly error messages
 
 ### 4. **Multi-Currency Support**
@@ -715,6 +742,8 @@ POST /api/webhooks/paystack
 
 ### 7. **Validation Requirements**
 - Bank details MUST exist before joining/creating groups
+- **Bank details removal**: Prevent removal if user is in any active group (must leave groups first)
+- **Bank details update**: Always allow update/edit of bank details (only removal is blocked)
 - Debit card required only if enabling auto-pay
 - Withdrawal account = bank details (already required)
 - Enforce at API level (not just UI)
@@ -1049,13 +1078,18 @@ Your profit: $0.50
 
 ### Payment Failures & Retry Logic
 
-**Retry Strategy:**
-1. **Insufficient funds** → Retry after 3 days, notify user via email
-2. **Card expired** → Notify user to update card, disable auto-pay
-3. **Bank declined** → Retry after 1 day, notify user, allow manual payment
-4. **Network error** → Retry immediately (up to 3 times, exponential backoff)
-5. **Card not found** → Notify user, disable auto-pay, require card update
-6. **Maximum retries exceeded** → Disable auto-pay, require manual payment
+**Stripe/Paystack Automatic Retry Strategy:**
+- **Stripe Smart Retries**: Multiple intelligent retry attempts over several days to weeks (machine learning-based)
+- **Paystack**: Similar automatic retry logic based on failure reason
+- **Our system**: Receives webhook notifications for each retry attempt
+
+**Failure Handling by Reason:**
+1. **Insufficient funds** → Stripe/Paystack retries multiple times over days → After final failure: Disable auto-pay, notify user, revert to manual
+2. **Card expired** → Stripe/Paystack detects immediately → Disable auto-pay, notify user to update card
+3. **Bank declined** → Stripe/Paystack retries multiple times → After final failure: Disable auto-pay, notify user, revert to manual
+4. **Network error** → Stripe/Paystack retries immediately → Usually succeeds on retry
+5. **Card not found** → Stripe/Paystack fails immediately → Disable auto-pay, notify user, require card update
+6. **All retries exhausted** → Stripe/Paystack gives up → **Disable auto-pay, send email, revert to manual payment, user can re-enable**
 
 **CRITICAL: Status Check Before ANY Auto-Debit (Prevent Double Payment)**
 - **Before ANY auto-debit attempt (initial OR retry), ALWAYS check if payment status is still 'not_paid'**
@@ -1170,13 +1204,25 @@ SUBSCRIPTION/GENERAL EXAMPLE:
 5. **User changes payment timing after payment scheduled** → Use timing at time of payment
 6. **User "1 day before" but joins group 1 day before birthday** → Process immediately or skip to next cycle?
 7. **User has no bank details** → Cannot join/create group (enforced validation)
-8. **User removes bank details after joining group** → Should we allow? Or require bank details to stay?
+8. **User removes bank details after joining group** → ✅ **DECIDED: Prevent removal if user is in any active group**
+   - **Check**: Before allowing bank details removal, check if user is member of any active group
+   - **If user is in active groups**: Block removal, return error 400 "Cannot remove bank details. You must leave all groups first. You are currently a member of [X] group(s)."
+   - **If user is not in any groups (or only in closed groups)**: Allow removal
+   - **Always allow UPDATE/EDIT**: Users can always update/edit bank details (change bank name, account number, etc.) - only removal is blocked
+   - **Rationale**: Prevents money from getting stuck (if they receive contributions but have no bank details, can't withdraw), prevents payment failures, consistent with validation requirement
 9. **User tries to pay with wallet balance** → Reject payment, require debit card (wallet is receive/withdraw only)
 10. **User has wallet balance but no debit card** → Cannot enable auto-pay (must have debit card for contributions)
 11. **User has multiple payment methods** → Use default payment method or allow selection per group?
 12. **Payment method expires** → Disable auto-pay, notify user, require card update
+13. **User removes/deletes debit card** → ✅ **Auto-disable auto-pay, revert to manual payment**
+   - **Check**: Before allowing card deletion, check if user has auto-pay enabled for any groups
+   - **Action**: Automatically disable auto-pay for all groups using this card
+   - **Update**: Set `auto_pay_enabled = false` for all affected groups in `user_payment_preferences`
+   - **Notification**: Send email/notification to user "Auto-pay disabled: Your debit card was removed. Please add a new card to re-enable auto-pay."
+   - **Result**: Contributions revert to manual payment (user must mark as paid manually)
+   - **Rationale**: Can't charge a card that doesn't exist, user must re-enable auto-pay after adding new card
 13. **User tries to delete account with wallet balance** → Prevent deletion, require withdrawal first
-14. **Different currencies in same group** → Require same currency OR currency conversion (to decide)
+14. **Different currencies in same group** → ✅ Same currency per group (set at group creation, no conversion needed)
 15. **Chargeback received** → Handle via Stripe/Paystack dispute system, respond with evidence, update records
 17. **Partial payment failure** → Some members charged, others failed → Notify admin, retry failures
 18. **Webhook delayed/missing** → Fallback to polling Stripe/Paystack API for payment status
@@ -1189,6 +1235,18 @@ SUBSCRIPTION/GENERAL EXAMPLE:
 25. **User pays manually before scheduled auto-debit time** → Check status before initial auto-debit (must be 'not_paid'), skip auto-debit if status is 'paid' or 'confirmed' (prevent double payment)
 26. **Auto-debit fails, user pays manually, retry triggers** → Check status before retry (must be 'not_paid'), skip retry if status is 'paid' or 'confirmed' (prevent double payment)
 27. **User pays manually while auto-debit retry is pending** → Status check prevents double charge when retry executes
+28. **User requests withdrawal** → 24-hour hold period, send security email, process after 24 hours
+29. **Fraudulent withdrawal attempt** → 24-hour hold gives time to detect and prevent, user can contact security@groupfund.app
+30. **Stripe/Paystack retries exhausted (all attempts failed)** → ✅ **Auto-disable auto-pay, revert to manual payment**
+   - **Trigger**: Final failure webhook from Stripe/Paystack (all retry attempts exhausted)
+   - **Action**: Automatically disable auto-pay for the affected group
+   - **Update**: Set `auto_pay_enabled = false` for the group in `user_payment_preferences`
+   - **Notification**: Send email "Auto-Pay Disabled - Payment Failed"
+     - Subject: "Auto-Pay Disabled - Payment Failed"
+     - Content: "Your automatic payment for [Group Name] failed after multiple retry attempts. Auto-pay has been disabled and contributions have reverted to manual payment. Please check your payment method and re-enable auto-pay if the issue is resolved."
+   - **Result**: Contributions revert to manual payment (user must mark as paid manually)
+   - **Re-enable**: User can re-enable auto-pay after fixing the issue (add new card, update card, add funds, etc.)
+   - **Validation**: System validates payment method exists before allowing re-enable
 
 ---
 
@@ -1716,6 +1774,30 @@ USER WANTS TO ADD DEBIT CARD:
   - Link to review account security settings
 
 **Email examples:**
+
+**Withdrawal Request:**
+```
+Subject: Withdrawal Request Received
+
+Hi [Name],
+
+Your withdrawal request of {amount} {currency_symbol} has been received.
+
+Date: [Date and Time]
+Action: Withdrawal requested
+Amount: {amount} {currency_symbol}
+Bank Account: {bank_name} - ****{last_4_digits}
+
+Funds will be sent to your bank account within 24 hours.
+
+If you didn't make this withdrawal, please contact security@groupfund.app immediately
+to secure your account.
+
+Best regards,
+The GroupFund Team
+```
+
+**Debit Card Added:**
 ```
 Subject: Security Alert: Debit Card Added to Your GroupFund Account
 
@@ -1754,9 +1836,9 @@ Action: [Action type]
 Details: [Masked/partial details]
 
 Examples:
+- "Withdrawal request of ₦5,000 received. Funds will be sent within 24 hours."
 - "Debit card ending in ****1234 was added"
 - "Account details were updated (Bank: [Bank Name])"
-- "₦5,000 was withdrawn to account ending in ****5678"
 - "Auto-pay was enabled for group: [Group Name]"
 
 If you didn't make this change, please contact us immediately at security@groupfund.app
@@ -1927,13 +2009,25 @@ The GroupFund Security Team
 - **Accept risk** - Some chargebacks will happen (fraudulent cards), part of doing business
 
 ### 3. **Failed Payment Retry Logic (Details)**
-- **Retry strategy:**
-  - Retry immediately (network errors)
-  - Retry after 1 day (insufficient funds)
-  - Retry after 3 days (card declined)
-  - Maximum retry attempts: 3
-  - Notify user after each failed attempt
-  - After max retries: Disable auto-pay, require manual payment
+
+**Stripe/Paystack Automatic Retries:**
+- **Stripe**: Uses Smart Retries (machine learning-based) - multiple retry attempts automatically over several days to weeks
+  - Stripe handles retries intelligently based on failure reason
+  - No fixed number - Stripe decides optimal retry times
+  - Stripe will eventually stop retrying if all attempts fail
+- **Paystack**: Similar automatic retry logic (varies by failure reason)
+- **Our system**: Receives webhook notifications for each retry attempt and final failure
+
+**After Stripe/Paystack Retries Are Exhausted:**
+- **Auto-disable auto-pay**: When Stripe/Paystack gives up (final failure webhook received)
+  - Set `auto_pay_enabled = false` for the affected group in `user_payment_preferences`
+  - Contributions revert to manual payment (user must mark as paid manually)
+- **Email notification**: Send email to user immediately
+  - Subject: "Auto-Pay Disabled - Payment Failed"
+  - Content: "Your automatic payment for [Group Name] failed after multiple retry attempts. Auto-pay has been disabled and contributions have reverted to manual payment. Please check your payment method and re-enable auto-pay if the issue is resolved."
+- **User can re-enable**: User can re-enable auto-pay after fixing the issue (add new card, update card, add funds, etc.)
+  - User must manually re-enable auto-pay via the enable endpoint
+  - System validates payment method exists before allowing re-enable
 
 - **CRITICAL: Status Check Before ANY Auto-Debit (Prevent Double Payment)**
   - **Before ANY auto-debit attempt (initial OR retry), check if payment status is still 'not_paid'**
@@ -1951,16 +2045,21 @@ The GroupFund Security Team
   - Disable auto-pay for expired cards
   - Email reminder to update card
 
-### 4. **Currency Considerations**
-- **Same currency requirement?**
-  - Can users in different currencies join same group?
-  - If yes: Currency conversion needed (exchange rate API?)
-  - If no: Require all members to use same currency
+- **Card deletion/removal handling:**
+  - **Auto-disable auto-pay** when card is deleted/removed
+  - Check if card is used for auto-pay before deletion
+  - If used: Automatically disable auto-pay for all groups using this card
+  - Update: Set `auto_pay_enabled = false` for all affected groups
+  - Notification: Send email "Auto-pay disabled: Your debit card was removed. Please add a new card to re-enable auto-pay."
+  - Result: Contributions revert to manual payment (user must mark as paid manually)
+  - User must re-enable auto-pay after adding new card
 
-- **Currency conversion (if needed):**
-  - Exchange rate source (real-time API?)
-  - Conversion fees (who pays?)
-  - Display original and converted amounts
+### 4. **Currency Handling (DECIDED)**
+- ✅ **Same currency per group** - Currency selected at group creation
+- ✅ **No currency conversion** - All members must use the group's currency
+- ✅ **Admin selects currency** when creating group (NGN, USD, GBP, EUR, KES, GHS, ZAR, CAD, AUD, JPY)
+- ✅ **Validation**: Users joining group must use same currency (can check user's currency preference or enforce group currency)
+- **Rationale**: Simpler implementation, avoids conversion fees, clearer for users, prevents confusion
 
 ### 5. **User Onboarding & Education**
 - **Onboarding flow:**
@@ -2047,11 +2146,15 @@ The GroupFund Security Team
 
 2. **When to process payments?**
    - ✅ User preference: "1 day before" or "same day" (DECIDED)
-   - Exact time of day? (e.g., 9 AM local time vs midnight)
+   - ✅ **Exact time of day**: 9 AM local time (recommended default, can be adjusted during implementation)
+   - Rationale: Business hours timing, better for user experience, aligns with banking hours
 
 3. **Minimum/Maximum transaction amounts?**
-   - ⚠️ Need to decide minimum/maximum amounts per currency
-   - Consider: Fees, fraud prevention, user experience
+   - ✅ **Recommended defaults** (can be adjusted per currency during implementation):
+     - **Minimum**: Based on payment processor minimums (typically ₦100 NGN, $0.50 USD, £0.30 GBP, €0.50 EUR)
+     - **Maximum**: No strict maximum (let payment processors handle fraud detection)
+     - **Rationale**: Minimum covers processor fees, maximum not needed (processors handle limits)
+   - Can be configured per currency in settings
 
 4. **Chargeback handling?**
    - ✅ Handle via Stripe/Paystack dispute system
@@ -2059,12 +2162,18 @@ The GroupFund Security Team
    - ✅ Keep transaction records for evidence
 
 5. **Hold period for withdrawals?**
-   - Immediate withdrawal?
-   - 24-48 hour hold for security?
+   - ✅ **DECIDED: 24-hour hold period** (security measure to prevent fraud)
+   - **Rationale**: Gives time to detect fraudulent withdrawals before money leaves the system
+   - **Email notification**: Send email when withdrawal requested
+     - Subject: "Withdrawal Request Received"
+     - Content: "Your withdrawal request has been received. Funds will be sent to your bank account within 24 hours. If you didn't make this withdrawal, please contact security@groupfund.app immediately."
+   - **Security benefit**: Allows time to detect and prevent fraud before money is transferred
 
 6. **Currency handling?**
-   - ⚠️ Same currency required per group?
-   - Currency conversion if mixed currencies?
+   - ✅ **Same currency per group** (DECIDED)
+   - ✅ **Currency selected at group creation** - Admin selects currency when creating group
+   - ✅ **All members must use same currency** - No currency conversion needed
+   - Rationale: Simpler implementation, avoids conversion fees, clearer for users
 
 ---
 
