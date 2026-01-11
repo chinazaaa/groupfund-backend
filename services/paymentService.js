@@ -135,7 +135,23 @@ class PaymentService {
         throw new Error('No authorization code found in transaction');
       }
 
-      // Extract card details
+      // Extract card details including expiry date
+      // Paystack authorization object includes exp_month and exp_year as strings
+      let expiryMonth = null;
+      let expiryYear = null;
+      
+      if (authorization.exp_month) {
+        expiryMonth = typeof authorization.exp_month === 'string' 
+          ? parseInt(authorization.exp_month, 10) 
+          : authorization.exp_month;
+      }
+      
+      if (authorization.exp_year) {
+        expiryYear = typeof authorization.exp_year === 'string' 
+          ? parseInt(authorization.exp_year, 10) 
+          : authorization.exp_year;
+      }
+
       const cardDetails = {
         authorizationCode: authorizationCode,
         last4: authorization.last4 || null,
@@ -143,10 +159,8 @@ class PaymentService {
         cardType: authorization.card_type || null,
         bank: authorization.bank || null,
         bin: authorization.bin || null,
-        // Note: Paystack doesn't provide expiry month/year in authorization
-        // We'll set these as null and they can be updated later if available
-        expiryMonth: null,
-        expiryYear: null,
+        expiryMonth: expiryMonth,
+        expiryYear: expiryYear,
       };
 
       return {
