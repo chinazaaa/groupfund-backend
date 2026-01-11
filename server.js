@@ -158,7 +158,6 @@ app.use('/', require('./routes/deeplink'));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/groups', require('./routes/groups'));
-app.use('/api/groups', require('./routes/autoPay')); // Auto-pay routes for groups
 app.use('/api/members', require('./routes/members'));
 app.use('/api/birthdays', require('./routes/birthdays'));
 app.use('/api/subscriptions', require('./routes/subscriptions'));
