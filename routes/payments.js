@@ -304,6 +304,72 @@ router.post('/methods', authenticate, contributionLimiter, [
 
       await client.query('COMMIT');
 
+      // Auto-refund Paystack verification charges
+      // Check if this was a verification charge that needs to be refunded
+      const verificationTransactionId = payment_method_data.verification_transaction_id || payment_method_data.transaction_reference;
+      const verificationAmount = payment_method_data.verification_amount;
+      let refundResult = null;
+      
+      if (provider === 'paystack' && verificationTransactionId && verificationAmount) {
+        try {
+          console.log(`🔄 Auto-refunding Paystack verification charge: ${verificationTransactionId} (${verificationAmount} ${currencies[0]})`);
+          
+          refundResult = await paymentService.refundTransaction({
+            transactionId: verificationTransactionId,
+            amount: verificationAmount,
+            currency: currencies[0],
+          }, 'paystack');
+
+          if (refundResult.success) {
+            console.log(`✅ Successfully refunded verification charge: ${refundResult.refundId}`);
+            
+            // Log refund action
+            await logPaymentAction({
+              userId,
+              action: 'refund_verification_charge',
+              status: 'success',
+              paymentProvider: provider,
+              providerTransactionId: verificationTransactionId,
+              metadata: {
+                refundId: refundResult.refundId,
+                amount: verificationAmount,
+                currency: currencies[0],
+                paymentMethodId: paymentMethodId,
+              },
+              ipAddress: req.ip,
+              userAgent: req.get('user-agent'),
+            });
+          } else {
+            console.error(`❌ Failed to refund verification charge: ${refundResult.error}`);
+            
+            // Log failed refund (but don't fail the payment method save)
+            await logPaymentAction({
+              userId,
+              action: 'refund_verification_charge',
+              status: 'failed',
+              paymentProvider: provider,
+              providerTransactionId: verificationTransactionId,
+              metadata: {
+                error: refundResult.error,
+                amount: verificationAmount,
+                currency: currencies[0],
+                paymentMethodId: paymentMethodId,
+              },
+              ipAddress: req.ip,
+              userAgent: req.get('user-agent'),
+            });
+          }
+        } catch (refundError) {
+          // Log error but don't fail the payment method save
+          console.error('❌ Error during automatic refund of verification charge:', refundError);
+          refundResult = {
+            success: false,
+            error: refundError.message || 'Refund processing failed',
+          };
+          // Payment method is already saved, so we just log the error
+        }
+      }
+
       // Log action
       await logPaymentAction({
         userId,
@@ -318,6 +384,7 @@ router.post('/methods', authenticate, contributionLimiter, [
           count: createdPaymentMethods.length,
           last4,
           brand,
+          verificationRefunded: refundResult ? (refundResult.success ? 'success' : 'failed') : 'not_applicable',
         },
         ipAddress: req.ip,
         userAgent: req.get('user-agent'),
@@ -341,12 +408,28 @@ router.post('/methods', authenticate, contributionLimiter, [
         updatedAt: method.updated_at,
       }));
 
-      res.json({
+      // Build response
+      const response = {
         message: `Payment method added successfully for ${currencies.length} ${currencies.length === 1 ? 'currency' : 'currencies'}`,
         paymentMethod: formattedMethods[0], // First method for backward compatibility
         paymentMethods: formattedMethods, // All methods
         customerId,
-      });
+      };
+
+      // Add refund info if applicable (for Paystack verification charges)
+      if (refundResult !== null) {
+        response.verificationRefund = {
+          success: refundResult.success,
+          status: refundResult.success ? 'refunded' : 'failed',
+          refundId: refundResult.refundId || null,
+          error: refundResult.error || null,
+          note: refundResult.success 
+            ? 'Verification charge has been automatically refunded'
+            : `Refund failed: ${refundResult.error || 'Unknown error'}. Please contact support.`,
+        };
+      }
+
+      res.json(response);
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;

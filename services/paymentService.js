@@ -560,6 +560,94 @@ class PaymentService {
   }
 
   /**
+   * Refund a transaction
+   * @param {Object} refundData - Refund data
+   * @param {string} refundData.transactionId - Transaction ID or reference to refund
+   * @param {number} refundData.amount - Optional: Partial refund amount (in main currency unit). If not provided, full refund.
+   * @param {string} refundData.currency - Currency code
+   * @param {string} provider - 'stripe' or 'paystack'
+   * @returns {Promise<Object>} - Refund result
+   */
+  async refundTransaction({
+    transactionId,
+    amount,
+    currency,
+  }, provider = 'stripe') {
+    try {
+      if (provider === 'stripe' && this.stripe) {
+        // For Stripe, refund using charge ID or payment intent ID
+        let refund;
+        
+        if (amount) {
+          // Partial refund
+          const amountInCents = this.convertToSmallestUnit(amount, currency);
+          refund = await this.stripe.refunds.create({
+            charge: transactionId,
+            amount: amountInCents,
+          });
+        } else {
+          // Full refund
+          refund = await this.stripe.refunds.create({
+            charge: transactionId,
+          });
+        }
+
+        return {
+          success: true,
+          refundId: refund.id,
+          amount: this.convertFromSmallestUnit(refund.amount, currency),
+          currency: refund.currency.toUpperCase(),
+          status: refund.status,
+        };
+      } else if (provider === 'paystack' && this.paystack) {
+        // For Paystack, refund using transaction reference
+        let refund;
+        
+        if (amount) {
+          // Partial refund
+          const amountInKobo = this.convertToSmallestUnit(amount, currency);
+          refund = await this.paystack.refund.create({
+            transaction: transactionId,
+            amount: amountInKobo,
+            currency: currency.toUpperCase(),
+          });
+        } else {
+          // Full refund
+          refund = await this.paystack.refund.create({
+            transaction: transactionId,
+            currency: currency.toUpperCase(),
+          });
+        }
+
+        if (refund.status && refund.data.status === 'processed') {
+          return {
+            success: true,
+            refundId: refund.data.id.toString(),
+            transactionRefunded: refund.data.transaction.reference,
+            amount: this.convertFromSmallestUnit(refund.data.amount, currency),
+            currency: refund.data.currency,
+            status: refund.data.status,
+          };
+        }
+
+        return {
+          success: false,
+          error: refund.message || 'Refund failed',
+          status: refund.data?.status || 'failed',
+        };
+      }
+      throw new Error(`Provider ${provider} not configured`);
+    } catch (error) {
+      console.error(`Error refunding transaction with ${provider}:`, error);
+      return {
+        success: false,
+        error: error.message || 'Refund processing failed',
+        status: 'failed',
+      };
+    }
+  }
+
+  /**
    * Calculate withdrawal fee
    * @param {number} amount - Amount in main currency unit
    * @param {string} currency - Currency code
