@@ -2341,7 +2341,7 @@ const sendPaymentFailureEmail = async (email, name, amount, currency, groupName,
 };
 
 // Send withdrawal request email
-const sendWithdrawalRequestEmail = async (email, name, amount, currency, currencySymbol, scheduledAt) => {
+const sendWithdrawalRequestEmail = async (email, name, amount, currency, currencySymbol, scheduledAt, accountNumber) => {
   try {
     const scheduledDate = new Date(scheduledAt).toLocaleString('en-US', {
       weekday: 'long',
@@ -2351,6 +2351,9 @@ const sendWithdrawalRequestEmail = async (email, name, amount, currency, currenc
       hour: '2-digit',
       minute: '2-digit',
     });
+
+    // Mask account number (show last 4 digits)
+    const maskedAccount = accountNumber ? `ending with ${accountNumber.slice(-4)}` : '';
 
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -2367,6 +2370,7 @@ const sendWithdrawalRequestEmail = async (email, name, amount, currency, currenc
           </p>
           <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
             <p style="color: #374151; font-size: 16px; margin: 0 0 10px 0;"><strong>Amount:</strong> ${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>
+            ${accountNumber ? `<p style="color: #374151; font-size: 16px; margin: 0 0 10px 0;"><strong>Account:</strong> ${maskedAccount}</p>` : ''}
             <p style="color: #374151; font-size: 16px; margin: 0;"><strong>Scheduled for:</strong> ${scheduledDate}</p>
           </div>
           <div style="background: #fef3c7; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f59e0b;">

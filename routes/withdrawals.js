@@ -283,7 +283,8 @@ router.post('/request', authenticate, contributionLimiter, [
           withdrawalAmount,
           currency,
           currencySymbol,
-          scheduledAt
+          scheduledAt,
+          bankAccount.account_number
         );
       } catch (emailError) {
         console.error('Error sending withdrawal request email:', emailError);

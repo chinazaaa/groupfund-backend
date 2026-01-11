@@ -497,6 +497,142 @@ router.get('/wallet', authenticate, async (req, res) => {
   }
 });
 
+// Get wallet transaction history (credits and debits/withdrawals)
+router.get('/wallet/history', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { currency, type, limit = 50, offset = 0 } = req.query;
+
+    // Build query to get wallet transactions (credits and withdrawals)
+    let query = `
+      SELECT 
+        t.id, t.type, t.amount, t.currency, t.description, t.status, t.created_at,
+        t.reference, t.withdrawal_fee, t.payment_provider, t.payment_method_id,
+        t.platform_fee, t.processor_fee, t.gross_amount, t.net_amount,
+        g.id as group_id, g.name as group_name,
+        w.id as withdrawal_id, w.net_amount as withdrawal_net_amount, w.scheduled_at, w.processed_at
+      FROM transactions t
+      LEFT JOIN groups g ON t.group_id = g.id
+      LEFT JOIN withdrawals w ON w.id::text = t.reference::text AND t.type = 'withdrawal'
+      WHERE t.user_id = $1
+        AND (t.type = 'credit' OR t.type = 'withdrawal' OR t.type = 'debit')
+    `;
+    const params = [userId];
+    let paramCount = 2;
+
+    // Filter by currency if provided
+    if (currency) {
+      query += ` AND t.currency = $${paramCount++}`;
+      params.push(currency.toUpperCase());
+    }
+
+    // Filter by type if provided (credit or withdrawal/debit)
+    if (type) {
+      if (type === 'debit') {
+        // Include both 'withdrawal' and 'debit' types
+        query += ` AND (t.type = 'withdrawal' OR t.type = 'debit')`;
+      } else if (type === 'credit') {
+        query += ` AND t.type = $${paramCount++}`;
+        params.push(type);
+      } else if (type === 'withdrawal') {
+        query += ` AND t.type = $${paramCount++}`;
+        params.push(type);
+      }
+    }
+
+    query += ` ORDER BY t.created_at DESC LIMIT $${paramCount++} OFFSET $${paramCount++}`;
+    params.push(parseInt(limit), parseInt(offset));
+
+    const result = await pool.query(query, params);
+
+    // Format transactions
+    const transactions = result.rows.map(row => {
+      const transaction = {
+        id: row.id,
+        type: row.type,
+        amount: parseFloat(row.amount),
+        currency: row.currency || 'NGN',
+        description: row.description,
+        status: row.status,
+        createdAt: row.created_at,
+        reference: row.reference,
+        paymentProvider: row.payment_provider,
+        paymentMethodId: row.payment_method_id,
+      };
+
+      // Add group info if available
+      if (row.group_id) {
+        transaction.group = {
+          id: row.group_id,
+          name: row.group_name,
+        };
+      }
+
+      // Add withdrawal-specific info
+      if (row.type === 'withdrawal') {
+        transaction.withdrawalFee = row.withdrawal_fee ? parseFloat(row.withdrawal_fee) : 0;
+        transaction.netAmount = row.withdrawal_net_amount ? parseFloat(row.withdrawal_net_amount) : parseFloat(row.amount) - (row.withdrawal_fee ? parseFloat(row.withdrawal_fee) : 0);
+        transaction.withdrawalId = row.withdrawal_id;
+        transaction.scheduledAt = row.scheduled_at;
+        transaction.processedAt = row.processed_at;
+      }
+
+      // Add fee info for credits (if available)
+      if (row.type === 'credit') {
+        if (row.platform_fee !== null) {
+          transaction.fees = {
+            platformFee: parseFloat(row.platform_fee || 0),
+            processorFee: parseFloat(row.processor_fee || 0),
+            grossAmount: row.gross_amount ? parseFloat(row.gross_amount) : parseFloat(row.amount),
+            netAmount: row.net_amount ? parseFloat(row.net_amount) : parseFloat(row.amount),
+          };
+        }
+      }
+
+      return transaction;
+    });
+
+    // Get total count
+    let countQuery = `
+      SELECT COUNT(*) as total
+      FROM transactions
+      WHERE user_id = $1
+        AND (type = 'credit' OR type = 'withdrawal' OR type = 'debit')
+    `;
+    const countParams = [userId];
+    let countParamCount = 2;
+
+    if (currency) {
+      countQuery += ` AND currency = $${countParamCount++}`;
+      countParams.push(currency.toUpperCase());
+    }
+
+    if (type) {
+      if (type === 'debit') {
+        countQuery += ` AND (type = 'withdrawal' OR type = 'debit')`;
+      } else if (type === 'credit') {
+        countQuery += ` AND type = $${countParamCount++}`;
+        countParams.push(type);
+      } else if (type === 'withdrawal') {
+        countQuery += ` AND type = $${countParamCount++}`;
+        countParams.push(type);
+      }
+    }
+
+    const countResult = await pool.query(countQuery, countParams);
+
+    res.json({
+      transactions,
+      total: parseInt(countResult.rows[0].total),
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+    });
+  } catch (error) {
+    console.error('Get wallet history error:', error);
+    res.status(500).json({ error: 'Server error retrieving wallet history' });
+  }
+});
+
 // Step 1: Verify password before updating wallet
 router.post('/wallet/verify-password', authenticate, contributionLimiter, [
   body('password').notEmpty().withMessage('Password is required'),
