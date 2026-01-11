@@ -262,6 +262,7 @@ router.post('/:groupId/auto-pay/enable', authenticate, contributionLimiter, [
         paymentMethod = defaultMethodResult.rows[0];
       } else {
         // No default found, try to find any payment method for this currency
+        // Use the latest (most recently added) payment method
         let anyMethodQuery = `
           SELECT id, payment_method_id, provider, currency, is_active
           FROM user_payment_methods
@@ -270,11 +271,11 @@ router.post('/:groupId/auto-pay/enable', authenticate, contributionLimiter, [
         const anyMethodParams = [userId, provider];
 
         if (provider === 'paystack') {
-          anyMethodQuery += ` AND currency = $3`;
+          anyMethodQuery += ` AND currency = $3 ORDER BY created_at DESC LIMIT 1`;
           anyMethodParams.push(groupCurrency);
         } else {
-          // For Stripe, show all cards (they can charge in multiple currencies)
-          anyMethodQuery += ` ORDER BY CASE WHEN currency = $3 THEN 0 ELSE 1 END, created_at ASC LIMIT 1`;
+          // For Stripe, prefer matching currency, then use latest (most recently added)
+          anyMethodQuery += ` ORDER BY CASE WHEN currency = $3 THEN 0 ELSE 1 END, created_at DESC LIMIT 1`;
           anyMethodParams.push(groupCurrency);
         }
 
