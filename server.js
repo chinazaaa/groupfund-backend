@@ -126,18 +126,26 @@ app.get('/.well-known/apple-app-site-association', (req, res) => {
 app.get('/.well-known/assetlinks.json', (req, res) => {
   res.setHeader('Content-Type', 'application/json');
   
-  const androidSha256 = process.env.ANDROID_SHA256_FINGERPRINT || 'REPLACE_WITH_YOUR_SHA256_FINGERPRINT';
   const packageName = 'com.groupfund.app';
+  
+  // Support multiple fingerprints (comma-separated in env, or fallback to default)
+  const androidFingerprints = process.env.ANDROID_SHA256_FINGERPRINTS
+    ? process.env.ANDROID_SHA256_FINGERPRINTS.split(',').map(f => f.trim())
+    : [
+        'AC:EF:5F:7C:3F:FA:EA:2E:2D:C4:AF:78:CB:6F:E8:40:5D:72:D9:17:34:25:7B:CA:07:49:9E:03:17:92:F0:8A',
+        'A3:A5:5E:D0:9F:14:66:E2:16:93:70:1F:7B:1D:7A:74:9C:BC:1B:A4:62:77:E8:BF:01:8D:CB:EB:83:D1:1E:6F'
+      ];
   
   res.json([
     {
-      relation: ['delegate_permission/common.handle_all_urls'],
+      relation: [
+        'delegate_permission/common.handle_all_urls',
+        'delegate_permission/common.get_login_creds'
+      ],
       target: {
         namespace: 'android_app',
         package_name: packageName,
-        sha256_cert_fingerprints: [
-          androidSha256
-        ]
+        sha256_cert_fingerprints: androidFingerprints
       }
     }
   ]);
@@ -150,6 +158,7 @@ app.use('/', require('./routes/deeplink'));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/groups', require('./routes/groups'));
+app.use('/api/groups', require('./routes/autoPay')); // Auto-pay routes for groups
 app.use('/api/members', require('./routes/members'));
 app.use('/api/birthdays', require('./routes/birthdays'));
 app.use('/api/subscriptions', require('./routes/subscriptions'));
@@ -164,6 +173,11 @@ app.use('/api/migrations', require('./routes/migrations'));
 app.use('/api/webhook', require('./routes/webhook'));
 app.use('/api/reports', require('./routes/reports'));
 app.use('/api/chat', require('./routes/chat'));
+app.use('/api/payments', require('./routes/payments'));
+app.use('/api/groups', require('./routes/autoPay'));
+app.use('/api/users', require('./routes/paymentPreferences'));
+app.use('/api/withdrawals', require('./routes/withdrawals'));
+app.use('/api/bank-accounts', require('./routes/bankAccounts'));
 
 // Error handling middleware
 app.use((err, req, res, next) => {
