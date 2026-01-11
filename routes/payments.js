@@ -254,8 +254,9 @@ router.post('/methods', authenticate, contributionLimiter, [
           await client.query(
             `UPDATE user_payment_methods 
              SET is_default = FALSE, updated_at = CURRENT_TIMESTAMP
-             WHERE user_id = $1 AND currency = $2 AND provider = $3`,
-            [userId, currency, provider]
+             WHERE user_id = $1 AND currency = $2 AND provider = $3 
+             AND payment_method_id != $4 AND is_default = TRUE`,
+            [userId, currency, provider, paymentMethodId]
           );
         }
         // Check if payment method already exists for this user, provider, and currency
@@ -408,6 +409,42 @@ router.get('/methods', authenticate, async (req, res) => {
     query += ` ORDER BY is_default DESC, created_at DESC`;
 
     const result = await pool.query(query, params);
+
+    // Cleanup: Ensure only one default per currency per provider
+    // If multiple cards are default for the same currency, keep only the most recently created one
+    const currencyDefaults = {};
+    for (const method of result.rows) {
+      if (method.is_default) {
+        const key = `${method.currency}_${method.provider}`;
+        if (!currencyDefaults[key]) {
+          currencyDefaults[key] = [];
+        }
+        currencyDefaults[key].push(method);
+      }
+    }
+
+    // Fix any duplicates: keep the most recently created default, unset others
+    for (const [key, methods] of Object.entries(currencyDefaults)) {
+      if (methods.length > 1) {
+        // Sort by created_at DESC to get the most recent
+        methods.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        // Keep the first (most recent), unset the rest
+        const toUnset = methods.slice(1);
+        for (const method of toUnset) {
+          await pool.query(
+            `UPDATE user_payment_methods 
+             SET is_default = FALSE, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1`,
+            [method.id]
+          );
+          // Update the result array to reflect the change
+          const methodIndex = result.rows.findIndex(m => m.id === method.id);
+          if (methodIndex !== -1) {
+            result.rows[methodIndex].is_default = false;
+          }
+        }
+      }
+    }
 
     // Get groups that use each payment method (from user_payment_preferences)
     const paymentMethods = await Promise.all(
@@ -822,12 +859,14 @@ router.put('/methods/:methodId', authenticate, contributionLimiter, [
         );
 
         // For each currency this card supports, unset other defaults
+        // IMPORTANT: Unset ALL other cards' defaults for these currencies, not just for this provider
+        // This ensures only one card is default per currency across all providers
         for (const entry of allCardEntries.rows) {
           await pool.query(
             `UPDATE user_payment_methods 
              SET is_default = FALSE, updated_at = CURRENT_TIMESTAMP
              WHERE user_id = $1 AND currency = $2 AND provider = $3 
-             AND payment_method_id != $4`,
+             AND payment_method_id != $4 AND is_default = TRUE`,
             [userId, entry.currency, currentMethod.provider, currentMethod.payment_method_id]
           );
         }
