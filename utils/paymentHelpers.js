@@ -13,7 +13,7 @@ const { sendOTPEmail } = require('./email');
 async function verifyPassword(userId, password) {
   try {
     const result = await pool.query(
-      'SELECT password FROM users WHERE id = $1',
+      'SELECT password_hash FROM users WHERE id = $1',
       [userId]
     );
 
@@ -21,7 +21,7 @@ async function verifyPassword(userId, password) {
       return false;
     }
 
-    const hashedPassword = result.rows[0].password;
+    const hashedPassword = result.rows[0].password_hash;
     return await bcrypt.compare(password, hashedPassword);
   } catch (error) {
     console.error('Error verifying password:', error);
