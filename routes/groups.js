@@ -597,13 +597,16 @@ router.get('/upcoming', authenticate, async (req, res) => {
           const hasPaid = paymentCheck.rows.length > 0 && 
                          (paymentCheck.rows[0].status === 'paid' || paymentCheck.rows[0].status === 'confirmed');
 
-          // Get admin account details
-          const adminWallet = await pool.query(
-            `SELECT w.account_number, w.bank_name, w.account_name, u.name as admin_name
-             FROM wallets w
-             JOIN users u ON w.user_id = u.id
-             WHERE w.user_id = $1`,
-            [group.admin_id]
+          // Get admin bank account details for group's currency
+          const groupCurrency = group.currency || 'NGN';
+          const adminBankAccount = await pool.query(
+            `SELECT wba.account_number, wba.bank_name, wba.account_name, u.name as admin_name
+             FROM wallet_bank_accounts wba
+             JOIN users u ON wba.user_id = u.id
+             WHERE wba.user_id = $1 AND wba.currency = $2
+             ORDER BY wba.is_default DESC, wba.created_at DESC
+             LIMIT 1`,
+            [group.admin_id, groupCurrency]
           );
 
           upcomingItems.push({
@@ -619,10 +622,10 @@ router.get('/upcoming', authenticate, async (req, res) => {
             days_until_deadline: daysUntilDeadline,
             has_paid: hasPaid,
             event_name: `${group.subscription_platform} Subscription`,
-            admin_account_number: adminWallet.rows[0]?.account_number,
-            admin_bank_name: adminWallet.rows[0]?.bank_name,
-            admin_account_name: adminWallet.rows[0]?.account_name,
-            admin_name: adminWallet.rows[0]?.admin_name
+            admin_account_number: adminBankAccount.rows[0]?.account_number,
+            admin_bank_name: adminBankAccount.rows[0]?.bank_name,
+            admin_account_name: adminBankAccount.rows[0]?.account_name,
+            admin_name: adminBankAccount.rows[0]?.admin_name
           });
         }
       } else if (group.group_type === 'general') {
@@ -644,12 +647,16 @@ router.get('/upcoming', authenticate, async (req, res) => {
                            (paymentCheck.rows[0].status === 'paid' || paymentCheck.rows[0].status === 'confirmed');
 
             // Get admin account details
-            const adminWallet = await pool.query(
-              `SELECT w.account_number, w.bank_name, w.account_name, u.name as admin_name
-               FROM wallets w
-               JOIN users u ON w.user_id = u.id
-               WHERE w.user_id = $1`,
-              [group.admin_id]
+            // Get admin bank account for group's currency
+            const groupCurrency = group.currency || 'NGN';
+            const adminBankAccount = await pool.query(
+              `SELECT wba.account_number, wba.bank_name, wba.account_name, u.name as admin_name
+               FROM wallet_bank_accounts wba
+               JOIN users u ON wba.user_id = u.id
+               WHERE wba.user_id = $1 AND wba.currency = $2
+               ORDER BY wba.is_default DESC, wba.created_at DESC
+               LIMIT 1`,
+              [group.admin_id, groupCurrency]
             );
 
             upcomingItems.push({
@@ -663,10 +670,10 @@ router.get('/upcoming', authenticate, async (req, res) => {
               days_until_deadline: daysUntilDeadline,
               has_paid: hasPaid,
               event_name: group.name,
-              admin_account_number: adminWallet.rows[0]?.account_number,
-              admin_bank_name: adminWallet.rows[0]?.bank_name,
-              admin_account_name: adminWallet.rows[0]?.account_name,
-              admin_name: adminWallet.rows[0]?.admin_name
+              admin_account_number: adminBankAccount.rows[0]?.account_number,
+              admin_bank_name: adminBankAccount.rows[0]?.bank_name,
+              admin_account_name: adminBankAccount.rows[0]?.account_name,
+              admin_name: adminBankAccount.rows[0]?.admin_name
             });
           }
         }
@@ -805,12 +812,16 @@ router.get('/overdue', authenticate, async (req, res) => {
           
           if (isOverdue) {
             // Get admin account details
-            const adminWallet = await pool.query(
-              `SELECT w.account_number, w.bank_name, w.account_name, u.name as admin_name
-               FROM wallets w
-               JOIN users u ON w.user_id = u.id
-               WHERE w.user_id = $1`,
-              [group.admin_id]
+            // Get admin bank account for group's currency
+            const groupCurrency = group.currency || 'NGN';
+            const adminBankAccount = await pool.query(
+              `SELECT wba.account_number, wba.bank_name, wba.account_name, u.name as admin_name
+               FROM wallet_bank_accounts wba
+               JOIN users u ON wba.user_id = u.id
+               WHERE wba.user_id = $1 AND wba.currency = $2
+               ORDER BY wba.is_default DESC, wba.created_at DESC
+               LIMIT 1`,
+              [group.admin_id, groupCurrency]
             );
 
             overdueItems.push({
@@ -826,10 +837,10 @@ router.get('/overdue', authenticate, async (req, res) => {
               days_overdue: daysSinceDeadline,
               status: contributionCheck.rows.length > 0 ? contributionCheck.rows[0].status : 'not_paid',
               event_name: `${group.subscription_platform} Subscription`,
-              admin_account_number: adminWallet.rows[0]?.account_number,
-              admin_bank_name: adminWallet.rows[0]?.bank_name,
-              admin_account_name: adminWallet.rows[0]?.account_name,
-              admin_name: adminWallet.rows[0]?.admin_name
+              admin_account_number: adminBankAccount.rows[0]?.account_number,
+              admin_bank_name: adminBankAccount.rows[0]?.bank_name,
+              admin_account_name: adminBankAccount.rows[0]?.account_name,
+              admin_name: adminBankAccount.rows[0]?.admin_name
             });
           }
         }
@@ -853,13 +864,16 @@ router.get('/overdue', authenticate, async (req, res) => {
                              contributionCheck.rows[0].status === 'not_received';
             
             if (isOverdue) {
-              // Get admin account details
-              const adminWallet = await pool.query(
-                `SELECT w.account_number, w.bank_name, w.account_name, u.name as admin_name
-                 FROM wallets w
-                 JOIN users u ON w.user_id = u.id
-                 WHERE w.user_id = $1`,
-                [group.admin_id]
+              // Get admin bank account for group's currency
+              const groupCurrency = group.currency || 'NGN';
+              const adminBankAccount = await pool.query(
+                `SELECT wba.account_number, wba.bank_name, wba.account_name, u.name as admin_name
+                 FROM wallet_bank_accounts wba
+                 JOIN users u ON wba.user_id = u.id
+                 WHERE wba.user_id = $1 AND wba.currency = $2
+                 ORDER BY wba.is_default DESC, wba.created_at DESC
+                 LIMIT 1`,
+                [group.admin_id, groupCurrency]
               );
 
               overdueItems.push({
@@ -867,16 +881,16 @@ router.get('/overdue', authenticate, async (req, res) => {
                 group_id: group.id,
                 group_name: group.name,
                 group_type: 'general',
-                currency: group.currency || 'NGN',
+                currency: groupCurrency,
                 contribution_amount: parseFloat(group.contribution_amount),
                 deadline_date: group.deadline,
                 days_overdue: daysSinceDeadline,
                 status: contributionCheck.rows.length > 0 ? contributionCheck.rows[0].status : 'not_paid',
                 event_name: group.name,
-                admin_account_number: adminWallet.rows[0]?.account_number,
-                admin_bank_name: adminWallet.rows[0]?.bank_name,
-                admin_account_name: adminWallet.rows[0]?.account_name,
-                admin_name: adminWallet.rows[0]?.admin_name
+                admin_account_number: adminBankAccount.rows[0]?.account_number,
+                admin_bank_name: adminBankAccount.rows[0]?.bank_name,
+                admin_account_name: adminBankAccount.rows[0]?.account_name,
+                admin_name: adminBankAccount.rows[0]?.admin_name
               });
             }
           }
@@ -2031,30 +2045,36 @@ router.get('/:groupId', authenticate, async (req, res) => {
       });
     }
 
-    // Include admin wallet information for subscription and general groups
+    // Include admin bank account information for subscription and general groups
+    // Use currency-specific bank account from wallet_bank_accounts
     if (group.group_type === 'subscription' || group.group_type === 'general') {
-      const walletResult = await pool.query(
-        `SELECT account_name, bank_name, account_number, iban, swift_bic, routing_number, sort_code, branch_code, branch_address
-         FROM wallets
-         WHERE user_id = $1`,
-        [group.admin_id]
+      const groupCurrency = group.currency || 'NGN';
+      const bankAccountResult = await pool.query(
+        `SELECT account_name, bank_name, account_number, iban, swift_bic, routing_number, sort_code, branch_code, branch_address, is_default
+         FROM wallet_bank_accounts
+         WHERE user_id = $1 AND currency = $2
+         ORDER BY is_default DESC, created_at DESC
+         LIMIT 1`,
+        [group.admin_id, groupCurrency]
       );
 
-      if (walletResult.rows.length > 0) {
-        const wallet = walletResult.rows[0];
+      if (bankAccountResult.rows.length > 0) {
+        const bankAccount = bankAccountResult.rows[0];
         group.admin_wallet = {
-          account_name: wallet.account_name || null,
-          bank_name: wallet.bank_name || null,
-          account_number: wallet.account_number || null,
-          iban: wallet.iban || null,
-          swift_bic: wallet.swift_bic || null,
-          routing_number: wallet.routing_number || null,
-          sort_code: wallet.sort_code || null,
-          branch_code: wallet.branch_code || null,
-          branch_address: wallet.branch_address || null,
+          account_name: bankAccount.account_name || null,
+          bank_name: bankAccount.bank_name || null,
+          account_number: bankAccount.account_number || null,
+          iban: bankAccount.iban || null,
+          swift_bic: bankAccount.swift_bic || null,
+          routing_number: bankAccount.routing_number || null,
+          sort_code: bankAccount.sort_code || null,
+          branch_code: bankAccount.branch_code || null,
+          branch_address: bankAccount.branch_address || null,
+          is_default: bankAccount.is_default || false,
+          currency: groupCurrency,
         };
       } else {
-        // If no wallet found, set admin_wallet to null
+        // If no bank account found for this currency, set admin_wallet to null
         group.admin_wallet = null;
       }
     }

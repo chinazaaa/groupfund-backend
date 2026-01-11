@@ -2354,7 +2354,7 @@ const sendWithdrawalRequestEmail = async (email, name, amount, currency, currenc
 
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+        <div style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
           <h1 style="color: white; margin: 0; font-size: 28px;">🎂 GroupFund</h1>
         </div>
         <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
@@ -2365,7 +2365,7 @@ const sendWithdrawalRequestEmail = async (email, name, amount, currency, currenc
           <p style="color: #374151; font-size: 16px; line-height: 1.7;">
             Your withdrawal request has been received and is being processed.
           </p>
-          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
+          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
             <p style="color: #374151; font-size: 16px; margin: 0 0 10px 0;"><strong>Amount:</strong> ${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>
             <p style="color: #374151; font-size: 16px; margin: 0;"><strong>Scheduled for:</strong> ${scheduledDate}</p>
           </div>
@@ -2414,7 +2414,7 @@ const sendWithdrawalCompletedEmail = async (email, name, amount, currency, curre
   try {
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+        <div style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
           <h1 style="color: white; margin: 0; font-size: 28px;">🎂 GroupFund</h1>
         </div>
         <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
@@ -2425,7 +2425,7 @@ const sendWithdrawalCompletedEmail = async (email, name, amount, currency, curre
           <p style="color: #374151; font-size: 16px; line-height: 1.7;">
             Your withdrawal has been processed successfully and funds have been sent to your bank account.
           </p>
-          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
+          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
             <p style="color: #374151; font-size: 16px; margin: 0 0 10px 0;"><strong>Amount:</strong> ${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>
             <p style="color: #374151; font-size: 16px; margin: 0;"><strong>Transaction ID:</strong> ${transactionId}</p>
           </div>

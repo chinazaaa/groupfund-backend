@@ -115,6 +115,9 @@ async function processBirthdayPayments(userId, groupId) {
     }
 
     // Get all active members with auto-pay enabled
+    // Exclude only the birthday person (celebrant) - they receive contributions
+    // Note: Admin can pay if they're not the birthday person
+    // Co-admins and regular members can also pay
     const membersResult = await pool.query(
       `SELECT 
         u.id, u.email, u.name, u.stripe_customer_id, u.paystack_customer_code,
@@ -127,7 +130,7 @@ async function processBirthdayPayments(userId, groupId) {
          WHERE gm.group_id = $1 AND gm.user_id = u.id AND gm.status = 'active'
        )
        AND u.id != $2`,
-      [groupId, userId]
+      [groupId, userId] // userId is the birthday person (celebrant) - exclude them
     );
 
     const skippedDefaulters = [];
@@ -439,6 +442,8 @@ async function processSubscriptionPayments(groupId) {
     deadlineDate.setHours(0, 0, 0, 0);
 
     // Get all active members with auto-pay enabled
+    // Exclude only the admin (group creator) - they receive contributions
+    // Co-admins and regular members can pay (they're not excluded)
     const membersResult = await pool.query(
       `SELECT 
         u.id, u.email, u.name, u.stripe_customer_id, u.paystack_customer_code,
@@ -449,8 +454,9 @@ async function processSubscriptionPayments(groupId) {
        AND EXISTS (
          SELECT 1 FROM group_members gm
          WHERE gm.group_id = $1 AND gm.user_id = u.id AND gm.status = 'active'
-       )`,
-      [groupId]
+       )
+       AND u.id != $2`,
+      [groupId, adminId] // adminId is the group creator - exclude them, but co-admins are included
     );
 
     const skippedDefaulters = [];
@@ -720,6 +726,8 @@ async function processGeneralPayments(groupId) {
     }
 
     // Get all active members with auto-pay enabled
+    // Exclude only the admin (group creator) - they receive contributions
+    // Co-admins and regular members can pay (they're not excluded)
     const membersResult = await pool.query(
       `SELECT 
         u.id, u.email, u.name, u.stripe_customer_id, u.paystack_customer_code,
@@ -730,8 +738,9 @@ async function processGeneralPayments(groupId) {
        AND EXISTS (
          SELECT 1 FROM group_members gm
          WHERE gm.group_id = $1 AND gm.user_id = u.id AND gm.status = 'active'
-       )`,
-      [groupId]
+       )
+       AND u.id != $2`,
+      [groupId, adminId] // adminId is the group creator - exclude them, but co-admins are included
     );
 
     const skippedDefaulters = [];

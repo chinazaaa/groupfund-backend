@@ -32,9 +32,8 @@ router.post('/contribute', authenticate, contributionLimiter, async (req, res) =
 
     // Validate group exists and is a subscription group
     const groupCheck = await pool.query(
-      `SELECT g.*, w.account_number, w.bank_name, w.account_name
+      `SELECT g.*
        FROM groups g
-       LEFT JOIN wallets w ON g.admin_id = w.user_id
        WHERE g.id = $1 AND g.group_type = 'subscription'`,
       [groupId]
     );
@@ -44,6 +43,30 @@ router.post('/contribute', authenticate, contributionLimiter, async (req, res) =
     }
 
     const group = groupCheck.rows[0];
+    const groupCurrency = group.currency || 'NGN';
+    
+    // Get admin's bank account for this currency (for manual payment display)
+    const adminBankAccount = await pool.query(
+      `SELECT account_name, bank_name, account_number, iban, swift_bic, routing_number, sort_code, branch_code, branch_address, is_default
+       FROM wallet_bank_accounts
+       WHERE user_id = $1 AND currency = $2
+       ORDER BY is_default DESC, created_at DESC
+       LIMIT 1`,
+      [group.admin_id, groupCurrency]
+    );
+    
+    // Add bank account to group object for response
+    if (adminBankAccount.rows.length > 0) {
+      group.account_name = adminBankAccount.rows[0].account_name;
+      group.bank_name = adminBankAccount.rows[0].bank_name;
+      group.account_number = adminBankAccount.rows[0].account_number;
+      group.iban = adminBankAccount.rows[0].iban;
+      group.swift_bic = adminBankAccount.rows[0].swift_bic;
+      group.routing_number = adminBankAccount.rows[0].routing_number;
+      group.sort_code = adminBankAccount.rows[0].sort_code;
+      group.branch_code = adminBankAccount.rows[0].branch_code;
+      group.branch_address = adminBankAccount.rows[0].branch_address;
+    }
     
     // Check if contributor is the admin (group creator)
     const isAdmin = group.admin_id === contributorId;
@@ -83,7 +106,7 @@ router.post('/contribute', authenticate, contributionLimiter, async (req, res) =
     }
 
     const contributionAmount = parseFloat(group.contribution_amount);
-    const groupCurrency = group.currency; // Currency must come from the group
+    // groupCurrency already declared above
     if (!groupCurrency) {
       return res.status(400).json({ error: 'Group has no currency set. Please contact the admin.' });
     }
@@ -440,10 +463,9 @@ router.get('/upcoming', authenticate, async (req, res) => {
           g.id as group_id, g.name as group_name, g.currency, g.contribution_amount,
           g.subscription_frequency, g.subscription_platform,
           g.subscription_deadline_day, g.subscription_deadline_month,
-          g.admin_id, u.name as admin_name, w.account_number, w.bank_name, w.account_name
+          g.admin_id, u.name as admin_name
         FROM groups g
         JOIN group_members gm ON g.id = gm.group_id
-        LEFT JOIN wallets w ON g.admin_id = w.user_id
         LEFT JOIN users u ON g.admin_id = u.id
         WHERE g.id = $1 AND g.group_type = 'subscription' AND gm.user_id = $2 AND gm.status = 'active'
       `;
@@ -454,10 +476,9 @@ router.get('/upcoming', authenticate, async (req, res) => {
           g.id as group_id, g.name as group_name, g.currency, g.contribution_amount,
           g.subscription_frequency, g.subscription_platform,
           g.subscription_deadline_day, g.subscription_deadline_month,
-          g.admin_id, u.name as admin_name, w.account_number, w.bank_name, w.account_name
+          g.admin_id, u.name as admin_name
         FROM groups g
         JOIN group_members gm ON g.id = gm.group_id
-        LEFT JOIN wallets w ON g.admin_id = w.user_id
         LEFT JOIN users u ON g.admin_id = u.id
         WHERE gm.user_id = $1 AND g.group_type = 'subscription' AND gm.status = 'active'
       `;
@@ -531,6 +552,29 @@ router.get('/upcoming', authenticate, async (req, res) => {
 
       sub.has_paid = paymentCheck.rows.length > 0 && 
                      (paymentCheck.rows[0].status === 'paid' || paymentCheck.rows[0].status === 'confirmed');
+      
+      // Get admin's bank account for this currency (default or most recent)
+      const groupCurrency = sub.currency || 'NGN';
+      const adminBankAccount = await pool.query(
+        `SELECT account_name, bank_name, account_number, iban, swift_bic, routing_number, sort_code, branch_code, branch_address, is_default
+         FROM wallet_bank_accounts
+         WHERE user_id = $1 AND currency = $2
+         ORDER BY is_default DESC, created_at DESC
+         LIMIT 1`,
+        [sub.admin_id, groupCurrency]
+      );
+      
+      if (adminBankAccount.rows.length > 0) {
+        sub.admin_account_name = adminBankAccount.rows[0].account_name;
+        sub.admin_bank_name = adminBankAccount.rows[0].bank_name;
+        sub.admin_account_number = adminBankAccount.rows[0].account_number;
+        sub.admin_iban = adminBankAccount.rows[0].iban;
+        sub.admin_swift_bic = adminBankAccount.rows[0].swift_bic;
+        sub.admin_routing_number = adminBankAccount.rows[0].routing_number;
+        sub.admin_sort_code = adminBankAccount.rows[0].sort_code;
+        sub.admin_branch_code = adminBankAccount.rows[0].branch_code;
+        sub.admin_branch_address = adminBankAccount.rows[0].branch_address;
+      }
     }
 
     res.json({ subscriptions: upcomingSubscriptions });

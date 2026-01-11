@@ -394,6 +394,225 @@ router.post('/', authenticate, contributionLimiter, [
   }
 });
 
+// Update bank account by ID (requires password + OTP verification)
+router.put('/:currency/:accountId', authenticate, contributionLimiter, [
+  body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
+  body('otp').notEmpty().isLength({ min: 6, max: 6 }).withMessage('OTP is required (6 digits)'),
+  body('account_name').optional().trim().notEmpty().withMessage('Account name cannot be empty'),
+  body('bank_name').optional().trim().notEmpty().withMessage('Bank name cannot be empty'),
+  body('account_number').optional().trim().notEmpty().withMessage('Account number cannot be empty'),
+  body('iban').optional().trim(),
+  body('swift_bic').optional().trim(),
+  body('routing_number').optional().trim(),
+  body('sort_code').optional().trim(),
+  body('branch_code').optional().trim(),
+  body('branch_address').optional().trim(),
+  body('bank_code').optional().trim(),
+  body('is_default').optional().isBoolean(),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const userId = req.user.id;
+    const { currency, accountId } = req.params;
+    const {
+      password_verification_token,
+      otp,
+      account_name,
+      bank_name,
+      account_number,
+      iban,
+      swift_bic,
+      routing_number,
+      sort_code,
+      branch_code,
+      branch_address,
+      bank_code,
+      is_default,
+    } = req.body;
+
+    const currencyUpper = currency.toUpperCase();
+
+    // Verify password token
+    const action = `update_bank_account_${currencyUpper}`;
+    const tokenData = verifyPasswordVerificationToken(password_verification_token);
+    if (!tokenData || tokenData.action !== action || tokenData.userId !== userId) {
+      return res.status(401).json({ error: 'Invalid or expired password verification token' });
+    }
+
+    // Verify OTP
+    const isValidOTP = await verifyPaymentOTP(userId, otp, password_verification_token, action);
+    if (!isValidOTP) {
+      return res.status(401).json({ error: 'Invalid or expired OTP' });
+    }
+
+    // Check if account exists and belongs to user
+    const accountCheck = await pool.query(
+      'SELECT id, currency, is_default FROM wallet_bank_accounts WHERE id = $1 AND user_id = $2',
+      [accountId, userId]
+    );
+
+    if (accountCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Bank account not found' });
+    }
+
+    const existingAccount = accountCheck.rows[0];
+    const accountCurrency = existingAccount.currency;
+
+    // If currency in URL doesn't match account currency, return error
+    if (accountCurrency !== currencyUpper) {
+      return res.status(400).json({
+        error: `Currency mismatch. Account is for ${accountCurrency}, but URL specifies ${currencyUpper}`,
+      });
+    }
+
+    await pool.query('BEGIN');
+
+    try {
+      // If setting as default, unset other defaults for this currency
+      if (is_default === true) {
+        await pool.query(
+          `UPDATE wallet_bank_accounts 
+           SET is_default = FALSE, updated_at = CURRENT_TIMESTAMP
+           WHERE user_id = $1 AND currency = $2 AND id != $3`,
+          [userId, currencyUpper, accountId]
+        );
+      }
+
+      // Build update query dynamically
+      const updates = [];
+      const values = [];
+      let paramCount = 1;
+
+      if (account_name !== undefined) {
+        updates.push(`account_name = $${paramCount++}`);
+        values.push(account_name);
+      }
+
+      if (bank_name !== undefined) {
+        updates.push(`bank_name = $${paramCount++}`);
+        values.push(bank_name);
+      }
+
+      if (account_number !== undefined) {
+        updates.push(`account_number = $${paramCount++}`);
+        values.push(account_number);
+      }
+
+      if (iban !== undefined) {
+        updates.push(`iban = $${paramCount++}`);
+        values.push(iban || null);
+      }
+
+      if (swift_bic !== undefined) {
+        updates.push(`swift_bic = $${paramCount++}`);
+        values.push(swift_bic || null);
+      }
+
+      if (routing_number !== undefined) {
+        updates.push(`routing_number = $${paramCount++}`);
+        values.push(routing_number || null);
+      }
+
+      if (sort_code !== undefined) {
+        updates.push(`sort_code = $${paramCount++}`);
+        values.push(sort_code || null);
+      }
+
+      if (branch_code !== undefined) {
+        updates.push(`branch_code = $${paramCount++}`);
+        values.push(branch_code || null);
+      }
+
+      if (branch_address !== undefined) {
+        updates.push(`branch_address = $${paramCount++}`);
+        values.push(branch_address || null);
+      }
+
+      if (bank_code !== undefined) {
+        updates.push(`bank_code = $${paramCount++}`);
+        values.push(bank_code || null);
+      }
+
+      if (is_default !== undefined) {
+        updates.push(`is_default = $${paramCount++}`);
+        values.push(is_default);
+      }
+
+      if (updates.length === 0) {
+        await pool.query('ROLLBACK');
+        return res.status(400).json({ error: 'No fields to update' });
+      }
+
+      updates.push(`updated_at = CURRENT_TIMESTAMP`);
+      values.push(accountId);
+
+      // Update account
+      await pool.query(
+        `UPDATE wallet_bank_accounts
+         SET ${updates.join(', ')}
+         WHERE id = $${paramCount}`,
+        values
+      );
+
+      await pool.query('COMMIT');
+
+      // Send security email
+      try {
+        const userResult = await pool.query(
+          'SELECT email, name FROM users WHERE id = $1',
+          [userId]
+        );
+
+        if (userResult.rows.length > 0) {
+          await sendSecurityEmail(
+            userResult.rows[0].email,
+            userResult.rows[0].name,
+            'bank_account_updated',
+            `You updated a bank account for ${currencyUpper} withdrawals.`,
+            {
+              currency: currencyUpper,
+              accountId,
+              isDefault: is_default,
+              timestamp: new Date().toISOString(),
+            }
+          );
+        }
+      } catch (emailError) {
+        console.error('Error sending security email:', emailError);
+      }
+
+      // Log action
+      await logPaymentAction({
+        userId,
+        action: 'bank_account_updated',
+        amount: 0,
+        currency: currencyUpper,
+        status: 'success',
+        paymentProvider: null,
+        metadata: {
+          currency: currencyUpper,
+          accountId,
+          isDefault: is_default,
+        },
+      });
+
+      res.json({
+        message: 'Bank account updated successfully',
+      });
+    } catch (error) {
+      await pool.query('ROLLBACK');
+      throw error;
+    }
+  } catch (error) {
+    console.error('Update bank account error:', error);
+    res.status(500).json({ error: 'Server error updating bank account' });
+  }
+});
+
 // Delete bank account for a currency
 router.delete('/:currency/:accountId', authenticate, contributionLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
