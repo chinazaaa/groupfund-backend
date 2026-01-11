@@ -67,10 +67,34 @@ This document outlines the plan to implement automatic payment collection for Gr
 
 ## Payment Flow
 
+### Payment Timing Summary by Group Type
+
+1. **Birthday Groups**: 
+   - Payments happen **once per year** when each person's birthday occurs
+   - Each member's birthday is individual (different dates)
+   - Payment timing: On birthday or 1 day before (based on user's payment preference)
+
+2. **Subscription Groups**: 
+   - Payments happen **recurring** on the deadline day set in the group
+   - **Always uses the deadline date set in the group** - not when user joined or when group was created
+   - **Monthly subscriptions**: Payment on the deadline day each month (e.g., 12th of each month)
+   - **Annual subscriptions**: Payment on the deadline day/month each year (e.g., 15th of December each year)
+   - Admin can change the deadline day (and month for annual) - payments will be debited on the updated deadline day
+   - Payment timing: On deadline day or 1 day before (based on user's payment preference)
+
+3. **General Groups**: 
+   - Payments happen **once** - not recurring (one-time deadline)
+   - Once the deadline passes, that's it - no more automatic payments
+   - **If deadline has passed**: Auto-pay cannot be enabled (validation blocks it)
+   - **If auto-pay already enabled and deadline passes**: Auto-pay should be disabled (no more payments possible)
+   - Payment timing: On deadline day or 1 day before (based on user's payment preference)
+
 ### Automatic Collection Flow
 
 ```
 BIRTHDAY EXAMPLE:
+
+**Note:** Birthday payments happen once per year when each person's birthday occurs. Each member's birthday is individual.
 
 1. User's birthday arrives (or 1 day before, based on payment preference)
    ↓
@@ -121,10 +145,12 @@ BIRTHDAY EXAMPLE:
 
 ### Subscription Deadline Flow
 
+**Note:** Subscription groups have a recurring deadline. **Payments always use the deadline date set in the group** (not when user joined or when group was created). Monthly subscriptions: deadline day each month (e.g., 12th of each month). Annual subscriptions: deadline day/month each year (e.g., 15th of December each year). Admin can change the deadline day (and month for annual), and payments will be debited on the updated deadline day.
+
 ```
 SUBSCRIPTION DEADLINE EXAMPLE:
 
-1. Subscription deadline approaches (e.g., 12th of month)
+1. Subscription deadline approaches (e.g., 12th of month - recurring monthly)
    ↓
 2. **Check if admin (recipient) is a defaulter**
    ├─ YES → Skip ALL auto-payments
@@ -412,6 +438,7 @@ POST /api/groups/:groupId/auto-pay/enable
 - Body: { password_verification_token, otp, payment_method_id, payment_timing }
 - Verify password token and OTP before proceeding
 - **Check for overdue payments** - If user has overdue payments, reject with error: "Please pay all overdue contributions before enabling auto-pay"
+- **For general groups: Check if deadline has passed** - If deadline < today, reject with error: "Cannot enable auto-pay: Group deadline has passed"
 
 POST /api/groups/:groupId/auto-pay/disable/verify-password
 - Step 1: Verify password before disabling auto-pay
@@ -645,7 +672,7 @@ POST /api/webhooks/paystack
 - [ ] Automatic payment trigger logic (respects payment_timing preference)
 - [ ] **Defaulter check logic** - Check recipient for overdue payments first
 - [ ] **Defaulter check logic** - Check each member for overdue payments
-- [ ] Retry logic for failed payments
+- [ ] Retry logic for failed payments (max 2 attempts: initial + 1 retry)
 - [ ] **CRITICAL: Status check before ANY auto-debit** - Check if payment status is still 'not_paid' before ANY auto-debit attempt (initial and retries) (prevent double payment)
 - [ ] Payment confirmation logic
   - Auto-debit payments: Auto-confirm (status = 'confirmed' immediately after webhook verification)
@@ -704,8 +731,8 @@ POST /api/webhooks/paystack
   - **Rationale**: Prevents money from getting stuck, prevents payment failures, consistent with validation requirement
 
 ### 3. **Failed Payment Handling**
-- **Stripe/Paystack automatic retries**: Stripe uses Smart Retries (multiple attempts over days/weeks), Paystack has similar retry logic
-- **After retries exhausted**: Auto-disable auto-pay, send email notification, revert to manual payment
+- **Simple retry strategy**: Max 2 attempts (initial + 1 retry) - it's just a contribution app, not buy/sell
+- **After 2 attempts fail**: Auto-disable auto-pay, send email notification, revert to manual payment
 - **User can re-enable**: User can re-enable auto-pay after fixing the issue (add new card, update card, add funds, etc.)
 - Email notifications for failures
 - User-friendly error messages
@@ -1078,18 +1105,22 @@ Your profit: $0.50
 
 ### Payment Failures & Retry Logic
 
-**Stripe/Paystack Automatic Retry Strategy:**
-- **Stripe Smart Retries**: Multiple intelligent retry attempts over several days to weeks (machine learning-based)
-- **Paystack**: Similar automatic retry logic based on failure reason
-- **Our system**: Receives webhook notifications for each retry attempt
+**Retry Strategy (One-Time Payments):**
+- **Note**: Contributions are one-time payments (not subscriptions), so Stripe/Paystack don't automatically retry
+- **Our retry strategy**: Simple - max 2 attempts total (initial + 1 retry)
+  - Attempt 1: Initial charge attempt
+  - Attempt 2: Retry after initial failure (only for recoverable errors like network issues)
+  - If both fail: Disable auto-pay, notify user, revert to manual payment
+- **Rationale**: It's just a contribution app - if the person doesn't want to pay, it's not a big deal (not buy/sell)
+- **Keep it simple**: No need for many retries - 2 attempts max, then disable auto-pay
 
 **Failure Handling by Reason:**
-1. **Insufficient funds** → Stripe/Paystack retries multiple times over days → After final failure: Disable auto-pay, notify user, revert to manual
-2. **Card expired** → Stripe/Paystack detects immediately → Disable auto-pay, notify user to update card
-3. **Bank declined** → Stripe/Paystack retries multiple times → After final failure: Disable auto-pay, notify user, revert to manual
-4. **Network error** → Stripe/Paystack retries immediately → Usually succeeds on retry
-5. **Card not found** → Stripe/Paystack fails immediately → Disable auto-pay, notify user, require card update
-6. **All retries exhausted** → Stripe/Paystack gives up → **Disable auto-pay, send email, revert to manual payment, user can re-enable**
+1. **Insufficient funds** → Try once, if fails → Retry once → If both fail: Disable auto-pay, notify user, revert to manual
+2. **Card expired** → Try once, fails immediately → Disable auto-pay, notify user to update card
+3. **Bank declined** → Try once, if fails → Retry once → If both fail: Disable auto-pay, notify user, revert to manual
+4. **Network error** → Try once, if fails → Retry immediately (usually succeeds on retry)
+5. **Card not found** → Try once, fails immediately → Disable auto-pay, notify user, require card update
+6. **Both attempts failed** → **Disable auto-pay, send email, revert to manual payment, user can re-enable**
 
 **CRITICAL: Status Check Before ANY Auto-Debit (Prevent Double Payment)**
 - **Before ANY auto-debit attempt (initial OR retry), ALWAYS check if payment status is still 'not_paid'**
@@ -1237,16 +1268,26 @@ SUBSCRIPTION/GENERAL EXAMPLE:
 27. **User pays manually while auto-debit retry is pending** → Status check prevents double charge when retry executes
 28. **User requests withdrawal** → 24-hour hold period, send security email, process after 24 hours
 29. **Fraudulent withdrawal attempt** → 24-hour hold gives time to detect and prevent, user can contact security@groupfund.app
-30. **Stripe/Paystack retries exhausted (all attempts failed)** → ✅ **Auto-disable auto-pay, revert to manual payment**
-   - **Trigger**: Final failure webhook from Stripe/Paystack (all retry attempts exhausted)
+30. **Payment fails after 2 attempts (initial + 1 retry)** → ✅ **Auto-disable auto-pay, revert to manual payment**
+   - **Strategy**: Simple - max 2 attempts total (initial + 1 retry) - it's just a contribution app, not buy/sell
+   - **Trigger**: Payment fails after 2 attempts (initial charge attempt + 1 retry)
    - **Action**: Automatically disable auto-pay for the affected group
    - **Update**: Set `auto_pay_enabled = false` for the group in `user_payment_preferences`
    - **Notification**: Send email "Auto-Pay Disabled - Payment Failed"
      - Subject: "Auto-Pay Disabled - Payment Failed"
-     - Content: "Your automatic payment for [Group Name] failed after multiple retry attempts. Auto-pay has been disabled and contributions have reverted to manual payment. Please check your payment method and re-enable auto-pay if the issue is resolved."
+     - Content: "Your automatic payment for [Group Name] failed after 2 attempts. Auto-pay has been disabled and contributions have reverted to manual payment. Please check your payment method and re-enable auto-pay if the issue is resolved."
    - **Result**: Contributions revert to manual payment (user must mark as paid manually)
    - **Re-enable**: User can re-enable auto-pay after fixing the issue (add new card, update card, add funds, etc.)
    - **Validation**: System validates payment method exists before allowing re-enable
+31. **General group deadline has passed** → ✅ **Cannot enable auto-pay, disable if already enabled**
+   - **Trigger**: User tries to enable auto-pay for general group with deadline in the past
+   - **Validation**: Check if group is general type AND deadline < today
+   - **Action**: Block enable request, return error "Cannot enable auto-pay: Group deadline has passed"
+   - **If already enabled**: Disable auto-pay automatically (set `auto_pay_enabled = false`)
+   - **Notification**: Send email if auto-pay was disabled: "Auto-Pay Disabled - Deadline Passed"
+     - Subject: "Auto-Pay Disabled - Deadline Passed"
+     - Content: "Auto-pay has been disabled for [Group Name] because the deadline has passed. General groups have one-time deadlines, so no more automatic payments will be processed."
+   - **Rationale**: General groups are one-time deadlines, no point in auto-pay after deadline passes
 
 ---
 
@@ -2010,21 +2051,22 @@ The GroupFund Security Team
 
 ### 3. **Failed Payment Retry Logic (Details)**
 
-**Stripe/Paystack Automatic Retries:**
-- **Stripe**: Uses Smart Retries (machine learning-based) - multiple retry attempts automatically over several days to weeks
-  - Stripe handles retries intelligently based on failure reason
-  - No fixed number - Stripe decides optimal retry times
-  - Stripe will eventually stop retrying if all attempts fail
-- **Paystack**: Similar automatic retry logic (varies by failure reason)
-- **Our system**: Receives webhook notifications for each retry attempt and final failure
+**Payment Attempt Strategy (One-Time Payments):**
+- **Note**: Contributions are one-time payments (not subscriptions), so Stripe/Paystack don't automatically retry
+- **Our retry strategy**: Simple - try once, if it fails, retry once more (max 2 attempts total)
+  - Attempt 1: Initial charge attempt
+  - Attempt 2: Retry after initial failure (only for recoverable errors like network issues)
+  - If both fail: Disable auto-pay, revert to manual payment
+- **Rationale**: It's just a contribution app - if the person doesn't want to pay, it's not a big deal (not buy/sell)
+- **No need for many retries**: Keep it simple - 2 attempts max, then disable auto-pay
 
-**After Stripe/Paystack Retries Are Exhausted:**
-- **Auto-disable auto-pay**: When Stripe/Paystack gives up (final failure webhook received)
+**After Payment Fails (2 attempts):**
+- **Auto-disable auto-pay**: After 2 failed attempts (initial + 1 retry)
   - Set `auto_pay_enabled = false` for the affected group in `user_payment_preferences`
   - Contributions revert to manual payment (user must mark as paid manually)
 - **Email notification**: Send email to user immediately
   - Subject: "Auto-Pay Disabled - Payment Failed"
-  - Content: "Your automatic payment for [Group Name] failed after multiple retry attempts. Auto-pay has been disabled and contributions have reverted to manual payment. Please check your payment method and re-enable auto-pay if the issue is resolved."
+  - Content: "Your automatic payment for [Group Name] failed after 2 attempts. Auto-pay has been disabled and contributions have reverted to manual payment. Please check your payment method and re-enable auto-pay if the issue is resolved."
 - **User can re-enable**: User can re-enable auto-pay after fixing the issue (add new card, update card, add funds, etc.)
   - User must manually re-enable auto-pay via the enable endpoint
   - System validates payment method exists before allowing re-enable
