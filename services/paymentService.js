@@ -486,35 +486,64 @@ class PaymentService {
       }
     } else if (provider === 'stripe') {
       // Stripe fees for UK merchants
-      // UK cards: 1.4% + £0.20
+      // UK cards: 1.5% + £0.20
       // European (EEA) cards: 2.5% + £0.20
       // International (non-EEA) cards: 3.25% + £0.20
-      // Currency conversion: +2% if currency differs from settlement currency
+      // Currency conversion: +2% if currency differs from settlement currency (GBP)
       
       // Use conservative estimate (international rate) since we can't know card origin in advance
-      // For NGN and other non-GBP currencies, add currency conversion fee
+      // For non-GBP currencies, add currency conversion fee
       if (currency === 'GBP') {
         // UK currency - no conversion fee
-        processorFeePercent = 2.5; // Average between UK (1.4%) and EEA (2.5%)
+        processorFeePercent = 2.5; // Average between UK (1.5%) and EEA (2.5%)
         processorFeeFixed = 0.20; // £0.20
-      } else if (currency === 'USD') {
-        // US currency - likely international card + conversion
-        processorFeePercent = 5.25; // 3.25% + 2% conversion
-        processorFeeFixed = 0.20; // £0.20 equivalent
       } else if (currency === 'EUR') {
         // European currency - EEA card + conversion
         processorFeePercent = 4.5; // 2.5% + 2% conversion
-        processorFeeFixed = 0.20; // £0.20 equivalent
+        processorFeeFixed = 0.20; // €0.20 (approximately £0.17)
+      } else if (currency === 'USD') {
+        // US currency - international card + conversion
+        processorFeePercent = 5.25; // 3.25% + 2% conversion
+        processorFeeFixed = 0.30; // $0.30 (Stripe's standard USD fixed fee)
       } else if (currency === 'NGN') {
         // Nigerian currency - international card + conversion
-        processorFeePercent = 5.25; // 3.25% + 2% conversion (conservative estimate)
-        // Fixed fee: £0.20 ≈ ₦250-300 (using approximate exchange rate)
-        // Using ₦250 as a conservative estimate (actual will vary with exchange rate)
+        processorFeePercent = 5.25; // 3.25% + 2% conversion
+        // Fixed fee: £0.20 ≈ ₦250-300 (using approximate exchange rate ~1250-1500 NGN/GBP)
         processorFeeFixed = 250; // ₦250 (approximately £0.20 at current rates)
+      } else if (currency === 'KES') {
+        // Kenyan Shilling - international card + conversion
+        processorFeePercent = 5.25; // 3.25% + 2% conversion
+        // Fixed fee: £0.20 ≈ KSh 30-35 (using approximate exchange rate ~150-175 KES/GBP)
+        processorFeeFixed = 30; // KSh 30 (approximately £0.20 at current rates)
+      } else if (currency === 'GHS') {
+        // Ghanaian Cedi - international card + conversion
+        processorFeePercent = 5.25; // 3.25% + 2% conversion
+        // Fixed fee: £0.20 ≈ ₵3-4 (using approximate exchange rate ~15-20 GHS/GBP)
+        processorFeeFixed = 3; // ₵3 (approximately £0.20 at current rates)
+      } else if (currency === 'ZAR') {
+        // South African Rand - international card + conversion
+        processorFeePercent = 5.25; // 3.25% + 2% conversion
+        // Fixed fee: £0.20 ≈ R4-5 (using approximate exchange rate ~20-25 ZAR/GBP)
+        processorFeeFixed = 4; // R4 (approximately £0.20 at current rates)
+      } else if (currency === 'CAD') {
+        // Canadian Dollar - international card + conversion
+        processorFeePercent = 5.25; // 3.25% + 2% conversion
+        // Fixed fee: £0.20 ≈ C$0.30-0.35 (using approximate exchange rate ~1.5-1.75 CAD/GBP)
+        processorFeeFixed = 0.30; // C$0.30 (approximately £0.20 at current rates)
+      } else if (currency === 'AUD') {
+        // Australian Dollar - international card + conversion
+        processorFeePercent = 5.25; // 3.25% + 2% conversion
+        // Fixed fee: £0.20 ≈ A$0.35-0.40 (using approximate exchange rate ~1.75-2 AUD/GBP)
+        processorFeeFixed = 0.35; // A$0.35 (approximately £0.20 at current rates)
+      } else if (currency === 'JPY') {
+        // Japanese Yen - international card + conversion
+        processorFeePercent = 5.25; // 3.25% + 2% conversion
+        // Fixed fee: £0.20 ≈ ¥30-35 (using approximate exchange rate ~150-175 JPY/GBP)
+        processorFeeFixed = 30; // ¥30 (approximately £0.20 at current rates)
       } else {
         // Other currencies - use international rate + conversion
         processorFeePercent = 5.25; // 3.25% + 2% conversion
-        processorFeeFixed = 0.20; // £0.20 equivalent
+        processorFeeFixed = 0.20; // Default to £0.20 equivalent (will need manual adjustment)
       }
     }
 
