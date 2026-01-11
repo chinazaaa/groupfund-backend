@@ -188,8 +188,56 @@ router.post('/:groupId/auto-pay/enable', authenticate, contributionLimiter, [
       }
     }
 
-    // Determine payment provider based on currency
+    // Validate group has currency
+    if (!group.currency) {
+      return res.status(400).json({
+        error: 'Group has no currency set. Please contact the group admin.',
+      });
+    }
+
+    // Verify payment method exists and belongs to user
+    // payment_method_id is the UUID from user_payment_methods table
+    const paymentMethodCheck = await pool.query(
+      `SELECT id, payment_method_id, provider, currency, is_active
+       FROM user_payment_methods
+       WHERE id = $1 AND user_id = $2 AND is_active = TRUE`,
+      [payment_method_id, userId]
+    );
+
+    if (paymentMethodCheck.rows.length === 0) {
+      return res.status(404).json({
+        error: 'Payment method not found or inactive.',
+      });
+    }
+
+    const paymentMethod = paymentMethodCheck.rows[0];
+
+    // Validate provider match
+    // Note: One card works with ONE provider (Stripe OR Paystack), not both
+    // - European/international cards → Stripe → Can charge in multiple currencies (USD, EUR, GBP, etc.)
+    // - African cards → Paystack → Typically currency-specific (NGN, KES, etc.)
     const provider = paymentService.selectProvider(group.currency, null);
+    
+    if (paymentMethod.provider !== provider) {
+      return res.status(400).json({
+        error: `Payment method provider (${paymentMethod.provider}) does not match group currency provider (${provider}). Please use a ${provider} payment method for ${group.currency} groups.`,
+        groupCurrency: group.currency,
+        paymentMethodCurrency: paymentMethod.currency,
+        requiredProvider: provider,
+        paymentMethodProvider: paymentMethod.provider,
+      });
+    }
+
+    // For Paystack, validate currency matches (Paystack cards are currency-specific)
+    // For Stripe, allow any currency (Stripe cards can charge in multiple currencies)
+    if (provider === 'paystack' && paymentMethod.currency && paymentMethod.currency !== group.currency) {
+      return res.status(400).json({
+        error: `Payment method currency (${paymentMethod.currency}) does not match group currency (${group.currency}). Please use a ${group.currency} payment method for this group.`,
+        groupCurrency: group.currency,
+        paymentMethodCurrency: paymentMethod.currency,
+      });
+    }
+    // For Stripe: No currency validation needed - Stripe cards can charge in any currency
 
     // Get user's customer ID for provider
     let customerId;
@@ -209,9 +257,12 @@ router.post('/:groupId/auto-pay/enable', authenticate, contributionLimiter, [
 
     if (!customerId) {
       return res.status(400).json({
-        error: 'Payment method not found. Please add a payment method first.',
+        error: 'Customer account not found. Please add a payment method first.',
       });
     }
+
+    // Use the provider's payment_method_id (not our UUID)
+    const providerPaymentMethodId = paymentMethod.payment_method_id;
 
     // Create or update payment preference
     const preferenceCheck = await pool.query(
@@ -221,19 +272,21 @@ router.post('/:groupId/auto-pay/enable', authenticate, contributionLimiter, [
 
     if (preferenceCheck.rows.length > 0) {
       // Update existing preference
+      // Store provider's payment_method_id (not our UUID) in user_payment_preferences
       await pool.query(
         `UPDATE user_payment_preferences
          SET auto_pay_enabled = TRUE, payment_method_id = $1, payment_timing = $2, provider = $3, updated_at = CURRENT_TIMESTAMP
          WHERE user_id = $4 AND group_id = $5`,
-        [payment_method_id, payment_timing, provider, userId, groupId]
+        [providerPaymentMethodId, payment_timing, provider, userId, groupId]
       );
     } else {
       // Create new preference
+      // Store provider's payment_method_id (not our UUID) in user_payment_preferences
       await pool.query(
         `INSERT INTO user_payment_preferences
          (user_id, group_id, auto_pay_enabled, payment_method_id, payment_timing, provider)
          VALUES ($1, $2, TRUE, $3, $4, $5)`,
-        [userId, groupId, payment_method_id, payment_timing, provider]
+        [userId, groupId, providerPaymentMethodId, payment_timing, provider]
       );
     }
 
@@ -445,6 +498,97 @@ router.post('/:groupId/auto-pay/disable', authenticate, contributionLimiter, [
 });
 
 /**
+ * GET PAYMENT METHODS FOR GROUP
+ */
+
+// Get available payment methods for a group (filtered by group currency)
+router.get('/:groupId/auto-pay/payment-methods', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { groupId } = req.params;
+
+    // Verify user is member of group
+    const memberCheck = await pool.query(
+      'SELECT status FROM group_members WHERE group_id = $1 AND user_id = $2 AND status = $3',
+      [groupId, userId, 'active']
+    );
+
+    if (memberCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'You must be an active member of this group' });
+    }
+
+    // Get group currency
+    const groupResult = await pool.query(
+      'SELECT currency FROM groups WHERE id = $1',
+      [groupId]
+    );
+
+    if (groupResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const groupCurrency = groupResult.rows[0].currency;
+    if (!groupCurrency) {
+      return res.status(400).json({ error: 'Group has no currency set' });
+    }
+
+    // Get payment methods that match the group's currency/provider
+    const provider = paymentService.selectProvider(groupCurrency, null);
+
+    let query = `
+      SELECT id, payment_method_id, provider, payment_method_type, currency, last4, brand,
+             expiry_month, expiry_year, is_default, is_active, created_at, updated_at
+      FROM user_payment_methods
+      WHERE user_id = $1 AND is_active = TRUE AND provider = $2
+    `;
+    const params = [userId, provider];
+
+    // For Paystack, require currency match (Paystack cards are currency-specific)
+    // For Stripe, show all cards (Stripe cards can charge in multiple currencies)
+    if (provider === 'paystack') {
+      query += ` AND (currency = $3 OR currency IS NULL)`;
+      params.push(groupCurrency);
+      query += ` ORDER BY is_default DESC, created_at DESC`;
+    } else {
+      // For Stripe, show all cards (they can charge in multiple currencies)
+      // Prefer matching currency if specified, but show all Stripe cards
+      query += ` ORDER BY 
+        CASE WHEN currency = $3 THEN 0 ELSE 1 END,
+        is_default DESC, 
+        created_at DESC`;
+      params.push(groupCurrency);
+    }
+
+    const result = await pool.query(query, params);
+
+    const paymentMethods = result.rows.map(method => ({
+      id: method.id,
+      paymentMethodId: method.payment_method_id,
+      provider: method.provider,
+      paymentMethodType: method.payment_method_type,
+      currency: method.currency,
+      last4: method.last4,
+      brand: method.brand,
+      expiryMonth: method.expiry_month,
+      expiryYear: method.expiry_year,
+      isDefault: method.is_default,
+      displayName: method.last4 
+        ? `${method.brand || 'Card'} •••• ${method.last4}${method.expiry_month && method.expiry_year ? ` (${method.expiry_month}/${method.expiry_year.toString().slice(-2)})` : ''}`
+        : 'Payment Method',
+    }));
+
+    res.json({
+      paymentMethods,
+      groupCurrency,
+      requiredProvider: provider,
+    });
+  } catch (error) {
+    console.error('Get payment methods for group error:', error);
+    res.status(500).json({ error: 'Server error getting payment methods' });
+  }
+});
+
+/**
  * AUTO-PAY STATUS
  */
 
@@ -476,17 +620,48 @@ router.get('/:groupId/auto-pay/status', authenticate, async (req, res) => {
       return res.json({
         auto_pay_enabled: false,
         payment_timing: null,
-        payment_method_id: null,
+        payment_method: null,
         provider: null,
       });
     }
 
     const preference = preferenceResult.rows[0];
 
+    // Get payment method details if auto-pay is enabled
+    let paymentMethod = null;
+    if (preference.auto_pay_enabled && preference.payment_method_id) {
+      const methodResult = await pool.query(
+        `SELECT id, payment_method_id, provider, payment_method_type, currency, last4, brand,
+                expiry_month, expiry_year, is_default
+         FROM user_payment_methods
+         WHERE user_id = $1 AND payment_method_id = $2 AND is_active = TRUE`,
+        [userId, preference.payment_method_id]
+      );
+
+      if (methodResult.rows.length > 0) {
+        const method = methodResult.rows[0];
+        paymentMethod = {
+          id: method.id,
+          paymentMethodId: method.payment_method_id,
+          provider: method.provider,
+          paymentMethodType: method.payment_method_type,
+          currency: method.currency,
+          last4: method.last4,
+          brand: method.brand,
+          expiryMonth: method.expiry_month,
+          expiryYear: method.expiry_year,
+          isDefault: method.is_default,
+          displayName: method.last4 
+            ? `${method.brand || 'Card'} •••• ${method.last4}${method.expiry_month && method.expiry_year ? ` (${method.expiry_month}/${method.expiry_year.toString().slice(-2)})` : ''}`
+            : 'Payment Method',
+        };
+      }
+    }
+
     res.json({
       auto_pay_enabled: preference.auto_pay_enabled,
       payment_timing: preference.payment_timing,
-      payment_method_id: preference.payment_method_id,
+      payment_method: paymentMethod,
       provider: preference.provider,
     });
   } catch (error) {

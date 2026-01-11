@@ -41,6 +41,7 @@ const migrations = [
   'add_payment_automation.sql',
   'fix_password_verification_token_length.sql',
   'add_user_payment_methods.sql',
+  'add_currency_to_payment_methods.sql',
   'add_currency_bank_accounts.sql'
 ];
 
