@@ -260,8 +260,11 @@ router.post('/methods', authenticate, contributionLimiter, [
         }
       }
 
-      // Validate card funding type - only allow debit cards
-      if (cardFunding) {
+      // Validate card funding type - only allow debit cards (except in test mode)
+      // Allow credit cards in test mode for testing with Stripe test cards
+      const isTestMode = process.env.STRIPE_SECRET_KEY && process.env.STRIPE_SECRET_KEY.startsWith('sk_test_');
+      
+      if (cardFunding && !isTestMode) {
         if (cardFunding === 'credit') {
           return res.status(400).json({
             error: 'Credit cards are not accepted. Please use a debit card.',
@@ -281,7 +284,10 @@ router.post('/methods', authenticate, contributionLimiter, [
             cardFunding,
           });
         }
-      } else {
+      } else if (cardFunding === 'credit' && isTestMode) {
+        // Log that credit card is allowed in test mode
+        console.log(`⚠️  Credit card accepted in test mode: ${paymentMethodId}`);
+      } else if (!cardFunding) {
         // If funding type is not available, log a warning but allow it
         // (Some cards may not have funding type available immediately)
         console.warn(`Payment method ${paymentMethodId} added without funding type. Card will be accepted but funding type should be verified.`);

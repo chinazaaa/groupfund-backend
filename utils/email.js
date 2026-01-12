@@ -2515,6 +2515,61 @@ const sendWithdrawalFailedEmail = async (email, name, amount, currency, currency
   }
 };
 
+// Send auto-pay success email to contributor
+const sendAutoPaySuccessEmail = async (email, name, amount, currency, groupName, currencySymbol) => {
+  try {
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">🎂 GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1a1a1a; font-size: 24px; margin-top: 0;">Auto-Pay Successful! ✅</h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${name},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Your automatic payment for the group <strong>${groupName}</strong> has been processed successfully.
+          </p>
+          <div style="background: white; padding: 30px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981; text-align: center;">
+            <p style="color: #6b7280; font-size: 14px; margin: 0 0 10px 0;">Amount paid:</p>
+            <h1 style="color: #10b981; font-size: 36px; margin: 0; font-weight: bold;">${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</h1>
+            <p style="color: #9ca3af; font-size: 12px; margin-top: 10px;">${currency}</p>
+          </div>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Your payment has been automatically processed and confirmed. The recipient has been notified and the funds have been credited to their wallet.
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Best regards,<br>
+            <strong>The GroupFund Team</strong>
+          </p>
+          <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            This is an automated notification email. You can manage your auto-pay settings in the app.
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject: `Auto-Pay Successful: ${currencySymbol}${amount} for ${groupName}`,
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error:', error);
+      return false;
+    }
+
+    console.log('Auto-pay success email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending auto-pay success email:', error);
+    return false;
+  }
+};
+
 module.exports = {
   sendOTPEmail,
   sendOTPSMS,
@@ -2539,6 +2594,7 @@ module.exports = {
   sendHappyNewYearEmail,
   sendCustomEmail,
   sendPaymentSuccessEmail,
+  sendAutoPaySuccessEmail,
   sendAutoPayDisabledEmail,
   sendPaymentFailureEmail,
   sendSecurityEmail,

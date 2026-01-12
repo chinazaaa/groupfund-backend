@@ -12,11 +12,13 @@ const {
 } = require('../utils/walletHelpers');
 const {
   sendPaymentSuccessEmail,
+  sendAutoPaySuccessEmail,
   sendAutoPayDisabledEmail,
   sendPaymentFailureEmail,
   sendWithdrawalCompletedEmail,
   sendWithdrawalFailedEmail,
 } = require('../utils/email');
+const { createNotification } = require('../utils/notifications');
 
 const router = express.Router();
 
@@ -33,7 +35,10 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
     const signature = req.headers['stripe-signature'];
     const payload = req.body;
 
+    console.log('🔔 Stripe webhook received - checking signature and payload');
+
     if (!signature || !payload) {
+      console.error('❌ Missing signature or payload in Stripe webhook');
       return res.status(400).json({ error: 'Missing signature or payload' });
     }
 
@@ -45,13 +50,15 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
     );
 
     if (!isValid) {
-      console.error('Invalid Stripe webhook signature');
+      console.error('❌ Invalid Stripe webhook signature');
       return res.status(400).json({ error: 'Invalid signature' });
     }
 
+    console.log('✅ Stripe webhook signature verified');
+
     // Parse event
     const event = JSON.parse(payload.toString());
-    console.log('Stripe webhook event:', event.type, event.id);
+    console.log('📨 Stripe webhook event received:', event.type, 'ID:', event.id);
 
     // Handle different event types
     switch (event.type) {
@@ -176,6 +183,7 @@ async function handleStripePaymentSuccess(paymentIntent) {
     };
 
     // Credit recipient's wallet
+    console.log(`Crediting wallet for recipient ${recipientId}, contribution ${contributionId}, type ${contributionType}`);
     const creditResult = await creditWallet({
       recipientId,
       amount: contributionAmount, // Recipient receives full contribution amount (not including fees)
@@ -188,6 +196,7 @@ async function handleStripePaymentSuccess(paymentIntent) {
       paymentProvider: 'stripe',
       fees,
     });
+    console.log(`Wallet credited successfully. Transaction ID: ${creditResult.transactionId}, New balance: ${creditResult.newBalance}`);
 
     // Update payment attempt status
     await updatePaymentAttempt(
@@ -210,14 +219,14 @@ async function handleStripePaymentSuccess(paymentIntent) {
       metadata: { contributionType, contributionId, groupId, transactionId: creditResult.transactionId },
     });
 
-    // Send notification email to recipient
+    // Send notifications to recipient and contributor
     try {
       const recipientResult = await pool.query(
         'SELECT email, name FROM users WHERE id = $1',
         [recipientId]
       );
       const contributorResult = await pool.query(
-        'SELECT name FROM users WHERE id = $1',
+        'SELECT email, name FROM users WHERE id = $1',
         [userId]
       );
       const groupResult = await pool.query(
@@ -228,10 +237,12 @@ async function handleStripePaymentSuccess(paymentIntent) {
       if (recipientResult.rows.length > 0 && contributorResult.rows.length > 0 && groupResult.rows.length > 0) {
         const recipientEmail = recipientResult.rows[0].email;
         const recipientName = recipientResult.rows[0].name;
+        const contributorEmail = contributorResult.rows[0].email;
         const contributorName = contributorResult.rows[0].name;
         const groupName = groupResult.rows[0].name;
         const currencySymbol = paymentService.formatCurrency(contributionAmount, currency.toUpperCase()).replace(/[\d.,]+/g, '');
 
+        // Send email to recipient
         await sendPaymentSuccessEmail(
           recipientEmail,
           recipientName,
@@ -241,9 +252,62 @@ async function handleStripePaymentSuccess(paymentIntent) {
           groupName,
           currencySymbol
         );
+
+        // Send push and in-app notification to recipient
+        const { formatAmount } = require('../utils/currency');
+        const formattedAmount = formatAmount(contributionAmount, currency.toUpperCase());
+        let recipientNotificationType;
+        let recipientNotificationTitle;
+        
+        switch (contributionType) {
+          case 'subscription':
+            recipientNotificationType = 'subscription_contribution_paid';
+            recipientNotificationTitle = 'Subscription Contribution Received';
+            break;
+          case 'birthday':
+            recipientNotificationType = 'contribution_paid';
+            recipientNotificationTitle = 'Contribution Received';
+            break;
+          case 'general':
+            recipientNotificationType = 'general_contribution_paid';
+            recipientNotificationTitle = 'Contribution Received';
+            break;
+          default:
+            recipientNotificationType = 'contribution_paid';
+            recipientNotificationTitle = 'Contribution Received';
+        }
+        
+        await createNotification(
+          recipientId,
+          recipientNotificationType,
+          recipientNotificationTitle,
+          `${contributorName} made an automatic payment of ${formattedAmount} for ${groupName}`,
+          groupId,
+          userId
+        );
+
+        // Send email, push, and in-app notification to contributor (the person who paid)
+        await sendAutoPaySuccessEmail(
+          contributorEmail,
+          contributorName,
+          contributionAmount,
+          currency.toUpperCase(),
+          groupName,
+          currencySymbol
+        );
+
+        // Send push and in-app notification to contributor
+        await createNotification(
+          userId,
+          'autopay_success',
+          'Auto-Pay Successful',
+          `Your automatic payment of ${currencySymbol}${contributionAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} for ${groupName} has been processed successfully.`,
+          groupId,
+          recipientId
+        );
       }
     } catch (emailError) {
-      console.error('Error sending payment success email:', emailError);
+      console.error('Error sending payment notifications:', emailError);
       // Don't fail the webhook if email fails
     }
 
@@ -405,6 +469,7 @@ async function handlePaystackPaymentSuccess(data) {
     };
 
     // Credit recipient's wallet
+    console.log(`Crediting wallet for recipient ${recipientId}, contribution ${contributionId}, type ${contributionType}`);
     const creditResult = await creditWallet({
       recipientId,
       amount: contribAmount,
@@ -417,6 +482,7 @@ async function handlePaystackPaymentSuccess(data) {
       paymentProvider: 'paystack',
       fees,
     });
+    console.log(`Wallet credited successfully. Transaction ID: ${creditResult.transactionId}, New balance: ${creditResult.newBalance}`);
 
     // Update payment attempt status
     await updatePaymentAttempt(parsedMetadata.attemptId || null, {
@@ -436,14 +502,14 @@ async function handlePaystackPaymentSuccess(data) {
       metadata: { contributionType, contributionId, groupId, transactionId: creditResult.transactionId },
     });
 
-    // Send notification email to recipient
+    // Send notifications to recipient and contributor
     try {
       const recipientResult = await pool.query(
         'SELECT email, name FROM users WHERE id = $1',
         [recipientId]
       );
       const contributorResult = await pool.query(
-        'SELECT name FROM users WHERE id = $1',
+        'SELECT email, name FROM users WHERE id = $1',
         [userId]
       );
       const groupResult = await pool.query(
@@ -454,10 +520,12 @@ async function handlePaystackPaymentSuccess(data) {
       if (recipientResult.rows.length > 0 && contributorResult.rows.length > 0 && groupResult.rows.length > 0) {
         const recipientEmail = recipientResult.rows[0].email;
         const recipientName = recipientResult.rows[0].name;
+        const contributorEmail = contributorResult.rows[0].email;
         const contributorName = contributorResult.rows[0].name;
         const groupName = groupResult.rows[0].name;
         const currencySymbol = paymentService.formatCurrency(contribAmount, currency.toUpperCase()).replace(/[\d.,]+/g, '');
 
+        // Send email to recipient
         await sendPaymentSuccessEmail(
           recipientEmail,
           recipientName,
@@ -467,9 +535,62 @@ async function handlePaystackPaymentSuccess(data) {
           groupName,
           currencySymbol
         );
+
+        // Send push and in-app notification to recipient
+        const { formatAmount } = require('../utils/currency');
+        const formattedAmount = formatAmount(contribAmount, currency.toUpperCase());
+        let recipientNotificationType;
+        let recipientNotificationTitle;
+        
+        switch (contributionType) {
+          case 'subscription':
+            recipientNotificationType = 'subscription_contribution_paid';
+            recipientNotificationTitle = 'Subscription Contribution Received';
+            break;
+          case 'birthday':
+            recipientNotificationType = 'contribution_paid';
+            recipientNotificationTitle = 'Contribution Received';
+            break;
+          case 'general':
+            recipientNotificationType = 'general_contribution_paid';
+            recipientNotificationTitle = 'Contribution Received';
+            break;
+          default:
+            recipientNotificationType = 'contribution_paid';
+            recipientNotificationTitle = 'Contribution Received';
+        }
+        
+        await createNotification(
+          recipientId,
+          recipientNotificationType,
+          recipientNotificationTitle,
+          `${contributorName} made an automatic payment of ${formattedAmount} for ${groupName}`,
+          groupId,
+          userId
+        );
+
+        // Send email, push, and in-app notification to contributor (the person who paid)
+        await sendAutoPaySuccessEmail(
+          contributorEmail,
+          contributorName,
+          contribAmount,
+          currency.toUpperCase(),
+          groupName,
+          currencySymbol
+        );
+
+        // Send push and in-app notification to contributor
+        await createNotification(
+          userId,
+          'autopay_success',
+          'Auto-Pay Successful',
+          `Your automatic payment of ${currencySymbol}${contribAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} for ${groupName} has been processed successfully.`,
+          groupId,
+          recipientId
+        );
       }
     } catch (emailError) {
-      console.error('Error sending payment success email:', emailError);
+      console.error('Error sending payment notifications:', emailError);
       // Don't fail the webhook if email fails
     }
 

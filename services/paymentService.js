@@ -309,54 +309,105 @@ class PaymentService {
       }
 
       if (provider === 'stripe' && this.stripe) {
-        // Validate card funding type - only allow debit cards
-        try {
-          const paymentMethod = await this.stripe.paymentMethods.retrieve(paymentMethodId);
-          if (paymentMethod && paymentMethod.card && paymentMethod.card.funding) {
-            const funding = paymentMethod.card.funding;
-            if (funding === 'credit') {
-              return {
-                success: false,
-                error: 'Credit cards are not accepted. Please use a debit card.',
-                status: 'failed',
-              };
+        // Validate card funding type - only allow debit cards (except in test mode)
+        // Allow credit cards in test mode for testing with Stripe test cards
+        const isTestMode = process.env.STRIPE_SECRET_KEY && process.env.STRIPE_SECRET_KEY.startsWith('sk_test_');
+        
+        if (!isTestMode) {
+          try {
+            const paymentMethod = await this.stripe.paymentMethods.retrieve(paymentMethodId);
+            if (paymentMethod && paymentMethod.card && paymentMethod.card.funding) {
+              const funding = paymentMethod.card.funding;
+              if (funding === 'credit') {
+                return {
+                  success: false,
+                  error: 'Credit cards are not accepted. Please use a debit card.',
+                  status: 'failed',
+                };
+              }
+              if (funding === 'prepaid') {
+                return {
+                  success: false,
+                  error: 'Prepaid cards are not accepted. Please use a debit card.',
+                  status: 'failed',
+                };
+              }
+              // Allow 'debit' and 'unknown' (some cards may not have funding type available)
             }
-            if (funding === 'prepaid') {
-              return {
-                success: false,
-                error: 'Prepaid cards are not accepted. Please use a debit card.',
-                status: 'failed',
-              };
-            }
-            // Allow 'debit' and 'unknown' (some cards may not have funding type available)
+          } catch (retrieveError) {
+            // If we can't retrieve the payment method, log warning but continue
+            // (payment method might be valid but retrieval failed)
+            console.warn('Could not retrieve payment method to check funding type:', retrieveError.message);
           }
-        } catch (retrieveError) {
-          // If we can't retrieve the payment method, log warning but continue
-          // (payment method might be valid but retrieval failed)
-          console.warn('Could not retrieve payment method to check funding type:', retrieveError.message);
+        } else {
+          // In test mode, allow all card types (including credit cards for testing)
+          console.log(`⚠️  Test mode: Allowing all card types for payment method: ${paymentMethodId}`);
         }
 
         // Convert amount to cents
         const amountInCents = this.convertToSmallestUnit(amount, currency);
 
+        // Ensure payment method is attached to customer (required for Stripe)
+        // This is necessary because payment methods can only be reused if they're attached to a customer
+        try {
+          const paymentMethod = await this.stripe.paymentMethods.retrieve(paymentMethodId);
+          // Check if payment method is already attached to this customer
+          if (!paymentMethod.customer || paymentMethod.customer !== customerId) {
+            // Attach payment method to customer
+            await this.stripe.paymentMethods.attach(paymentMethodId, {
+              customer: customerId,
+            });
+          }
+        } catch (attachError) {
+          // Check if this is the "cannot reuse payment method" error
+          if (attachError.message && attachError.message.includes('previously used') && attachError.message.includes('without Customer attachment')) {
+            return {
+              success: false,
+              error: 'This payment method cannot be reused. Please add a new payment method in the app settings.',
+              status: 'failed',
+              requiresNewPaymentMethod: true,
+            };
+          }
+          // If payment method is already attached, ignore the error
+          // If it's a different error, log it but continue (might still work)
+          if (!attachError.message.includes('already been attached')) {
+            console.warn('Could not attach payment method to customer:', attachError.message);
+          }
+        }
+
         // Create payment intent with idempotency key
         const idempotencyKey = metadata.idempotencyKey || `charge_${Date.now()}_${Math.random().toString(36).substring(7)}`;
         
-        const paymentIntent = await this.stripe.paymentIntents.create({
-          amount: amountInCents,
-          currency: currency.toLowerCase(),
-          customer: customerId,
-          payment_method: paymentMethodId,
-          description,
-          metadata: {
-            ...metadata,
+        let paymentIntent;
+        try {
+          paymentIntent = await this.stripe.paymentIntents.create({
+            amount: amountInCents,
+            currency: currency.toLowerCase(),
+            customer: customerId,
+            payment_method: paymentMethodId,
+            description,
+            metadata: {
+              ...metadata,
+              idempotencyKey,
+            },
+            confirm: true,
+            return_url: process.env.FRONTEND_URL || 'https://groupfund.app',
+          }, {
             idempotencyKey,
-          },
-          confirm: true,
-          return_url: process.env.FRONTEND_URL || 'https://groupfund.app',
-        }, {
-          idempotencyKey,
-        });
+          });
+        } catch (createError) {
+          // Check if this is the "cannot reuse payment method" error
+          if (createError.message && createError.message.includes('previously used') && createError.message.includes('without Customer attachment')) {
+            return {
+              success: false,
+              error: 'This payment method cannot be reused. Please add a new payment method in the app settings.',
+              status: 'failed',
+              requiresNewPaymentMethod: true,
+            };
+          }
+          // Re-throw other errors
+          throw createError;
+        }
 
         if (paymentIntent.status === 'succeeded') {
           return {
