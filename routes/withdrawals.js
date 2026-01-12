@@ -12,6 +12,7 @@ const {
   storePasswordVerificationToken,
   requestPaymentOTP,
   verifyPaymentOTP,
+  verifyPaymentCode,
   logPaymentAction,
 } = require('../utils/paymentHelpers');
 const {
@@ -89,9 +90,9 @@ router.post('/request-otp', authenticate, otpLimiter, [
     const userId = req.user.id;
     const { password_verification_token } = req.body;
 
-    // Get user email
+    // Check if user has 2FA enabled with authenticator
     const userResult = await pool.query(
-      'SELECT email FROM users WHERE id = $1',
+      'SELECT two_factor_enabled, two_factor_method, two_factor_secret, email FROM users WHERE id = $1',
       [userId]
     );
 
@@ -99,14 +100,41 @@ router.post('/request-otp', authenticate, otpLimiter, [
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const email = userResult.rows[0].email;
+    const user = userResult.rows[0];
 
-    // Request OTP
-    await requestPaymentOTP(userId, email, 'withdrawal', password_verification_token);
+    // 2FA must be enabled (require2FA middleware should have already checked this)
+    if (!user.two_factor_enabled) {
+      return res.status(403).json({
+        error: 'Two-factor authentication (2FA) is required for this feature',
+        code: '2FA_REQUIRED',
+        message: 'Please enable 2FA in your security settings to use this feature',
+      });
+    }
 
-    res.json({
-      message: 'OTP sent to your email',
-    });
+    // If 2FA is enabled with authenticator, skip OTP request (user gets code from authenticator)
+    if (user.two_factor_method === 'authenticator' && user.two_factor_secret) {
+      return res.json({
+        message: 'Please enter the code from your authenticator app',
+        requires2FA: true,
+      });
+    }
+
+    // If 2FA is enabled with email, send email OTP
+    if (user.two_factor_method === 'email') {
+      const email = user.email;
+
+      // Request OTP
+      await requestPaymentOTP(userId, email, 'withdrawal', password_verification_token);
+
+      return res.json({
+        message: 'OTP sent to your email',
+        requires2FA: true,
+        method: 'email',
+      });
+    }
+
+    // Unknown 2FA method or invalid state
+    return res.status(400).json({ error: 'Invalid 2FA configuration' });
   } catch (error) {
     console.error('OTP request error:', error);
     res.status(500).json({ error: error.message || 'Server error during OTP request' });
@@ -136,9 +164,10 @@ router.post('/request', authenticate, require2FA, contributionLimiter, [
     }
 
     // Verify OTP
-    const isValidOTP = await verifyPaymentOTP(userId, otp, password_verification_token, 'withdrawal');
-    if (!isValidOTP) {
-      return res.status(401).json({ error: 'Invalid or expired OTP' });
+    // Verify code (2FA code if 2FA enabled, otherwise OTP)
+    const isValidCode = await verifyPaymentCode(userId, otp, password_verification_token, 'withdrawal');
+    if (!isValidCode) {
+      return res.status(401).json({ error: 'Invalid or expired code' });
     }
 
     // Validate currency - MUST be provided (comes from user's groups)

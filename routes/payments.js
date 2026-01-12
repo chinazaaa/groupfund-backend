@@ -12,6 +12,7 @@ const {
   storePasswordVerificationToken,
   requestPaymentOTP,
   verifyPaymentOTP,
+  verifyPaymentCode,
   logPaymentAction,
   checkDefaulterStatus,
 } = require('../utils/paymentHelpers');
@@ -85,9 +86,9 @@ router.post('/methods/request-otp', authenticate, otpLimiter, [
     const userId = req.user.id;
     const { password_verification_token, action = 'add-payment-method' } = req.body;
 
-    // Get user email
+    // Check if user has 2FA enabled with authenticator
     const userResult = await pool.query(
-      'SELECT email FROM users WHERE id = $1',
+      'SELECT two_factor_enabled, two_factor_method, two_factor_secret, email FROM users WHERE id = $1',
       [userId]
     );
 
@@ -95,26 +96,53 @@ router.post('/methods/request-otp', authenticate, otpLimiter, [
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const email = userResult.rows[0].email;
+    const user = userResult.rows[0];
 
-    // Map action to internal action name
-    // Note: 'update-payment-method' is an alias for 'edit-payment-method' for backward compatibility
-    const actionMap = {
-      'add-payment-method': 'add_payment_method',
-      'edit-payment-method': 'edit_payment_method',
-      'update-payment-method': 'edit_payment_method', // Alias for edit-payment-method
-      'delete-payment-method': 'delete_payment_method',
-      'update-currencies': 'update_payment_method_currencies',
-    };
+    // 2FA must be enabled (require2FA middleware should have already checked this)
+    if (!user.two_factor_enabled) {
+      return res.status(403).json({
+        error: 'Two-factor authentication (2FA) is required for this feature',
+        code: '2FA_REQUIRED',
+        message: 'Please enable 2FA in your security settings to use this feature',
+      });
+    }
 
-    const internalAction = actionMap[action] || 'add_payment_method';
+    // If 2FA is enabled with authenticator, skip OTP request (user gets code from authenticator)
+    if (user.two_factor_method === 'authenticator' && user.two_factor_secret) {
+      return res.json({
+        message: 'Please enter the code from your authenticator app',
+        requires2FA: true,
+      });
+    }
 
-    // Request OTP
-    await requestPaymentOTP(userId, email, internalAction, password_verification_token);
+    // If 2FA is enabled with email, send email OTP
+    if (user.two_factor_method === 'email') {
+      const email = user.email;
 
-    res.json({
-      message: 'OTP sent to your email',
-    });
+      // Map action to internal action name
+      // Note: 'update-payment-method' is an alias for 'edit-payment-method' for backward compatibility
+      const actionMap = {
+        'add-payment-method': 'add_payment_method',
+        'edit-payment-method': 'edit_payment_method',
+        'update-payment-method': 'edit_payment_method', // Alias for edit-payment-method
+        'delete-payment-method': 'delete_payment_method',
+        'update-currencies': 'update_payment_method_currencies',
+      };
+
+      const internalAction = actionMap[action] || 'add_payment_method';
+
+      // Request OTP
+      await requestPaymentOTP(userId, email, internalAction, password_verification_token);
+
+      return res.json({
+        message: 'OTP sent to your email',
+        requires2FA: true,
+        method: 'email',
+      });
+    }
+
+    // Unknown 2FA method or invalid state
+    return res.status(400).json({ error: 'Invalid 2FA configuration' });
   } catch (error) {
     console.error('OTP request error:', error);
     res.status(500).json({ error: error.message || 'Server error during OTP request' });
@@ -156,10 +184,10 @@ router.post('/methods', authenticate, require2FA, contributionLimiter, [
       return res.status(400).json({ error: 'Payment method data is required for Stripe' });
     }
 
-    // Verify OTP
-    const isOTPValid = await verifyPaymentOTP(userId, otp, password_verification_token, 'add_payment_method');
-    if (!isOTPValid) {
-      return res.status(401).json({ error: 'Invalid or expired OTP' });
+    // Verify code (2FA code if 2FA enabled, otherwise OTP)
+    const isValidCode = await verifyPaymentCode(userId, otp, password_verification_token, 'add_payment_method');
+    if (!isValidCode) {
+      return res.status(401).json({ error: 'Invalid or expired code' });
     }
 
     // Get user details
@@ -759,10 +787,10 @@ router.put('/methods/bulk-update-currencies', authenticate, require2FA, contribu
     const userId = req.user.id;
     const { password_verification_token, otp, payment_method_id, currencies: requestedCurrencies } = req.body;
 
-    // Verify OTP
-    const isOTPValid = await verifyPaymentOTP(userId, otp, password_verification_token, 'update_payment_method_currencies');
-    if (!isOTPValid) {
-      return res.status(401).json({ error: 'Invalid or expired OTP' });
+    // Verify code (2FA code if 2FA enabled, otherwise OTP)
+    const isValidCode = await verifyPaymentCode(userId, otp, password_verification_token, 'update_payment_method_currencies');
+    if (!isValidCode) {
+      return res.status(401).json({ error: 'Invalid or expired code' });
     }
 
     // Get existing payment method entries for this payment_method_id
@@ -1002,10 +1030,10 @@ router.put('/methods/:methodId', authenticate, require2FA, contributionLimiter, 
     const { methodId } = req.params;
     const { password_verification_token, otp, is_default, currency: newCurrency, last4, brand, expiry_month, expiry_year } = req.body;
 
-    // Verify OTP
-    const isOTPValid = await verifyPaymentOTP(userId, otp, password_verification_token, 'edit_payment_method');
-    if (!isOTPValid) {
-      return res.status(401).json({ error: 'Invalid or expired OTP' });
+    // Verify code (2FA code if 2FA enabled, otherwise OTP)
+    const isValidCode = await verifyPaymentCode(userId, otp, password_verification_token, 'edit_payment_method');
+    if (!isValidCode) {
+      return res.status(401).json({ error: 'Invalid or expired code' });
     }
 
     // Check if payment method belongs to user
@@ -1296,10 +1324,10 @@ router.delete('/methods/:methodId', authenticate, require2FA, contributionLimite
     const { methodId } = req.params;
     const { password_verification_token, otp } = req.body;
 
-    // Verify OTP
-    const isOTPValid = await verifyPaymentOTP(userId, otp, password_verification_token, 'delete_payment_method');
-    if (!isOTPValid) {
-      return res.status(401).json({ error: 'Invalid or expired OTP' });
+    // Verify code (2FA code if 2FA enabled, otherwise OTP)
+    const isValidCode = await verifyPaymentCode(userId, otp, password_verification_token, 'delete_payment_method');
+    if (!isValidCode) {
+      return res.status(401).json({ error: 'Invalid or expired code' });
     }
 
     // Check if payment method exists and belongs to user

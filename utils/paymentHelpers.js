@@ -335,6 +335,64 @@ async function checkDefaulterStatus(userId, groupId = null) {
   }
 }
 
+/**
+ * Verify 2FA code or OTP for payment action
+ * Uses 2FA code if user has 2FA enabled with authenticator, otherwise uses OTP
+ * @param {string} userId - User ID
+ * @param {string} code - 2FA code or OTP code
+ * @param {string} passwordToken - Password verification token
+ * @param {string} action - Action being performed
+ * @returns {Promise<boolean>} - True if code is valid
+ */
+async function verifyPaymentCode(userId, code, passwordToken, action) {
+  try {
+    // Verify password token first
+    const decoded = verifyPasswordVerificationToken(passwordToken);
+    if (!decoded || decoded.userId !== userId || decoded.action !== action) {
+      return false;
+    }
+
+    // Check if user has 2FA enabled
+    const userResult = await pool.query(
+      'SELECT two_factor_enabled, two_factor_method, two_factor_secret FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return false;
+    }
+
+    const user = userResult.rows[0];
+
+    // 2FA must be enabled (require2FA middleware should have already checked this)
+    if (!user.two_factor_enabled) {
+      return false; // Should never reach here if require2FA middleware is working
+    }
+
+    // If 2FA is enabled with authenticator, verify 2FA code
+    if (user.two_factor_method === 'authenticator' && user.two_factor_secret) {
+      const { verifyTOTPToken } = require('./twoFactor');
+      const codeString = String(code).trim();
+      // Pad with leading zeros if needed (handles numeric input)
+      const paddedCode = codeString.length < 6 && /^\d+$/.test(codeString) 
+        ? codeString.padStart(6, '0') 
+        : codeString;
+      return verifyTOTPToken(paddedCode, user.two_factor_secret);
+    }
+
+    // If 2FA is enabled with email, verify email OTP
+    if (user.two_factor_method === 'email') {
+      return await verifyPaymentOTP(userId, code, passwordToken, action);
+    }
+
+    // Unknown 2FA method or invalid state
+    return false;
+  } catch (error) {
+    console.error('Error verifying payment code:', error);
+    return false;
+  }
+}
+
 module.exports = {
   verifyPassword,
   generatePasswordVerificationToken,
@@ -342,6 +400,7 @@ module.exports = {
   storePasswordVerificationToken,
   requestPaymentOTP,
   verifyPaymentOTP,
+  verifyPaymentCode, // New unified verification function
   logPaymentAction,
   checkDefaulterStatus,
 };

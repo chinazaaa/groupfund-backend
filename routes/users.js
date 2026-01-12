@@ -2,6 +2,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const pool = require('../config/database');
 const { authenticate } = require('../middleware/auth');
+const { require2FA } = require('../middleware/require2FA');
 const { otpLimiter, contributionLimiter } = require('../middleware/rateLimiter');
 const {
   verifyPassword,
@@ -10,6 +11,7 @@ const {
   storePasswordVerificationToken,
   requestPaymentOTP,
   verifyPaymentOTP,
+  verifyPaymentCode,
   logPaymentAction,
 } = require('../utils/paymentHelpers');
 const { sendSecurityEmail } = require('../utils/email');
@@ -636,8 +638,8 @@ router.get('/wallet/history', authenticate, async (req, res) => {
   }
 });
 
-// Step 1: Verify password before updating wallet
-router.post('/wallet/verify-password', authenticate, contributionLimiter, [
+// Step 1: Verify password before updating wallet (requires 2FA)
+router.post('/wallet/verify-password', authenticate, require2FA, contributionLimiter, [
   body('password').notEmpty().withMessage('Password is required'),
 ], async (req, res) => {
   try {
@@ -685,9 +687,9 @@ router.post('/wallet/request-otp', authenticate, otpLimiter, [
     const userId = req.user.id;
     const { password_verification_token } = req.body;
 
-    // Get user email
+    // Check if user has 2FA enabled with authenticator
     const userResult = await pool.query(
-      'SELECT email FROM users WHERE id = $1',
+      'SELECT two_factor_enabled, two_factor_method, two_factor_secret, email FROM users WHERE id = $1',
       [userId]
     );
 
@@ -695,22 +697,49 @@ router.post('/wallet/request-otp', authenticate, otpLimiter, [
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const email = userResult.rows[0].email;
+    const user = userResult.rows[0];
 
-    // Request OTP
-    await requestPaymentOTP(userId, email, 'update_wallet', password_verification_token);
+    // 2FA must be enabled (require2FA middleware should have already checked this)
+    if (!user.two_factor_enabled) {
+      return res.status(403).json({
+        error: 'Two-factor authentication (2FA) is required for this feature',
+        code: '2FA_REQUIRED',
+        message: 'Please enable 2FA in your security settings to use this feature',
+      });
+    }
 
-    res.json({
-      message: 'OTP sent to your email',
-    });
+    // If 2FA is enabled with authenticator, skip OTP request (user gets code from authenticator)
+    if (user.two_factor_method === 'authenticator' && user.two_factor_secret) {
+      return res.json({
+        message: 'Please enter the code from your authenticator app',
+        requires2FA: true,
+      });
+    }
+
+    // If 2FA is enabled with email, send email OTP
+    if (user.two_factor_method === 'email') {
+      const email = user.email;
+
+      // Request OTP
+      await requestPaymentOTP(userId, email, 'update_wallet', password_verification_token);
+
+      return res.json({
+        message: 'OTP sent to your email',
+        requires2FA: true,
+        method: 'email',
+      });
+    }
+
+    // Unknown 2FA method or invalid state
+    return res.status(400).json({ error: 'Invalid 2FA configuration' });
   } catch (error) {
     console.error('OTP request error:', error);
     res.status(500).json({ error: error.message || 'Server error during OTP request' });
   }
 });
 
-// Step 3: Update wallet/payment details (requires password + OTP verification)
-router.put('/wallet', authenticate, contributionLimiter, [
+// Step 3: Update wallet/payment details (requires password + 2FA/OTP verification + 2FA enabled)
+router.put('/wallet', authenticate, require2FA, contributionLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
   body('otp').notEmpty().isLength({ min: 6, max: 6 }).withMessage('OTP is required (6 digits)'),
   body('account_name').optional().trim().notEmpty().withMessage('Account name is required if provided'),
@@ -738,10 +767,10 @@ router.put('/wallet', authenticate, contributionLimiter, [
       return res.status(401).json({ error: 'Invalid or expired password verification token' });
     }
 
-    // Verify OTP
-    const isValidOTP = await verifyPaymentOTP(userId, otp, password_verification_token, 'update_wallet');
-    if (!isValidOTP) {
-      return res.status(401).json({ error: 'Invalid or expired OTP' });
+    // Verify code (2FA code if 2FA enabled, otherwise OTP)
+    const isValidCode = await verifyPaymentCode(userId, otp, password_verification_token, 'update_wallet');
+    if (!isValidCode) {
+      return res.status(401).json({ error: 'Invalid or expired code' });
     }
 
     // Check if wallet exists and get current bank details
