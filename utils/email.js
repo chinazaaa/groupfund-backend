@@ -2296,14 +2296,9 @@ const sendAutoPayDisabledEmail = async (email, name, groupName, reason) => {
 };
 
 // Send security email notification for critical payment actions
+// NOTE: Security emails are always sent - they cannot be disabled for security reasons
 const sendSecurityEmail = async (email, name, action, details, metadata = {}) => {
   try {
-    // Check email preference
-    const canSend = await shouldSendEmail(email, 'security');
-    if (!canSend) {
-      console.log(`Security email skipped for ${email} (preference disabled)`);
-      return true;
-    }
     const actionTitles = {
       'enable_auto_pay': 'Auto-Pay Enabled',
       'disable_auto_pay': 'Auto-Pay Disabled',

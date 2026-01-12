@@ -10,7 +10,6 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS email_pref_payment_failure BOOLEAN DE
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email_pref_withdrawal_request BOOLEAN DEFAULT TRUE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email_pref_withdrawal_completed BOOLEAN DEFAULT TRUE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email_pref_withdrawal_failed BOOLEAN DEFAULT TRUE;
-ALTER TABLE users ADD COLUMN IF NOT EXISTS email_pref_security BOOLEAN DEFAULT TRUE;
 
 -- Group Updates (IMPORTANT - ON by default)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email_pref_deadline_update BOOLEAN DEFAULT TRUE;
@@ -41,7 +40,6 @@ COMMENT ON COLUMN users.email_pref_payment_failure IS 'Email when payment fails 
 COMMENT ON COLUMN users.email_pref_withdrawal_request IS 'Email when withdrawal is requested (default: true)';
 COMMENT ON COLUMN users.email_pref_withdrawal_completed IS 'Email when withdrawal is completed (default: true)';
 COMMENT ON COLUMN users.email_pref_withdrawal_failed IS 'Email when withdrawal fails (default: true)';
-COMMENT ON COLUMN users.email_pref_security IS 'Email for security-related actions (default: true)';
 COMMENT ON COLUMN users.email_pref_deadline_update IS 'Email when group deadline is updated (default: true)';
 COMMENT ON COLUMN users.email_pref_contribution_amount_update IS 'Email when contribution amount is updated (default: true)';
 COMMENT ON COLUMN users.email_pref_birthday_reminder IS 'Birthday reminder emails (default: false)';
@@ -63,7 +61,6 @@ UPDATE users SET
   email_pref_withdrawal_request = COALESCE(email_pref_withdrawal_request, TRUE),
   email_pref_withdrawal_completed = COALESCE(email_pref_withdrawal_completed, TRUE),
   email_pref_withdrawal_failed = COALESCE(email_pref_withdrawal_failed, TRUE),
-  email_pref_security = COALESCE(email_pref_security, TRUE),
   email_pref_deadline_update = COALESCE(email_pref_deadline_update, TRUE),
   email_pref_contribution_amount_update = COALESCE(email_pref_contribution_amount_update, TRUE),
   email_pref_birthday_reminder = COALESCE(email_pref_birthday_reminder, FALSE),
@@ -83,7 +80,6 @@ WHERE
   email_pref_withdrawal_request IS NULL OR
   email_pref_withdrawal_completed IS NULL OR
   email_pref_withdrawal_failed IS NULL OR
-  email_pref_security IS NULL OR
   email_pref_deadline_update IS NULL OR
   email_pref_contribution_amount_update IS NULL OR
   email_pref_birthday_reminder IS NULL OR

@@ -54,7 +54,7 @@ const EMAIL_PREFERENCE_MAP = {
   'withdrawal_request': 'email_pref_withdrawal_request',
   'withdrawal_completed': 'email_pref_withdrawal_completed',
   'withdrawal_failed': 'email_pref_withdrawal_failed',
-  'security': 'email_pref_security',
+  // Note: 'security' emails are always sent - no preference check
 };
 
 /**
