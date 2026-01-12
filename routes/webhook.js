@@ -1132,5 +1132,7 @@ async function handleStripePayoutFailure(payout) {
   }
 }
 
+// Export handler function for manual processing
 module.exports = router;
+module.exports.handleStripePaymentSuccess = handleStripePaymentSuccess;
 

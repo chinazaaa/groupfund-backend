@@ -2905,5 +2905,43 @@ router.get('/withdrawals/:withdrawalId', async (req, res) => {
   }
 });
 
+// Manually process a Stripe payment intent (for when webhook doesn't reach server)
+router.post('/payments/process-stripe-payment/:paymentIntentId', async (req, res) => {
+  try {
+    const { paymentIntentId } = req.params;
+    const paymentService = require('../services/paymentService');
+    
+    if (!paymentService.stripe) {
+      return res.status(500).json({ error: 'Stripe not configured' });
+    }
+
+    // Retrieve payment intent from Stripe
+    console.log(`Retrieving payment intent ${paymentIntentId} from Stripe...`);
+    const paymentIntent = await paymentService.stripe.paymentIntents.retrieve(paymentIntentId);
+    
+    if (paymentIntent.status !== 'succeeded') {
+      return res.status(400).json({ 
+        error: `Payment intent status is ${paymentIntent.status}, not succeeded`,
+        status: paymentIntent.status
+      });
+    }
+
+    // Process using the webhook handler
+    const { handleStripePaymentSuccess } = require('../routes/webhook');
+    await handleStripePaymentSuccess(paymentIntent);
+
+    res.json({ 
+      message: 'Payment processed successfully',
+      paymentIntentId: paymentIntent.id,
+      amount: paymentIntent.amount,
+      currency: paymentIntent.currency,
+      status: paymentIntent.status
+    });
+  } catch (error) {
+    console.error('Error processing Stripe payment:', error);
+    res.status(500).json({ error: 'Server error processing payment', message: error.message });
+  }
+});
+
 module.exports = router;
 
