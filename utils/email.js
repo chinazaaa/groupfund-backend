@@ -2183,7 +2183,7 @@ const sendAutoPayDisabledEmail = async (email, name, groupName, reason) => {
             </p>
           </div>
           <p style="color: #374151; font-size: 16px; line-height: 1.7;">
-            You can re-enable auto-pay after fixing the issue (update your payment method, add funds, etc.) in the app settings.
+            You can re-enable auto-pay after fixing the issue (update your payment method, etc.) in the app settings.
           </p>
           <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
             Best regards,<br>
