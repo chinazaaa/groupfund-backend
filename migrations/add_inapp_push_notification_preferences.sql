@@ -130,9 +130,3 @@ WHERE
   push_pref_group_invite IS NULL OR
   inapp_pref_group_approved IS NULL OR
   push_pref_group_approved IS NULL;
-
--- Force chat_message preferences to FALSE for all existing users (changed default behavior)
--- This is intentionally separate from the COALESCE update above to ensure all users get the new default
-UPDATE users SET
-  inapp_pref_chat_message = FALSE,
-  push_pref_chat_message = FALSE;
