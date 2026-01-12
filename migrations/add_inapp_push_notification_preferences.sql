@@ -26,7 +26,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS inapp_pref_wishlist_claim BOOLEAN DEF
 ALTER TABLE users ADD COLUMN IF NOT EXISTS inapp_pref_wishlist_unclaim BOOLEAN DEFAULT TRUE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS inapp_pref_wishlist_fulfilled BOOLEAN DEFAULT TRUE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS inapp_pref_chat_mention BOOLEAN DEFAULT TRUE;
-ALTER TABLE users ADD COLUMN IF NOT EXISTS inapp_pref_chat_message BOOLEAN DEFAULT TRUE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS inapp_pref_chat_message BOOLEAN DEFAULT FALSE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS inapp_pref_withdrawal_requested BOOLEAN DEFAULT TRUE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS inapp_pref_withdrawal_completed BOOLEAN DEFAULT TRUE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS inapp_pref_withdrawal_failed BOOLEAN DEFAULT TRUE;
@@ -57,7 +57,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS push_pref_wishlist_claim BOOLEAN DEFA
 ALTER TABLE users ADD COLUMN IF NOT EXISTS push_pref_wishlist_unclaim BOOLEAN DEFAULT TRUE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS push_pref_wishlist_fulfilled BOOLEAN DEFAULT TRUE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS push_pref_chat_mention BOOLEAN DEFAULT TRUE;
-ALTER TABLE users ADD COLUMN IF NOT EXISTS push_pref_chat_message BOOLEAN DEFAULT TRUE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS push_pref_chat_message BOOLEAN DEFAULT FALSE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS push_pref_withdrawal_requested BOOLEAN DEFAULT TRUE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS push_pref_withdrawal_completed BOOLEAN DEFAULT TRUE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS push_pref_withdrawal_failed BOOLEAN DEFAULT TRUE;
@@ -89,7 +89,7 @@ UPDATE users SET
   inapp_pref_wishlist_unclaim = COALESCE(inapp_pref_wishlist_unclaim, TRUE),
   inapp_pref_wishlist_fulfilled = COALESCE(inapp_pref_wishlist_fulfilled, TRUE),
   inapp_pref_chat_mention = COALESCE(inapp_pref_chat_mention, TRUE),
-  inapp_pref_chat_message = COALESCE(inapp_pref_chat_message, TRUE),
+  inapp_pref_chat_message = COALESCE(inapp_pref_chat_message, FALSE),
   inapp_pref_withdrawal_requested = COALESCE(inapp_pref_withdrawal_requested, TRUE),
   inapp_pref_withdrawal_completed = COALESCE(inapp_pref_withdrawal_completed, TRUE),
   inapp_pref_withdrawal_failed = COALESCE(inapp_pref_withdrawal_failed, TRUE),
@@ -118,7 +118,7 @@ UPDATE users SET
   push_pref_wishlist_unclaim = COALESCE(push_pref_wishlist_unclaim, TRUE),
   push_pref_wishlist_fulfilled = COALESCE(push_pref_wishlist_fulfilled, TRUE),
   push_pref_chat_mention = COALESCE(push_pref_chat_mention, TRUE),
-  push_pref_chat_message = COALESCE(push_pref_chat_message, TRUE),
+  push_pref_chat_message = COALESCE(push_pref_chat_message, FALSE),
   push_pref_withdrawal_requested = COALESCE(push_pref_withdrawal_requested, TRUE),
   push_pref_withdrawal_completed = COALESCE(push_pref_withdrawal_completed, TRUE),
   push_pref_withdrawal_failed = COALESCE(push_pref_withdrawal_failed, TRUE),
