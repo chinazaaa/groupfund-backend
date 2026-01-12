@@ -1082,4 +1082,154 @@ router.post('/push-token', authenticate, [
   }
 });
 
+// Get email preferences
+router.get('/email-preferences', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const result = await pool.query(
+      `SELECT 
+        email_pref_payment_success,
+        email_pref_autopay_success,
+        email_pref_autopay_disabled,
+        email_pref_payment_failure,
+        email_pref_withdrawal_request,
+        email_pref_withdrawal_completed,
+        email_pref_withdrawal_failed,
+        email_pref_security,
+        email_pref_deadline_update,
+        email_pref_contribution_amount_update,
+        email_pref_birthday_reminder,
+        email_pref_comprehensive_birthday_reminder,
+        email_pref_comprehensive_reminder,
+        email_pref_overdue_contribution,
+        email_pref_admin_overdue_notification,
+        email_pref_admin_upcoming_deadline,
+        email_pref_max_members_update,
+        email_pref_member_left_subscription,
+        email_pref_monthly_newsletter
+       FROM users WHERE id = $1`,
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({
+      emailPreferences: {
+        // Payment & Transaction Emails
+        payment_success: result.rows[0].email_pref_payment_success ?? true,
+        autopay_success: result.rows[0].email_pref_autopay_success ?? true,
+        autopay_disabled: result.rows[0].email_pref_autopay_disabled ?? true,
+        payment_failure: result.rows[0].email_pref_payment_failure ?? true,
+        withdrawal_request: result.rows[0].email_pref_withdrawal_request ?? true,
+        withdrawal_completed: result.rows[0].email_pref_withdrawal_completed ?? true,
+        withdrawal_failed: result.rows[0].email_pref_withdrawal_failed ?? true,
+        security: result.rows[0].email_pref_security ?? true,
+        
+        // Group Updates (Important)
+        deadline_update: result.rows[0].email_pref_deadline_update ?? true,
+        contribution_amount_update: result.rows[0].email_pref_contribution_amount_update ?? true,
+        
+        // Birthday Emails
+        birthday_reminder: result.rows[0].email_pref_birthday_reminder ?? false,
+        comprehensive_birthday_reminder: result.rows[0].email_pref_comprehensive_birthday_reminder ?? false,
+        
+        // Reminder Emails
+        comprehensive_reminder: result.rows[0].email_pref_comprehensive_reminder ?? false,
+        overdue_contribution: result.rows[0].email_pref_overdue_contribution ?? false,
+        admin_overdue_notification: result.rows[0].email_pref_admin_overdue_notification ?? false,
+        admin_upcoming_deadline: result.rows[0].email_pref_admin_upcoming_deadline ?? false,
+        
+        // Group Updates (Less Critical)
+        max_members_update: result.rows[0].email_pref_max_members_update ?? false,
+        member_left_subscription: result.rows[0].email_pref_member_left_subscription ?? false,
+        
+        // Newsletter
+        monthly_newsletter: result.rows[0].email_pref_monthly_newsletter ?? false,
+      },
+    });
+  } catch (error) {
+    console.error('Get email preferences error:', error);
+    res.status(500).json({ error: 'Server error retrieving email preferences' });
+  }
+});
+
+// Update email preferences
+router.put('/email-preferences', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const {
+      payment_success,
+      autopay_success,
+      autopay_disabled,
+      payment_failure,
+      withdrawal_request,
+      withdrawal_completed,
+      withdrawal_failed,
+      security,
+      deadline_update,
+      contribution_amount_update,
+      birthday_reminder,
+      comprehensive_birthday_reminder,
+      comprehensive_reminder,
+      overdue_contribution,
+      admin_overdue_notification,
+      admin_upcoming_deadline,
+      max_members_update,
+      member_left_subscription,
+      monthly_newsletter,
+    } = req.body;
+
+    // Build update query dynamically
+    const updates = [];
+    const values = [];
+    let paramCount = 1;
+
+    const preferences = {
+      email_pref_payment_success: payment_success,
+      email_pref_autopay_success: autopay_success,
+      email_pref_autopay_disabled: autopay_disabled,
+      email_pref_payment_failure: payment_failure,
+      email_pref_withdrawal_request: withdrawal_request,
+      email_pref_withdrawal_completed: withdrawal_completed,
+      email_pref_withdrawal_failed: withdrawal_failed,
+      email_pref_security: security,
+      email_pref_deadline_update: deadline_update,
+      email_pref_contribution_amount_update: contribution_amount_update,
+      email_pref_birthday_reminder: birthday_reminder,
+      email_pref_comprehensive_birthday_reminder: comprehensive_birthday_reminder,
+      email_pref_comprehensive_reminder: comprehensive_reminder,
+      email_pref_overdue_contribution: overdue_contribution,
+      email_pref_admin_overdue_notification: admin_overdue_notification,
+      email_pref_admin_upcoming_deadline: admin_upcoming_deadline,
+      email_pref_max_members_update: max_members_update,
+      email_pref_member_left_subscription: member_left_subscription,
+      email_pref_monthly_newsletter: monthly_newsletter,
+    };
+
+    for (const [key, value] of Object.entries(preferences)) {
+      if (value !== undefined && value !== null) {
+        updates.push(`${key} = $${paramCount++}`);
+        values.push(value);
+      }
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No preferences provided to update' });
+    }
+
+    values.push(userId);
+    const query = `UPDATE users SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = $${paramCount}`;
+    
+    await pool.query(query, values);
+
+    res.json({ message: 'Email preferences updated successfully' });
+  } catch (error) {
+    console.error('Update email preferences error:', error);
+    res.status(500).json({ error: 'Server error updating email preferences' });
+  }
+});
+
 module.exports = router;

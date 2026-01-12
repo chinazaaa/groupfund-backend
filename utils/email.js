@@ -1,5 +1,6 @@
 const { Resend } = require('resend');
 require('dotenv').config();
+const { shouldSendEmail } = require('./emailHelpers');
 
 // Initialize Resend
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -251,6 +252,12 @@ const sendBirthdayEmail = async (email, name) => {
 // Send birthday reminder email (7 days before, 1 day before, or same day)
 const sendBirthdayReminderEmail = async (email, userName, memberName, daysUntil, contributionAmount, currency, groupName) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'birthday_reminder');
+    if (!canSend) {
+      console.log(`Birthday reminder email skipped for ${email} (preference disabled)`);
+      return true; // Return true to indicate "processed" even though not sent
+    }
     let subject = '';
     let titleText = '';
     let messageText = '';
@@ -352,6 +359,12 @@ const sendBirthdayReminderEmail = async (email, userName, memberName, daysUntil,
 // groupsWithBirthdays: array of { groupName, currency, birthdays: [{ name, hasPaid, contributionAmount, currency }] }
 const sendComprehensiveBirthdayReminderEmail = async (email, userName, daysUntil, groupsWithBirthdays) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'comprehensive_birthday_reminder');
+    if (!canSend) {
+      console.log(`Comprehensive birthday reminder email skipped for ${email} (preference disabled)`);
+      return true;
+    }
     const { formatAmount } = require('./currency');
     
     let subject = '';
@@ -482,6 +495,12 @@ const sendComprehensiveBirthdayReminderEmail = async (email, userName, daysUntil
 //   - general: { groupName, currency, contributionAmount, deadlineDate }
 const sendComprehensiveReminderEmail = async (email, userName, daysUntil, groups) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'comprehensive_reminder');
+    if (!canSend) {
+      console.log(`Comprehensive reminder email skipped for ${email} (preference disabled)`);
+      return true;
+    }
     const { formatAmount } = require('./currency');
     
     // Separate groups by type
@@ -741,6 +760,12 @@ const sendComprehensiveReminderEmail = async (email, userName, daysUntil, groups
 // generalGroups: array of { groupName, currency, contributionAmount, deadline }
 const sendMonthlyNewsletter = async (email, userName, userId, monthName, groupsWithBirthdays = [], subscriptionGroups = [], generalGroups = []) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'monthly_newsletter');
+    if (!canSend) {
+      console.log(`Monthly newsletter skipped for ${email} (preference disabled)`);
+      return true;
+    }
     const { formatAmount } = require('./currency');
     
     // Determine newsletter type and build subject/title
@@ -1129,6 +1154,12 @@ const sendBetaInvitationEmail = async (email, firstName) => {
 // overdueContributions: array of { groupName, currency, contributionAmount, birthdayUserName, birthdayDate }
 const sendOverdueContributionEmail = async (email, userName, daysOverdue, overdueContributions) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'overdue_contribution');
+    if (!canSend) {
+      console.log(`Overdue contribution email skipped for ${email} (preference disabled)`);
+      return true;
+    }
     const { formatAmount } = require('./currency');
     
     let subject = '';
@@ -1263,6 +1294,12 @@ const sendOverdueContributionEmail = async (email, userName, daysOverdue, overdu
 // overdueMembers: array of { memberName, memberEmail, contributionAmount, currency, eventName, deadlineDate, daysOverdue, groupType, subscriptionPlatform, subscriptionFrequency }
 const sendAdminOverdueNotificationEmail = async (adminEmail, adminName, groupName, groupType, daysOverdue, overdueMembers) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(adminEmail, 'admin_overdue_notification');
+    if (!canSend) {
+      console.log(`Admin overdue notification email skipped for ${adminEmail} (preference disabled)`);
+      return true;
+    }
     const { formatAmount } = require('./currency');
     
     let subject = '';
@@ -1404,6 +1441,12 @@ const sendAdminOverdueNotificationEmail = async (adminEmail, adminName, groupNam
 // upcomingMembers: array of { memberName, memberEmail, contributionAmount, currency, eventName, deadlineDate, daysUntil, groupType, subscriptionPlatform, subscriptionFrequency, isAdmin }
 const sendAdminUpcomingDeadlineEmail = async (adminEmail, adminName, groupName, groupType, daysUntil, upcomingMembers) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(adminEmail, 'admin_upcoming_deadline');
+    if (!canSend) {
+      console.log(`Admin upcoming deadline email skipped for ${adminEmail} (preference disabled)`);
+      return true;
+    }
     const { formatAmount } = require('./currency');
     
     let subject = '';
@@ -1539,6 +1582,12 @@ const sendAdminUpcomingDeadlineEmail = async (adminEmail, adminName, groupName, 
 // Send email notification when group admin updates contribution amount
 const sendContributionAmountUpdateEmail = async (email, memberName, groupName, oldAmount, newAmount, currency, adminName) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'contribution_amount_update');
+    if (!canSend) {
+      console.log(`Contribution amount update email skipped for ${email} (preference disabled)`);
+      return true;
+    }
     const { formatAmount } = require('./currency');
     
     const subject = `Contribution Amount Updated - ${groupName}`;
@@ -1633,6 +1682,12 @@ const sendContributionAmountUpdateEmail = async (email, memberName, groupName, o
 // Send email notification when group admin updates deadline
 const sendDeadlineUpdateEmail = async (email, memberName, groupName, groupType, oldDeadline, newDeadline, subscriptionFrequency, adminName) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'deadline_update');
+    if (!canSend) {
+      console.log(`Deadline update email skipped for ${email} (preference disabled)`);
+      return true;
+    }
     const subject = `Deadline Updated - ${groupName}`;
     
     let oldDeadlineFormatted = '';
@@ -1753,6 +1808,12 @@ const sendDeadlineUpdateEmail = async (email, memberName, groupName, groupType, 
 // Send email notification when group admin updates max members for birthday groups
 const sendMaxMembersUpdateEmail = async (email, memberName, groupName, oldMaxMembers, newMaxMembers, adminName) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'max_members_update');
+    if (!canSend) {
+      console.log(`Max members update email skipped for ${email} (preference disabled)`);
+      return true;
+    }
     const subject = `Max Members Updated - ${groupName}`;
     const isIncrease = newMaxMembers > oldMaxMembers;
     const changeType = isIncrease ? 'increased' : 'decreased';
@@ -1869,6 +1930,12 @@ const sendMonthlyBirthdayNewsletter = async (email, userName, userId, monthName,
 // Send email to admin when a member leaves or is removed from a subscription group
 const sendMemberLeftSubscriptionEmail = async (adminEmail, adminName, memberName, groupName, subscriptionPlatform, isRemoved = false) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(adminEmail, 'member_left_subscription');
+    if (!canSend) {
+      console.log(`Member left subscription email skipped for ${adminEmail} (preference disabled)`);
+      return true;
+    }
     const action = isRemoved ? 'removed from' : 'left';
     const subject = `Member ${action.charAt(0).toUpperCase() + action.slice(1)} Subscription Group - ${groupName}`;
     const platformName = subscriptionPlatform || 'the subscription';
@@ -2112,6 +2179,12 @@ const sendCustomEmail = async (email, subject, html) => {
 // Send payment success notification email to recipient
 const sendPaymentSuccessEmail = async (email, name, amount, currency, contributorName, groupName, currencySymbol) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'payment_success');
+    if (!canSend) {
+      console.log(`Payment success email skipped for ${email} (preference disabled)`);
+      return true; // Return true to indicate "processed" even though not sent
+    }
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
@@ -2164,6 +2237,12 @@ const sendPaymentSuccessEmail = async (email, name, amount, currency, contributo
 // Send auto-pay disabled notification email
 const sendAutoPayDisabledEmail = async (email, name, groupName, reason) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'autopay_disabled');
+    if (!canSend) {
+      console.log(`Auto-pay disabled email skipped for ${email} (preference disabled)`);
+      return true; // Return true to indicate "processed" even though not sent
+    }
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
@@ -2219,6 +2298,12 @@ const sendAutoPayDisabledEmail = async (email, name, groupName, reason) => {
 // Send security email notification for critical payment actions
 const sendSecurityEmail = async (email, name, action, details, metadata = {}) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'security');
+    if (!canSend) {
+      console.log(`Security email skipped for ${email} (preference disabled)`);
+      return true;
+    }
     const actionTitles = {
       'enable_auto_pay': 'Auto-Pay Enabled',
       'disable_auto_pay': 'Auto-Pay Disabled',
@@ -2290,6 +2375,12 @@ const sendSecurityEmail = async (email, name, action, details, metadata = {}) =>
 // Send payment failure notification email
 const sendPaymentFailureEmail = async (email, name, amount, currency, groupName, errorMessage, retryCount, currencySymbol) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'payment_failure');
+    if (!canSend) {
+      console.log(`Payment failure email skipped for ${email} (preference disabled)`);
+      return true; // Return true to indicate "processed" even though not sent
+    }
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <div style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
@@ -2343,6 +2434,12 @@ const sendPaymentFailureEmail = async (email, name, amount, currency, groupName,
 // Send withdrawal request email
 const sendWithdrawalRequestEmail = async (email, name, amount, currency, currencySymbol, scheduledAt, accountNumber) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'withdrawal_request');
+    if (!canSend) {
+      console.log(`Withdrawal request email skipped for ${email} (preference disabled)`);
+      return true;
+    }
     const scheduledDate = new Date(scheduledAt).toLocaleString('en-US', {
       weekday: 'long',
       year: 'numeric',
@@ -2416,6 +2513,12 @@ const sendWithdrawalRequestEmail = async (email, name, amount, currency, currenc
 // Send withdrawal completed email
 const sendWithdrawalCompletedEmail = async (email, name, amount, currency, currencySymbol, transactionId) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'withdrawal_completed');
+    if (!canSend) {
+      console.log(`Withdrawal completed email skipped for ${email} (preference disabled)`);
+      return true;
+    }
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <div style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
@@ -2467,6 +2570,12 @@ const sendWithdrawalCompletedEmail = async (email, name, amount, currency, curre
 // Send withdrawal failed email
 const sendWithdrawalFailedEmail = async (email, name, amount, currency, currencySymbol, errorMessage) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'withdrawal_failed');
+    if (!canSend) {
+      console.log(`Withdrawal failed email skipped for ${email} (preference disabled)`);
+      return true;
+    }
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <div style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
@@ -2518,6 +2627,12 @@ const sendWithdrawalFailedEmail = async (email, name, amount, currency, currency
 // Send auto-pay success email to contributor
 const sendAutoPaySuccessEmail = async (email, name, amount, currency, groupName, currencySymbol) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'autopay_success');
+    if (!canSend) {
+      console.log(`Auto-pay success email skipped for ${email} (preference disabled)`);
+      return true; // Return true to indicate "processed" even though not sent
+    }
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
