@@ -2,6 +2,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const pool = require('../config/database');
 const { authenticate } = require('../middleware/auth');
+const { require2FA } = require('../middleware/require2FA');
 const { otpLimiter, contributionLimiter } = require('../middleware/rateLimiter');
 const paymentService = require('../services/paymentService');
 const {
@@ -26,7 +27,7 @@ const router = express.Router();
  * WITHDRAWAL MANAGEMENT
  */
 
-// Step 1: Verify password before requesting withdrawal
+// Step 1: Verify password before requesting withdrawal (requires 2FA)
 router.post('/verify-password', authenticate, contributionLimiter, [
   body('password').notEmpty().withMessage('Password is required'),
 ], async (req, res) => {
@@ -39,10 +40,23 @@ router.post('/verify-password', authenticate, contributionLimiter, [
     const userId = req.user.id;
     const { password } = req.body;
 
-    // Verify password
+    // Verify password first
     const isValid = await verifyPassword(userId, password);
     if (!isValid) {
       return res.status(401).json({ error: 'Invalid password' });
+    }
+
+    // Check if 2FA is enabled (after password is verified)
+    const twoFactorResult = await pool.query(
+      'SELECT two_factor_enabled FROM users WHERE id = $1',
+      [userId]
+    );
+    if (twoFactorResult.rows.length === 0 || !twoFactorResult.rows[0].two_factor_enabled) {
+      return res.status(403).json({
+        error: 'Two-factor authentication (2FA) is required for this feature',
+        code: '2FA_REQUIRED',
+        message: 'Please enable 2FA in your security settings to use this feature',
+      });
     }
 
     // Generate password verification token
@@ -99,8 +113,8 @@ router.post('/request-otp', authenticate, otpLimiter, [
   }
 });
 
-// Step 3: Request withdrawal (requires password + OTP verification)
-router.post('/request', authenticate, contributionLimiter, [
+// Step 3: Request withdrawal (requires password + OTP verification + 2FA)
+router.post('/request', authenticate, require2FA, contributionLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
   body('otp').notEmpty().isLength({ min: 6, max: 6 }).withMessage('OTP is required (6 digits)'),
   body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be greater than 0'),

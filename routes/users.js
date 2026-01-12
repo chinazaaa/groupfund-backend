@@ -1356,4 +1356,86 @@ router.put('/notification-preferences/push', authenticate, async (req, res) => {
   }
 });
 
+/**
+ * PUT /api/users/2fa/method
+ * Switch 2FA method (authenticator to email or vice versa)
+ * Requires password verification
+ */
+router.put('/2fa/method', authenticate, [
+  body('password').notEmpty().withMessage('Password is required'),
+  body('method').isIn(['authenticator', 'email']).withMessage('Method must be authenticator or email'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const userId = req.user.id;
+    const { password, method } = req.body;
+
+    // Verify password
+    const { verifyPassword } = require('../utils/paymentHelpers');
+    const isValid = await verifyPassword(userId, password);
+    if (!isValid) {
+      return res.status(401).json({ error: 'Invalid password' });
+    }
+
+    // Check if 2FA is enabled
+    const userResult = await pool.query(
+      'SELECT two_factor_enabled, two_factor_method, email FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userResult.rows[0];
+
+    if (!user.two_factor_enabled) {
+      return res.status(400).json({ error: '2FA is not enabled' });
+    }
+
+    // If switching to authenticator, need to generate secret
+    if (method === 'authenticator') {
+      const { generateTOTPSecret } = require('../utils/twoFactor');
+      const { secret } = generateTOTPSecret(user.email);
+
+      await pool.query(
+        `UPDATE users 
+         SET two_factor_method = $1,
+             two_factor_secret = $2,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $3`,
+        [method, secret, userId]
+      );
+
+      res.json({
+        message: '2FA method switched to authenticator',
+        method: 'authenticator',
+        note: 'You will need to set up your authenticator app with the new secret',
+      });
+    } else {
+      // Switching to email - clear secret
+      await pool.query(
+        `UPDATE users 
+         SET two_factor_method = $1,
+             two_factor_secret = NULL,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $2`,
+        [method, userId]
+      );
+
+      res.json({
+        message: '2FA method switched to email',
+        method: 'email',
+      });
+    }
+  } catch (error) {
+    console.error('Switch 2FA method error:', error);
+    res.status(500).json({ error: 'Server error switching 2FA method' });
+  }
+});
+
 module.exports = router;

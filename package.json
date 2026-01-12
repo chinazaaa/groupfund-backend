@@ -32,7 +32,9 @@
     "jsonwebtoken": "^9.0.2",
     "paystack": "^2.0.1",
     "pg": "^8.11.3",
+    "qrcode": "^1.5.4",
     "resend": "^6.6.0",
+    "speakeasy": "^2.0.0",
     "stripe": "^20.1.2"
   },
   "devDependencies": {

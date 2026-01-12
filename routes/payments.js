@@ -2,6 +2,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const pool = require('../config/database');
 const { authenticate } = require('../middleware/auth');
+const { require2FA } = require('../middleware/require2FA');
 const { otpLimiter, contributionLimiter } = require('../middleware/rateLimiter');
 const paymentService = require('../services/paymentService');
 const {
@@ -21,7 +22,7 @@ const router = express.Router();
  * PAYMENT METHOD MANAGEMENT
  */
 
-// Step 1: Verify password before adding payment method
+// Step 1: Verify password before adding payment method (requires 2FA)
 router.post('/methods/verify-password', authenticate, contributionLimiter, [
   body('password').notEmpty().withMessage('Password is required'),
 ], async (req, res) => {
@@ -34,10 +35,23 @@ router.post('/methods/verify-password', authenticate, contributionLimiter, [
     const userId = req.user.id;
     const { password } = req.body;
 
-    // Verify password
+    // Verify password first
     const isValid = await verifyPassword(userId, password);
     if (!isValid) {
       return res.status(401).json({ error: 'Invalid password' });
+    }
+
+    // Check if 2FA is enabled (after password is verified)
+    const twoFactorResult = await pool.query(
+      'SELECT two_factor_enabled FROM users WHERE id = $1',
+      [userId]
+    );
+    if (twoFactorResult.rows.length === 0 || !twoFactorResult.rows[0].two_factor_enabled) {
+      return res.status(403).json({
+        error: 'Two-factor authentication (2FA) is required for this feature',
+        code: '2FA_REQUIRED',
+        message: 'Please enable 2FA in your security settings to use this feature',
+      });
     }
 
     // Generate password verification token
@@ -107,8 +121,8 @@ router.post('/methods/request-otp', authenticate, otpLimiter, [
   }
 });
 
-// Step 3: Add payment method (requires password + OTP verification)
-router.post('/methods', authenticate, contributionLimiter, [
+// Step 3: Add payment method (requires password + OTP verification + 2FA)
+router.post('/methods', authenticate, require2FA, contributionLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
   body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
   body('provider').optional().isIn(['stripe']).withMessage('Provider must be stripe (Paystack is no longer supported)'),
@@ -691,10 +705,23 @@ router.post('/methods/bulk-update-currencies/verify-password', authenticate, con
     const userId = req.user.id;
     const { password } = req.body;
 
-    // Verify password
+    // Verify password first
     const isValid = await verifyPassword(userId, password);
     if (!isValid) {
       return res.status(401).json({ error: 'Invalid password' });
+    }
+
+    // Check if 2FA is enabled (after password is verified)
+    const twoFactorResult = await pool.query(
+      'SELECT two_factor_enabled FROM users WHERE id = $1',
+      [userId]
+    );
+    if (twoFactorResult.rows.length === 0 || !twoFactorResult.rows[0].two_factor_enabled) {
+      return res.status(403).json({
+        error: 'Two-factor authentication (2FA) is required for this feature',
+        code: '2FA_REQUIRED',
+        message: 'Please enable 2FA in your security settings to use this feature',
+      });
     }
 
     // Generate password verification token
@@ -714,9 +741,9 @@ router.post('/methods/bulk-update-currencies/verify-password', authenticate, con
   }
 });
 
-// Bulk update currencies for a payment method (add/remove currencies)
+// Bulk update currencies for a payment method (add/remove currencies) (requires 2FA)
 // IMPORTANT: This must come BEFORE /methods/:methodId to avoid route matching conflicts
-router.put('/methods/bulk-update-currencies', authenticate, contributionLimiter, [
+router.put('/methods/bulk-update-currencies', authenticate, require2FA, contributionLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
   body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
   body('payment_method_id').notEmpty().withMessage('Payment method ID is required'),
@@ -905,7 +932,7 @@ router.put('/methods/bulk-update-currencies', authenticate, contributionLimiter,
   }
 });
 
-// Verify password before editing payment method
+// Verify password before editing payment method (requires 2FA)
 router.put('/methods/:methodId/verify-password', authenticate, contributionLimiter, [
   body('password').notEmpty().withMessage('Password is required'),
 ], async (req, res) => {
@@ -918,10 +945,23 @@ router.put('/methods/:methodId/verify-password', authenticate, contributionLimit
     const userId = req.user.id;
     const { password } = req.body;
 
-    // Verify password
+    // Verify password first
     const isValid = await verifyPassword(userId, password);
     if (!isValid) {
       return res.status(401).json({ error: 'Invalid password' });
+    }
+
+    // Check if 2FA is enabled (after password is verified)
+    const twoFactorResult = await pool.query(
+      'SELECT two_factor_enabled FROM users WHERE id = $1',
+      [userId]
+    );
+    if (twoFactorResult.rows.length === 0 || !twoFactorResult.rows[0].two_factor_enabled) {
+      return res.status(403).json({
+        error: 'Two-factor authentication (2FA) is required for this feature',
+        code: '2FA_REQUIRED',
+        message: 'Please enable 2FA in your security settings to use this feature',
+      });
     }
 
     // Generate password verification token
@@ -941,8 +981,8 @@ router.put('/methods/:methodId/verify-password', authenticate, contributionLimit
   }
 });
 
-// Update payment method (e.g., set as default, update card details, change currency)
-router.put('/methods/:methodId', authenticate, contributionLimiter, [
+// Update payment method (e.g., set as default, update card details, change currency) (requires 2FA)
+router.put('/methods/:methodId', authenticate, require2FA, contributionLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
   body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
   body('is_default').optional().isBoolean(),
@@ -1205,10 +1245,23 @@ router.delete('/methods/:methodId/verify-password', authenticate, contributionLi
     const userId = req.user.id;
     const { password } = req.body;
 
-    // Verify password
+    // Verify password first
     const isValid = await verifyPassword(userId, password);
     if (!isValid) {
       return res.status(401).json({ error: 'Invalid password' });
+    }
+
+    // Check if 2FA is enabled (after password is verified)
+    const twoFactorResult = await pool.query(
+      'SELECT two_factor_enabled FROM users WHERE id = $1',
+      [userId]
+    );
+    if (twoFactorResult.rows.length === 0 || !twoFactorResult.rows[0].two_factor_enabled) {
+      return res.status(403).json({
+        error: 'Two-factor authentication (2FA) is required for this feature',
+        code: '2FA_REQUIRED',
+        message: 'Please enable 2FA in your security settings to use this feature',
+      });
     }
 
     // Generate password verification token
@@ -1228,8 +1281,8 @@ router.delete('/methods/:methodId/verify-password', authenticate, contributionLi
   }
 });
 
-// Delete payment method
-router.delete('/methods/:methodId', authenticate, contributionLimiter, [
+// Delete payment method (requires 2FA)
+router.delete('/methods/:methodId', authenticate, require2FA, contributionLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
   body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
 ], async (req, res) => {

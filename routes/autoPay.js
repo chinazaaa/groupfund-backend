@@ -2,6 +2,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const pool = require('../config/database');
 const { authenticate } = require('../middleware/auth');
+const { require2FA } = require('../middleware/require2FA');
 const { otpLimiter, contributionLimiter } = require('../middleware/rateLimiter');
 const paymentService = require('../services/paymentService');
 const {
@@ -26,7 +27,7 @@ const router = express.Router();
  * AUTO-PAY ENABLE
  */
 
-// Step 1: Verify password before enabling auto-pay
+// Step 1: Verify password before enabling auto-pay (requires 2FA)
 router.post('/:groupId/auto-pay/enable/verify-password', authenticate, contributionLimiter, [
   body('password').notEmpty().withMessage('Password is required'),
 ], async (req, res) => {
@@ -50,10 +51,23 @@ router.post('/:groupId/auto-pay/enable/verify-password', authenticate, contribut
       return res.status(403).json({ error: 'You must be an active member of this group' });
     }
 
-    // Verify password
+    // Verify password first
     const isValid = await verifyPassword(userId, password);
     if (!isValid) {
       return res.status(401).json({ error: 'Invalid password' });
+    }
+
+    // Check if 2FA is enabled (after password is verified)
+    const twoFactorResult = await pool.query(
+      'SELECT two_factor_enabled FROM users WHERE id = $1',
+      [userId]
+    );
+    if (twoFactorResult.rows.length === 0 || !twoFactorResult.rows[0].two_factor_enabled) {
+      return res.status(403).json({
+        error: 'Two-factor authentication (2FA) is required for this feature',
+        code: '2FA_REQUIRED',
+        message: 'Please enable 2FA in your security settings to use this feature',
+      });
     }
 
     // Generate password verification token
@@ -121,8 +135,8 @@ router.post('/:groupId/auto-pay/enable/request-otp', authenticate, otpLimiter, [
   }
 });
 
-// Step 3: Enable auto-pay for user in group (requires password + OTP verification)
-router.post('/:groupId/auto-pay/enable', authenticate, contributionLimiter, [
+// Step 3: Enable auto-pay for user in group (requires password + OTP verification + 2FA)
+router.post('/:groupId/auto-pay/enable', authenticate, require2FA, contributionLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
   body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
   body('payment_method_id').optional().isUUID().withMessage('Payment method ID must be a valid UUID'),
@@ -436,7 +450,7 @@ router.post('/:groupId/auto-pay/enable', authenticate, contributionLimiter, [
  * AUTO-PAY DISABLE
  */
 
-// Step 1: Verify password before disabling auto-pay
+// Step 1: Verify password before disabling auto-pay (requires 2FA)
 router.post('/:groupId/auto-pay/disable/verify-password', authenticate, contributionLimiter, [
   body('password').notEmpty().withMessage('Password is required'),
 ], async (req, res) => {
@@ -449,10 +463,23 @@ router.post('/:groupId/auto-pay/disable/verify-password', authenticate, contribu
     const userId = req.user.id;
     const { password } = req.body;
 
-    // Verify password
+    // Verify password first
     const isValid = await verifyPassword(userId, password);
     if (!isValid) {
       return res.status(401).json({ error: 'Invalid password' });
+    }
+
+    // Check if 2FA is enabled (after password is verified)
+    const twoFactorResult = await pool.query(
+      'SELECT two_factor_enabled FROM users WHERE id = $1',
+      [userId]
+    );
+    if (twoFactorResult.rows.length === 0 || !twoFactorResult.rows[0].two_factor_enabled) {
+      return res.status(403).json({
+        error: 'Two-factor authentication (2FA) is required for this feature',
+        code: '2FA_REQUIRED',
+        message: 'Please enable 2FA in your security settings to use this feature',
+      });
     }
 
     // Generate password verification token
@@ -520,8 +547,8 @@ router.post('/:groupId/auto-pay/disable/request-otp', authenticate, otpLimiter, 
   }
 });
 
-// Step 3: Disable auto-pay for user in group (requires password + OTP verification)
-router.post('/:groupId/auto-pay/disable', authenticate, contributionLimiter, [
+// Step 3: Disable auto-pay for user in group (requires password + OTP verification + 2FA)
+router.post('/:groupId/auto-pay/disable', authenticate, require2FA, contributionLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
   body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
 ], async (req, res) => {

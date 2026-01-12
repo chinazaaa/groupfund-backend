@@ -2,6 +2,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const pool = require('../config/database');
 const { authenticate } = require('../middleware/auth');
+const { require2FA } = require('../middleware/require2FA');
 const { otpLimiter, contributionLimiter } = require('../middleware/rateLimiter');
 const {
   verifyPassword,
@@ -113,7 +114,7 @@ router.get('/:currency', authenticate, async (req, res) => {
   }
 });
 
-// Step 1: Verify password before adding/updating/deleting bank account
+// Step 1: Verify password before adding/updating/deleting bank account (requires 2FA)
 router.post('/verify-password', authenticate, contributionLimiter, [
   body('password').notEmpty().withMessage('Password is required'),
   body('currency').optional().isLength({ min: 3, max: 3 }).withMessage('Currency must be 3 characters'),
@@ -128,10 +129,23 @@ router.post('/verify-password', authenticate, contributionLimiter, [
     const userId = req.user.id;
     const { password, currency, action: requestedAction } = req.body;
 
-    // Verify password
+    // Verify password first
     const isValid = await verifyPassword(userId, password);
     if (!isValid) {
       return res.status(401).json({ error: 'Invalid password' });
+    }
+
+    // Check if 2FA is enabled (after password is verified)
+    const twoFactorResult = await pool.query(
+      'SELECT two_factor_enabled FROM users WHERE id = $1',
+      [userId]
+    );
+    if (twoFactorResult.rows.length === 0 || !twoFactorResult.rows[0].two_factor_enabled) {
+      return res.status(403).json({
+        error: 'Two-factor authentication (2FA) is required for this feature',
+        code: '2FA_REQUIRED',
+        message: 'Please enable 2FA in your security settings to use this feature',
+      });
     }
 
     // Determine action based on parameter or default to 'add'
@@ -210,8 +224,8 @@ router.post('/request-otp', authenticate, otpLimiter, [
   }
 });
 
-// Step 3: Add/Update bank account for a currency (requires password + OTP verification)
-router.post('/', authenticate, contributionLimiter, [
+// Step 3: Add/Update bank account for a currency (requires password + OTP verification + 2FA)
+router.post('/', authenticate, require2FA, contributionLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
   body('otp').notEmpty().isLength({ min: 6, max: 6 }).withMessage('OTP is required (6 digits)'),
   body('currency').isLength({ min: 3, max: 3 }).withMessage('Currency is required (3 characters, e.g., USD, NGN)'),
@@ -394,8 +408,8 @@ router.post('/', authenticate, contributionLimiter, [
   }
 });
 
-// Update bank account by ID (requires password + OTP verification)
-router.put('/:currency/:accountId', authenticate, contributionLimiter, [
+// Update bank account by ID (requires password + OTP verification + 2FA)
+router.put('/:currency/:accountId', authenticate, require2FA, contributionLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
   body('otp').notEmpty().isLength({ min: 6, max: 6 }).withMessage('OTP is required (6 digits)'),
   body('account_name').optional().trim().notEmpty().withMessage('Account name cannot be empty'),
@@ -613,8 +627,8 @@ router.put('/:currency/:accountId', authenticate, contributionLimiter, [
   }
 });
 
-// Delete bank account for a currency
-router.delete('/:currency/:accountId', authenticate, contributionLimiter, [
+// Delete bank account for a currency (requires password + OTP verification + 2FA)
+router.delete('/:currency/:accountId', authenticate, require2FA, contributionLimiter, [
   body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
   body('otp').notEmpty().isLength({ min: 6, max: 6 }).withMessage('OTP is required (6 digits)'),
 ], async (req, res) => {
