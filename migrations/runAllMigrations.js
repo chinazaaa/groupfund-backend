@@ -44,7 +44,8 @@ const migrations = [
   'add_currency_to_payment_methods.sql',
   'update_payment_methods_unique_constraint.sql',
   'add_currency_bank_accounts.sql',
-  'add_email_preferences.sql'
+  'add_email_preferences.sql',
+  'add_inapp_push_notification_preferences.sql'
 ];
 
 async function runAllMigrations() {

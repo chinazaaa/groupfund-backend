@@ -39,7 +39,8 @@ const migrations = [
   'add_group_messages.sql',
   'add_chat_notification_preferences.sql',
   'add_co_admin_role.sql',
-  'add_email_preferences.sql'
+  'add_email_preferences.sql',
+  'add_inapp_push_notification_preferences.sql'
 ];
 
 // Migration endpoint - SECURE THIS IN PRODUCTION!

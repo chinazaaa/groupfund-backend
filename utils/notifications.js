@@ -1,5 +1,6 @@
 const pool = require('../config/database');
 const { Expo } = require('expo-server-sdk');
+const { shouldSendInAppNotification, shouldSendPushNotificationBasedOnPreference } = require('./notificationHelpers');
 
 // Create a new Expo SDK client
 // If EXPO_ACCESS_TOKEN is provided, use it for better reliability and FCM support
@@ -76,20 +77,30 @@ async function sendPushNotification(pushToken, title, body, data = {}) {
  */
 async function createNotification(userId, type, title, message, groupId = null, relatedUserId = null) {
   try {
-    // Create in-app notification
-    await pool.query(
-      `INSERT INTO notifications (user_id, type, title, message, group_id, related_user_id)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [userId, type, title, message, groupId, relatedUserId]
-    );
+    // Check in-app notification preference
+    const shouldSendInApp = await shouldSendInAppNotification(userId, type);
+    if (shouldSendInApp) {
+      // Create in-app notification
+      await pool.query(
+        `INSERT INTO notifications (user_id, type, title, message, group_id, related_user_id)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [userId, type, title, message, groupId, relatedUserId]
+      );
+    }
 
-    // Get user's push token
+    // Get user's push token and check push preference
     const userResult = await pool.query(
       'SELECT expo_push_token FROM users WHERE id = $1',
       [userId]
     );
 
     if (userResult.rows.length > 0 && userResult.rows[0].expo_push_token) {
+      // Check push notification preference
+      const shouldSendPush = await shouldSendPushNotificationBasedOnPreference(userId, type);
+      if (!shouldSendPush) {
+        return; // Skip push notification if preference is disabled
+      }
+
       const pushToken = userResult.rows[0].expo_push_token;
 
       // Determine navigation data based on notification type

@@ -1228,4 +1228,132 @@ router.put('/email-preferences', authenticate, async (req, res) => {
   }
 });
 
+// Get in-app notification preferences
+router.get('/notification-preferences/in-app', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { INAPP_PREFERENCE_MAP } = require('../utils/notificationHelpers');
+
+    // Build dynamic SELECT query
+    const columns = Object.values(INAPP_PREFERENCE_MAP);
+    const query = `SELECT ${columns.join(', ')} FROM users WHERE id = $1`;
+    
+    const result = await pool.query(query, [userId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Build response object using the map keys
+    const preferences = {};
+    Object.entries(INAPP_PREFERENCE_MAP).forEach(([type, column]) => {
+      preferences[type] = result.rows[0][column] ?? true;
+    });
+
+    res.json({ inAppPreferences: preferences });
+  } catch (error) {
+    console.error('Get in-app notification preferences error:', error);
+    res.status(500).json({ error: 'Server error retrieving in-app notification preferences' });
+  }
+});
+
+// Update in-app notification preferences
+router.put('/notification-preferences/in-app', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { INAPP_PREFERENCE_MAP } = require('../utils/notificationHelpers');
+    const preferences = req.body;
+
+    const updates = [];
+    const values = [];
+    let paramCount = 1;
+
+    // Build dynamic UPDATE query
+    Object.entries(INAPP_PREFERENCE_MAP).forEach(([type, column]) => {
+      if (preferences[type] !== undefined && preferences[type] !== null) {
+        updates.push(`${column} = $${paramCount++}`);
+        values.push(preferences[type]);
+      }
+    });
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No preferences provided to update' });
+    }
+
+    values.push(userId);
+    const query = `UPDATE users SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = $${paramCount}`;
+    
+    await pool.query(query, values);
+
+    res.json({ message: 'In-app notification preferences updated successfully' });
+  } catch (error) {
+    console.error('Update in-app notification preferences error:', error);
+    res.status(500).json({ error: 'Server error updating in-app notification preferences' });
+  }
+});
+
+// Get push notification preferences
+router.get('/notification-preferences/push', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { PUSH_PREFERENCE_MAP } = require('../utils/notificationHelpers');
+
+    // Build dynamic SELECT query
+    const columns = Object.values(PUSH_PREFERENCE_MAP);
+    const query = `SELECT ${columns.join(', ')} FROM users WHERE id = $1`;
+    
+    const result = await pool.query(query, [userId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Build response object using the map keys
+    const preferences = {};
+    Object.entries(PUSH_PREFERENCE_MAP).forEach(([type, column]) => {
+      preferences[type] = result.rows[0][column] ?? true;
+    });
+
+    res.json({ pushPreferences: preferences });
+  } catch (error) {
+    console.error('Get push notification preferences error:', error);
+    res.status(500).json({ error: 'Server error retrieving push notification preferences' });
+  }
+});
+
+// Update push notification preferences
+router.put('/notification-preferences/push', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { PUSH_PREFERENCE_MAP } = require('../utils/notificationHelpers');
+    const preferences = req.body;
+
+    const updates = [];
+    const values = [];
+    let paramCount = 1;
+
+    // Build dynamic UPDATE query
+    Object.entries(PUSH_PREFERENCE_MAP).forEach(([type, column]) => {
+      if (preferences[type] !== undefined && preferences[type] !== null) {
+        updates.push(`${column} = $${paramCount++}`);
+        values.push(preferences[type]);
+      }
+    });
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No preferences provided to update' });
+    }
+
+    values.push(userId);
+    const query = `UPDATE users SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = $${paramCount}`;
+    
+    await pool.query(query, values);
+
+    res.json({ message: 'Push notification preferences updated successfully' });
+  } catch (error) {
+    console.error('Update push notification preferences error:', error);
+    res.status(500).json({ error: 'Server error updating push notification preferences' });
+  }
+});
+
 module.exports = router;
