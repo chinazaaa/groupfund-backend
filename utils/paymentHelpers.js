@@ -372,12 +372,38 @@ async function verifyPaymentCode(userId, code, passwordToken, action) {
     // If 2FA is enabled with authenticator, verify 2FA code
     if (user.two_factor_method === 'authenticator' && user.two_factor_secret) {
       const { verifyTOTPToken } = require('./twoFactor');
-      const codeString = String(code).trim();
-      // Pad with leading zeros if needed (handles numeric input)
-      const paddedCode = codeString.length < 6 && /^\d+$/.test(codeString) 
-        ? codeString.padStart(6, '0') 
-        : codeString;
-      return verifyTOTPToken(paddedCode, user.two_factor_secret);
+      // Convert code to string and ensure it's exactly 6 digits
+      let codeString = String(code).trim();
+      
+      // Handle numeric input that may have lost leading zeros (e.g., 77341 -> 077341)
+      if (codeString.length < 6 && /^\d+$/.test(codeString)) {
+        codeString = codeString.padStart(6, '0');
+      }
+      
+      // Ensure code is exactly 6 digits for TOTP
+      if (codeString.length !== 6 || !/^\d{6}$/.test(codeString)) {
+        console.error('Invalid TOTP code format:', { code, codeString, length: codeString.length });
+        return false;
+      }
+      
+      // Trim the secret in case there's whitespace
+      const secret = user.two_factor_secret ? user.two_factor_secret.trim() : null;
+      if (!secret) {
+        console.error('TOTP verification failed: No secret found', { userId });
+        return false;
+      }
+      
+      const isValid = verifyTOTPToken(codeString, secret);
+      if (!isValid) {
+        console.error('TOTP verification failed:', { 
+          userId, 
+          codeString, 
+          secretLength: secret.length,
+          secretPreview: secret.substring(0, 10) + '...',
+          hasSecret: !!user.two_factor_secret 
+        });
+      }
+      return isValid;
     }
 
     // If 2FA is enabled with email, verify email OTP
