@@ -917,16 +917,18 @@ Why?
 - User just marks as "paid" in the app (they already paid outside)
 - Your revenue: $0 on manual payments (payment happened outside the app)
 
-**NO Revenue from Withdrawals (Recommended)**
-- Withdrawal fees: Pass-through only (no platform fee)
-- Users pay: Provider fees only ($0.25 USD, €0.35 EUR, £0.25 GBP)
-- Your revenue: $0 on withdrawals (keep it user-friendly)
+**Revenue from Withdrawals (USD Only)**
+- **GBP withdrawals**: FREE (no fee, no revenue)
+- **EUR withdrawals**: FREE (no fee, no revenue)
+- **USD withdrawals**: 1% fee = YOUR REVENUE
+- Example: $100 USD withdrawal → $1.00 revenue (1% fee)
 
 **Revenue Summary:**
 - ✅ **Auto-debit contributions**: Platform fee (1-2%) = YOUR REVENUE
 - ❌ **Manual payments**: No platform fee (payment happened outside the app)
-- ❌ **Withdrawals**: No platform fee (only pass-through provider fees)
-- **Total Revenue**: Only from auto-debit contributions (platform fees)
+- ✅ **USD withdrawals**: 1% fee = YOUR REVENUE
+- ❌ **GBP/EUR withdrawals**: FREE (no revenue)
+- **Total Revenue**: Auto-debit contributions (1-2%) + USD withdrawals (1%)
 
 ### Revenue Examples
 
@@ -955,11 +957,19 @@ Your revenue: $5/month
 Annual revenue per group: $60/year
 ```
 
-**Scenario 4: Withdrawals (NO revenue)**
+**Scenario 4: Withdrawals**
 ```
-User withdraws $100
-Provider fee (Stripe): $0.25
-Your revenue: $0 (no platform fee on withdrawals)
+User withdraws $100 (USD)
+Withdrawal fee: $1.00 (1%)
+Your revenue: $1.00
+
+User withdraws £100 (GBP)
+Withdrawal fee: FREE
+Your revenue: £0
+
+User withdraws €100 (EUR)
+Withdrawal fee: FREE
+Your revenue: €0
 ```
 
 ### Why Revenue Only from Auto-Debit?
@@ -970,13 +980,14 @@ Your revenue: $0 (no platform fee on withdrawals)
 4. **This incentivizes auto-debit usage** - Users benefit from convenience, you benefit from fees
 5. **Fair model** - Only charge fees when providing payment processing service
 
-### Revenue Model: Platform Fee on Auto-Debit Contributions Only
+### Revenue Model: Platform Fees on Auto-Debit Contributions and USD Withdrawals
 
-- **Revenue source**: Platform fees (1-2%) on AUTO-DEBIT contributions only
+- **Revenue source 1**: Platform fees (1-2%) on AUTO-DEBIT contributions
+- **Revenue source 2**: Withdrawal fee (1%) on USD withdrawals only
 - **Applies to**: Payments processed via Stripe (auto-debit)
 - **NOT from**: Manual payments (payment happened outside the app)
-- **NOT from**: Withdrawals (pass-through fees only)
-- **Rationale**: Only charge fees when providing payment processing service (auto-debit). Manual payments are free because payment happens outside the app.
+- **NOT from**: GBP/EUR withdrawals (FREE - no fee)
+- **Rationale**: Charge fees for payment processing services (auto-debit) and USD withdrawals. GBP/EUR withdrawals are free. Manual payments are free because payment happens outside the app.
 
 ---
 
@@ -1031,44 +1042,28 @@ Your profit: £0.50
 
 ## Withdrawal Fees
 
-### Provider Payout Fees
+### Withdrawal Fee Structure
 
-**Stripe:**
-- **USD**: $0.25 per payout (very minimal)
-- **EUR**: €0.35 per payout
-- **GBP**: £0.25 per payout
-- Varies by country (typically $0.25 - $2.00)
+**Withdrawal Fees by Currency:**
+- **GBP**: FREE (no withdrawal fee)
+- **EUR**: FREE (no withdrawal fee)
+- **USD**: 1% fee
 
-### Platform Withdrawal Fee (Recommendation)
-
-**Option 1: No Platform Fee (Recommended)**
-- Only charge what Stripe charges (pass-through fees)
-- Most user-friendly approach
-- Users pay: Provider fee only ($0.25 for USD, €0.35 for EUR, £0.25 for GBP)
-- Example: Withdraw $100 → Pay $0.25 (Stripe fee) → Receive $99.75
-
-**Option 2: Minimal Platform Fee (If Needed)**
-- Small flat fee on top of provider fee (if you need extra revenue)
-- **Recommended: $0.50 (USD), €0.50 (EUR), £0.50 (GBP) maximum**
-- Keep it minimal so users don't feel discouraged
-- Example: Withdraw $100 → Pay $0.75 ($0.25 provider + $0.50 platform) → Receive $99.25
-
-**Recommendation: Option 1 (No Platform Fee)**
-- Users already pay platform fees on contributions (1-2%)
-- Withdrawals should be as frictionless as possible
-- Stripe fees are already minimal ($0.25, €0.35, £0.25)
-- Better user experience = more usage
+**Examples:**
+- Withdraw £100 → Pay £0 → Receive £100
+- Withdraw €100 → Pay €0 → Receive €100
+- Withdraw $100 → Pay $1.00 (1% fee) → Receive $99.00
 
 ### Fee Transparency
 - Show fees clearly before withdrawal
-- Display: "Withdrawal fee: $0.25 (Stripe processing fee)"
-- Show: "You'll receive: $99.75"
+- Display: "Withdrawal fee: FREE" for GBP/EUR, or "Withdrawal fee: $X.XX (1%)" for USD
+- Show: "You'll receive: [amount]"
 - User sees exactly what they'll get
 
 ### Minimum Withdrawal Amount
 - **Recommendation: $10 (USD), €10 (EUR), £10 (GBP) minimum**
-- Ensures withdrawal is worth the fee
-- Prevents micro-withdrawals that cost more in fees than value
+- Ensures withdrawal is worth processing
+- Prevents micro-withdrawals
 
 ---
 
@@ -1989,10 +1984,9 @@ The GroupFund Security Team
   - Limits help prevent fraud and manage risk
 
 - **Withdrawal fees?**
-  - **Recommended: No platform fee (pass-through provider fees only)**
-  - Stripe: $0.25 per payout (USD), €0.35 per payout (EUR), £0.25 per payout (GBP)
-  - **Alternative (if needed): Minimal platform fee ($0.50 USD, €0.50 EUR, £0.50 GBP max)**
-  - Keep fees minimal to encourage usage
+  - **GBP withdrawals**: FREE (no fee)
+  - **EUR withdrawals**: FREE (no fee)
+  - **USD withdrawals**: 1% fee
   - Show fees transparently before withdrawal
 
 ### 2. **Chargeback Handling**
