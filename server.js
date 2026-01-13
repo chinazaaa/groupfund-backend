@@ -171,6 +171,7 @@ app.use('/api/groups', require('./routes/autoPay'));
 app.use('/api/users', require('./routes/paymentPreferences'));
 app.use('/api/withdrawals', require('./routes/withdrawals'));
 app.use('/api/bank-accounts', require('./routes/bankAccounts'));
+app.use('/api/app', require('./routes/app'));
 
 // Error handling middleware
 app.use((err, req, res, next) => {
