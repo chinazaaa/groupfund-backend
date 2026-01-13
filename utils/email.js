@@ -2427,7 +2427,7 @@ const sendPaymentFailureEmail = async (email, name, amount, currency, groupName,
 };
 
 // Send withdrawal request email
-const sendWithdrawalRequestEmail = async (email, name, amount, currency, currencySymbol, scheduledAt, accountNumber) => {
+const sendWithdrawalRequestEmail = async (email, name, amount, currency, currencySymbol, scheduledAt, accountNumber, fee = null, netAmount = null) => {
   try {
     // Check email preference
     const canSend = await shouldSendEmail(email, 'withdrawal_request');
@@ -2447,6 +2447,20 @@ const sendWithdrawalRequestEmail = async (email, name, amount, currency, currenc
     // Mask account number (show last 4 digits)
     const maskedAccount = accountNumber ? `ending with ${accountNumber.slice(-4)}` : '';
 
+    // Build amount display - show breakdown if fee information is available
+    let amountDisplay = '';
+    if (fee !== null && netAmount !== null && fee > 0) {
+      // Show breakdown: Requested amount - Fee = Net amount (what they'll receive)
+      amountDisplay = `
+            <p style="color: #374151; font-size: 16px; margin: 0 0 8px 0;"><strong>Requested Amount:</strong> ${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>
+            <p style="color: #6b7280; font-size: 14px; margin: 0 0 8px 0; padding-left: 20px;">Fee (${currency === 'USD' ? '1%' : '0%'}): - ${currencySymbol}${fee.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>
+            <p style="color: #374151; font-size: 16px; margin: 10px 0 0 0; padding-top: 8px; border-top: 1px solid #e5e7eb;"><strong>Amount You'll Receive:</strong> ${currencySymbol}${netAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>
+      `;
+    } else {
+      // Just show the requested amount (for backward compatibility or when fee info isn't available)
+      amountDisplay = `<p style="color: #374151; font-size: 16px; margin: 0 0 10px 0;"><strong>Amount:</strong> ${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>`;
+    }
+
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <div style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
@@ -2461,9 +2475,9 @@ const sendWithdrawalRequestEmail = async (email, name, amount, currency, currenc
             Your withdrawal request has been received and is being processed.
           </p>
           <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
-            <p style="color: #374151; font-size: 16px; margin: 0 0 10px 0;"><strong>Amount:</strong> ${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>
-            ${accountNumber ? `<p style="color: #374151; font-size: 16px; margin: 0 0 10px 0;"><strong>Account:</strong> ${maskedAccount}</p>` : ''}
-            <p style="color: #374151; font-size: 16px; margin: 0;"><strong>Scheduled for:</strong> ${scheduledDate}</p>
+            ${amountDisplay}
+            ${accountNumber ? `<p style="color: #374151; font-size: 16px; margin: 15px 0 0 0; padding-top: 15px; border-top: 1px solid #e5e7eb;"><strong>Account:</strong> ${maskedAccount}</p>` : ''}
+            <p style="color: #374151; font-size: 16px; margin: 15px 0 0 0; padding-top: 15px; border-top: 1px solid #e5e7eb;"><strong>Scheduled for:</strong> ${scheduledDate}</p>
           </div>
           <div style="background: #fef3c7; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f59e0b;">
             <p style="color: #92400e; font-size: 14px; margin: 0; font-weight: bold;">⏰ 24-Hour Security Hold</p>
