@@ -2506,7 +2506,7 @@ const sendWithdrawalRequestEmail = async (email, name, amount, currency, currenc
 };
 
 // Send withdrawal completed email
-const sendWithdrawalCompletedEmail = async (email, name, amount, currency, currencySymbol, transactionId) => {
+const sendWithdrawalCompletedEmail = async (email, name, amount, currency, currencySymbol, transactionId, requestedAmount = null, fee = null) => {
   try {
     // Check email preference
     const canSend = await shouldSendEmail(email, 'withdrawal_completed');
@@ -2514,6 +2514,21 @@ const sendWithdrawalCompletedEmail = async (email, name, amount, currency, curre
       console.log(`Withdrawal completed email skipped for ${email} (preference disabled)`);
       return true;
     }
+    
+    // Build amount display - show breakdown if fee information is available
+    let amountDisplay = '';
+    if (requestedAmount !== null && fee !== null && fee > 0) {
+      // Show breakdown: Requested amount - Fee = Net amount
+      amountDisplay = `
+            <p style="color: #374151; font-size: 16px; margin: 0 0 8px 0;"><strong>Requested Amount:</strong> ${currencySymbol}${requestedAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>
+            <p style="color: #6b7280; font-size: 14px; margin: 0 0 8px 0; padding-left: 20px;">Fee (${currency === 'USD' ? '1%' : '0%'}): - ${currencySymbol}${fee.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>
+            <p style="color: #374151; font-size: 16px; margin: 10px 0 0 0; padding-top: 8px; border-top: 1px solid #e5e7eb;"><strong>Amount Received:</strong> ${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>
+      `;
+    } else {
+      // Just show the amount received (for backward compatibility or when fee info isn't available)
+      amountDisplay = `<p style="color: #374151; font-size: 16px; margin: 0 0 10px 0;"><strong>Amount:</strong> ${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>`;
+    }
+    
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <div style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
@@ -2528,8 +2543,8 @@ const sendWithdrawalCompletedEmail = async (email, name, amount, currency, curre
             Your withdrawal has been processed successfully and funds have been sent to your bank account.
           </p>
           <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
-            <p style="color: #374151; font-size: 16px; margin: 0 0 10px 0;"><strong>Amount:</strong> ${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>
-            <p style="color: #374151; font-size: 16px; margin: 0;"><strong>Transaction ID:</strong> ${transactionId}</p>
+            ${amountDisplay}
+            <p style="color: #374151; font-size: 16px; margin: 15px 0 0 0; padding-top: 15px; border-top: 1px solid #e5e7eb;"><strong>Transaction ID:</strong> ${transactionId}</p>
           </div>
           <p style="color: #374151; font-size: 16px; line-height: 1.7;">
             Funds should appear in your bank account within 1-3 business days, depending on your bank's processing time.

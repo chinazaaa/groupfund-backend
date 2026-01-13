@@ -152,6 +152,8 @@ async function processPendingWithdrawals() {
           try {
             if (withdrawal.email) {
               const netAmount = typeof withdrawal.net_amount === 'string' ? parseFloat(withdrawal.net_amount) : Number(withdrawal.net_amount);
+              const requestedAmount = typeof withdrawal.amount === 'string' ? parseFloat(withdrawal.amount) : Number(withdrawal.amount);
+              const fee = typeof withdrawal.fee === 'string' ? parseFloat(withdrawal.fee) : Number(withdrawal.fee || 0);
               const currencySymbol = paymentService.formatCurrency(netAmount, currency).replace(/[\d.,]+/g, '');
               await sendWithdrawalCompletedEmail(
                 withdrawal.email,
@@ -159,7 +161,9 @@ async function processPendingWithdrawals() {
                 netAmount,
                 currency,
                 currencySymbol,
-                payoutResult.transferId || payoutResult.payoutId
+                payoutResult.transferId || payoutResult.payoutId,
+                requestedAmount,
+                fee
               );
             }
           } catch (emailError) {

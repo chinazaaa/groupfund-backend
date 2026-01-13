@@ -767,14 +767,19 @@ async function handlePaystackTransferSuccess(data) {
     // Send email notification
     try {
       if (withdrawal.email) {
-        const currencySymbol = paymentService.formatCurrency(withdrawal.net_amount, withdrawal.currency).replace(/[\d.,]+/g, '');
+        const netAmount = typeof withdrawal.net_amount === 'string' ? parseFloat(withdrawal.net_amount) : Number(withdrawal.net_amount);
+        const requestedAmount = typeof withdrawal.amount === 'string' ? parseFloat(withdrawal.amount) : Number(withdrawal.amount);
+        const fee = typeof withdrawal.fee === 'string' ? parseFloat(withdrawal.fee) : Number(withdrawal.fee || 0);
+        const currencySymbol = paymentService.formatCurrency(netAmount, withdrawal.currency).replace(/[\d.,]+/g, '');
         await sendWithdrawalCompletedEmail(
           withdrawal.email,
           withdrawal.name,
-          withdrawal.net_amount,
+          netAmount,
           withdrawal.currency,
           currencySymbol,
-          reference
+          reference,
+          requestedAmount,
+          fee
         );
       }
     } catch (emailError) {
@@ -974,14 +979,19 @@ async function handleStripePayoutSuccess(payout) {
       if (withdrawal.email) {
         const paymentService = require('../services/paymentService');
         const { sendWithdrawalCompletedEmail } = require('../utils/email');
-        const currencySymbol = paymentService.formatCurrency(withdrawal.net_amount, withdrawal.currency).replace(/[\d.,]+/g, '');
+        const netAmount = typeof withdrawal.net_amount === 'string' ? parseFloat(withdrawal.net_amount) : Number(withdrawal.net_amount);
+        const requestedAmount = typeof withdrawal.amount === 'string' ? parseFloat(withdrawal.amount) : Number(withdrawal.amount);
+        const fee = typeof withdrawal.fee === 'string' ? parseFloat(withdrawal.fee) : Number(withdrawal.fee || 0);
+        const currencySymbol = paymentService.formatCurrency(netAmount, withdrawal.currency).replace(/[\d.,]+/g, '');
         await sendWithdrawalCompletedEmail(
           withdrawal.email,
           withdrawal.name,
-          withdrawal.net_amount,
+          netAmount,
           withdrawal.currency,
           currencySymbol,
-          payoutId
+          payoutId,
+          requestedAmount,
+          fee
         );
       }
     } catch (emailError) {
