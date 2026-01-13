@@ -241,7 +241,7 @@ async function processPendingWithdrawals() {
                 amount,
                 currency,
                 currencySymbol,
-                payoutResult.error || 'Payout processing failed'
+                null // Don't pass error message to email - use generic message
               );
             }
           } catch (emailError) {
@@ -254,7 +254,7 @@ async function processPendingWithdrawals() {
               withdrawal.user_id,
               'withdrawal_failed',
               'Withdrawal Failed',
-              `Your withdrawal request failed: ${payoutResult.error || 'Processing error'}. Funds have been returned to your wallet.`,
+              `Unfortunately, an error occurred while processing your withdrawal. Your funds have been returned to your wallet. Please try again.`,
               null,
               null
             );
@@ -316,7 +316,7 @@ async function processPendingWithdrawals() {
                 amount,
                 withdrawal.currency,
                 currencySymbol,
-                error.message
+                null // Don't pass error message to email - use generic message
               );
             }
           } catch (emailError) {

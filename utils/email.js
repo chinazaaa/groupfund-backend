@@ -2615,10 +2615,9 @@ const sendWithdrawalFailedEmail = async (email, name, amount, currency, currency
           </p>
           <div style="background: #fee2e2; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ef4444;">
             <p style="color: #991b1b; font-size: 16px; margin: 0 0 10px 0;"><strong>Amount:</strong> ${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>
-            <p style="color: #991b1b; font-size: 16px; margin: 0;"><strong>Reason:</strong> ${errorMessage || 'Processing error'}</p>
           </div>
           <p style="color: #374151; font-size: 16px; line-height: 1.7;">
-            Your funds have been returned to your wallet. Please check your bank account details and try again, or contact support if the issue persists.
+            Unfortunately, an error occurred while processing your withdrawal. Your funds have been safely returned to your wallet. Please try again, or contact support if the issue persists.
           </p>
           <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
             Best regards,<br>

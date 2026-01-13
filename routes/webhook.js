@@ -885,7 +885,7 @@ async function handlePaystackTransferFailure(data) {
           withdrawal.amount,
           withdrawal.currency,
           currencySymbol,
-          message
+          null // Don't pass error message to email - use generic message
         );
       }
     } catch (emailError) {
@@ -899,7 +899,7 @@ async function handlePaystackTransferFailure(data) {
         withdrawal.user_id,
         'withdrawal_failed',
         'Withdrawal Failed',
-        `Your withdrawal request failed: ${message}. Funds have been returned to your wallet.`,
+        `Unfortunately, an error occurred while processing your withdrawal. Your funds have been returned to your wallet. Please try again.`,
         null,
         null
       );
@@ -1098,7 +1098,7 @@ async function handleStripePayoutFailure(payout) {
           withdrawal.amount,
           withdrawal.currency,
           currencySymbol,
-          failureMessage
+          null // Don't pass error message to email - use generic message
         );
       }
     } catch (emailError) {
@@ -1112,7 +1112,7 @@ async function handleStripePayoutFailure(payout) {
         withdrawal.user_id,
         'withdrawal_failed',
         'Withdrawal Failed',
-        `Your withdrawal request failed: ${failureMessage}. Funds have been returned to your wallet.`,
+        `Unfortunately, an error occurred while processing your withdrawal. Your funds have been returned to your wallet. Please try again.`,
         null,
         null
       );
