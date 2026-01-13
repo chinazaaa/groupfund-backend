@@ -645,6 +645,169 @@ class PaymentService {
   }
 
   /**
+   * Validate bank account details with Stripe before saving
+   * @param {Object} bankAccountData - Bank account data
+   * @param {string} bankAccountData.accountNumber - Account number
+   * @param {string} bankAccountData.routingNumber - Routing number (US) or sort code (UK)
+   * @param {string} bankAccountData.accountHolderName - Account holder name
+   * @param {string} bankAccountData.accountHolderType - Account holder type ('individual' or 'company')
+   * @param {string} bankAccountData.currency - Currency code (USD, EUR, GBP)
+   * @param {string} bankAccountData.country - Country code (US, GB, etc.)
+   * @param {string} bankAccountData.iban - IBAN (for EUR/GBP)
+   * @returns {Promise<Object>} - Validation result
+   */
+  async validateBankAccount(bankAccountData, provider = 'stripe') {
+    try {
+      if (provider === 'stripe' && this.stripe) {
+        const {
+          accountNumber,
+          routingNumber,
+          accountHolderName,
+          accountHolderType = 'individual',
+          currency,
+          country,
+          iban,
+        } = bankAccountData;
+
+        // For USD (US bank accounts)
+        if (currency === 'USD' && country === 'US') {
+          if (!routingNumber || !accountNumber) {
+            return {
+              valid: false,
+              error: 'Routing number and account number are required for US bank accounts',
+            };
+          }
+
+          try {
+            // Create a bank account token to validate the account
+            const token = await this.stripe.tokens.create({
+              bank_account: {
+                country: 'US',
+                currency: 'usd',
+                account_number: accountNumber,
+                routing_number: routingNumber,
+                account_holder_name: accountHolderName,
+                account_holder_type: accountHolderType,
+              },
+            });
+
+            // Check if token was created successfully
+            if (token && token.id) {
+              return {
+                valid: true,
+                tokenId: token.id,
+                bankAccount: token.bank_account,
+              };
+            }
+
+            return {
+              valid: false,
+              error: 'Failed to validate bank account',
+            };
+          } catch (error) {
+            // Stripe will return an error if the bank account is invalid
+            return {
+              valid: false,
+              error: error.message || 'Invalid bank account details',
+              stripeError: error.type || null,
+            };
+          }
+        }
+
+        // For EUR/GBP (European/UK bank accounts using IBAN)
+        if ((currency === 'EUR' || currency === 'GBP') && iban) {
+          try {
+            // Validate IBAN format and create token
+            const countryCode = currency === 'GBP' ? 'GB' : 'EU';
+            const token = await this.stripe.tokens.create({
+              bank_account: {
+                country: countryCode,
+                currency: currency.toLowerCase(),
+                account_number: iban, // IBAN can be used as account_number for EUR/GBP
+                account_holder_name: accountHolderName,
+                account_holder_type: accountHolderType,
+              },
+            });
+
+            if (token && token.id) {
+              return {
+                valid: true,
+                tokenId: token.id,
+                bankAccount: token.bank_account,
+              };
+            }
+
+            return {
+              valid: false,
+              error: 'Failed to validate bank account',
+            };
+          } catch (error) {
+            return {
+              valid: false,
+              error: error.message || 'Invalid bank account details',
+              stripeError: error.type || null,
+            };
+          }
+        }
+
+        // For EUR/GBP without IBAN (using account number and sort code for UK)
+        if (currency === 'GBP' && !iban && accountNumber && routingNumber) {
+          try {
+            const token = await this.stripe.tokens.create({
+              bank_account: {
+                country: 'GB',
+                currency: 'gbp',
+                account_number: accountNumber,
+                routing_number: routingNumber, // Sort code for UK
+                account_holder_name: accountHolderName,
+                account_holder_type: accountHolderType,
+              },
+            });
+
+            if (token && token.id) {
+              return {
+                valid: true,
+                tokenId: token.id,
+                bankAccount: token.bank_account,
+              };
+            }
+
+            return {
+              valid: false,
+              error: 'Failed to validate bank account',
+            };
+          } catch (error) {
+            return {
+              valid: false,
+              error: error.message || 'Invalid bank account details',
+              stripeError: error.type || null,
+            };
+          }
+        }
+
+        return {
+          valid: false,
+          error: `Bank account validation not supported for ${currency} without required fields`,
+        };
+      }
+
+      // For non-Stripe providers or when Stripe is not configured, skip validation
+      // (You can add Paystack validation here if needed)
+      return {
+        valid: true,
+        skipped: true,
+        message: 'Bank account validation skipped (provider not configured)',
+      };
+    } catch (error) {
+      console.error('Error validating bank account:', error);
+      return {
+        valid: false,
+        error: error.message || 'Error validating bank account',
+      };
+    }
+  }
+
+  /**
    * Create a payout/transfer to recipient's bank account
    * @param {Object} payoutData - Payout data
    * @param {number} payoutData.amount - Amount in main currency unit

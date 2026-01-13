@@ -334,6 +334,79 @@ router.post('/', authenticate, require2FA, contributionLimiter, [
       });
     }
 
+    // Validate bank account with Stripe before saving (only for USD, EUR, GBP)
+    const paymentService = require('../services/paymentService');
+    let bankValidationResult = null;
+    
+    if (['USD', 'EUR', 'GBP'].includes(currencyUpper)) {
+      try {
+        // Determine country based on currency
+        let country = 'US';
+        if (currencyUpper === 'GBP') country = 'GB';
+        if (currencyUpper === 'EUR') country = 'EU'; // Or specific country code if available
+
+        // Prepare bank account data for validation
+        const bankAccountData = {
+          accountNumber: account_number,
+          accountHolderName: account_name,
+          currency: currencyUpper,
+          country,
+        };
+
+        // Add routing number for USD/GBP, or IBAN for EUR/GBP
+        if (currencyUpper === 'USD' && routing_number) {
+          bankAccountData.routingNumber = routing_number;
+        } else if (currencyUpper === 'GBP' && sort_code) {
+          bankAccountData.routingNumber = sort_code; // Sort code for UK
+        } else if (currencyUpper === 'GBP' && routing_number) {
+          bankAccountData.routingNumber = routing_number;
+        }
+
+        if (iban) {
+          bankAccountData.iban = iban;
+        }
+
+        bankValidationResult = await paymentService.validateBankAccount(bankAccountData, 'stripe');
+
+        if (!bankValidationResult.valid) {
+          // Return user-friendly error message
+          let errorMessage = 'Invalid bank account details. Please check your account number and routing number.';
+          
+          // Provide more specific errors for common issues
+          if (bankValidationResult.stripeError) {
+            if (bankValidationResult.stripeError.includes('invalid_routing_number')) {
+              errorMessage = 'Invalid routing number. Please check and try again.';
+            } else if (bankValidationResult.stripeError.includes('invalid_account_number')) {
+              errorMessage = 'Invalid account number. Please check and try again.';
+            } else if (bankValidationResult.error) {
+              // Use Stripe's error message if it's user-friendly
+              const stripeError = bankValidationResult.error.toLowerCase();
+              if (stripeError.includes('routing') || stripeError.includes('account')) {
+                errorMessage = bankValidationResult.error;
+              }
+            }
+          }
+
+          return res.status(400).json({
+            error: errorMessage,
+            details: process.env.NODE_ENV === 'development' ? bankValidationResult.error : undefined,
+          });
+        }
+
+        // Log successful validation (token ID can be stored for future use if needed)
+        console.log(`Bank account validated successfully for user ${userId}, currency ${currencyUpper}`);
+      } catch (validationError) {
+        console.error('Bank account validation error:', validationError);
+        // Don't block account creation if validation service is down, but log it
+        // In production, you might want to be stricter
+        if (process.env.NODE_ENV === 'production') {
+          return res.status(500).json({
+            error: 'Unable to validate bank account at this time. Please try again later.',
+          });
+        }
+      }
+    }
+
     await pool.query('BEGIN');
 
     try {
