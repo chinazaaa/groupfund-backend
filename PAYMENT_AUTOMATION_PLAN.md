@@ -9,9 +9,8 @@ This document outlines the plan to implement automatic payment collection for Gr
 ## Core Decisions
 
 ### 1. **Smart Wallet System (Most Flexible)**
-- Unified wallet balance that works across all payment providers
+- Unified wallet balance that works with Stripe
 - Users can opt-in to auto-pay per group
-- Supports multiple payment providers simultaneously
 - Simple, flexible architecture
 
 ### 2. **In-App Wallet Balance (Receive & Withdraw Only)**
@@ -24,10 +23,9 @@ This document outlines the plan to implement automatic payment collection for Gr
 - Users cannot use wallet balance to pay for anything
 - Existing wallet system already in place
 
-### 3. **Multi-Provider Strategy**
-- **Paystack** for Africa: Nigeria (NGN), Kenya (KES), Ghana (GHS), South Africa (ZAR)
-- **Stripe** for rest of world: USD, GBP, EUR, CAD, AUD, JPY
-- Smart routing based on currency/country
+### 3. **Payment Provider Strategy**
+- **Stripe only** for all payments
+- Supported currencies: EUR, USD, GBP only
 - All credit to same wallet.balance system
 
 ### 4. **Fee Structure (Affordable Model)**
@@ -54,7 +52,7 @@ This document outlines the plan to implement automatic payment collection for Gr
 
 ### 7. **Payment Confirmation (Final Decision)**
 - **Auto-debit payments**: Auto-confirm (status = 'confirmed' immediately)
-  - Payment processed by Stripe/Paystack → Verified by webhook → Auto-confirm
+  - Payment processed by Stripe → Verified by webhook → Auto-confirm
   - No manual confirmation needed (payment already verified by processor)
 - **Manual payments**: Manual confirmation required (status = 'paid' → recipient confirms → 'confirmed')
   - User marks as paid manually (paid directly to recipient's bank account)
@@ -119,26 +117,25 @@ BIRTHDAY EXAMPLE:
    │   ├─ If status = 'paid' OR 'confirmed' → Skip auto-debit (already paid manually)
    │   └─ If status = 'not_paid' OR 'not_received' → Continue to auto-debit
    ├─ Calculate total amount (contribution + fees)
-   ├─ Charge card via appropriate provider (Paystack for NGN, Stripe for others)
-   └─ Each charge goes to appropriate provider account
+   ├─ Charge card via Stripe
+   └─ Charge goes to your Stripe account
    ↓
-4. Money goes to YOUR provider account (Stripe/Paystack)
+4. Money goes to YOUR Stripe account
    ↓
 5. Webhook confirms payment success
    ↓
 6. System credits birthday person's wallet.balance
    ├─ Update: wallets.balance += contribution_amount
    ├─ Create transaction records
-   ├─ Status: 'confirmed' (AUTO-CONFIRMED - payment verified by Stripe/Paystack)
+   ├─ Status: 'confirmed' (AUTO-CONFIRMED - payment verified by Stripe)
    └─ Send notifications
    ↓
 7. Birthday person sees money in their wallet
-   ├─ Auto-debit payments: Status shows 'confirmed' automatically (payment verified by Stripe/Paystack)
+   ├─ Auto-debit payments: Status shows 'confirmed' automatically (payment verified by Stripe)
    └─ Manual payments: Status shows 'paid', recipient must confirm they received it
    ↓
 8. Later, when they withdraw:
-   ├─ Use Paystack Payout API (if Nigerian)
-   └─ Use Stripe Payouts API (if other countries)
+   └─ Use Stripe Payouts API
    ↓
 9. Money sent to their bank account
 ```
@@ -173,12 +170,12 @@ SUBSCRIPTION DEADLINE EXAMPLE:
    │   ├─ If status = 'paid' OR 'confirmed' → Skip auto-debit (already paid manually)
    │   └─ If status = 'not_paid' OR 'not_received' → Continue to auto-debit
    ├─ Calculate total amount (contribution + fees)
-   └─ Charge card via appropriate provider (Paystack for NGN, Stripe for others)
+   └─ Charge card via Stripe
    ↓
 4. Webhook confirms payment success
    ↓
 5. Money credited to admin's wallet.balance
-   ├─ Status: 'confirmed' (AUTO-CONFIRMED - payment verified by Stripe/Paystack)
+   ├─ Status: 'confirmed' (AUTO-CONFIRMED - payment verified by Stripe)
    └─ Send notifications
    ↓
 6. Admin receives funds in wallet
@@ -214,12 +211,12 @@ GENERAL GROUP DEADLINE EXAMPLE:
    │   ├─ If status = 'paid' OR 'confirmed' → Skip auto-debit (already paid manually)
    │   └─ If status = 'not_paid' OR 'not_received' → Continue to auto-debit
    ├─ Calculate total amount (contribution + fees)
-   └─ Charge card via appropriate provider (Paystack for NGN, Stripe for others)
+   └─ Charge card via Stripe
    ↓
 4. Webhook confirms payment success
    ↓
 5. Money credited to admin's wallet.balance
-   ├─ Status: 'confirmed' (AUTO-CONFIRMED - payment verified by Stripe/Paystack)
+   ├─ Status: 'confirmed' (AUTO-CONFIRMED - payment verified by Stripe)
    └─ Send notifications
    ↓
 6. Admin receives funds in wallet
@@ -233,41 +230,36 @@ GENERAL GROUP DEADLINE EXAMPLE:
 
 ```javascript
 // Pseudo-code for provider selection
-function selectProvider(currency, country) {
-  // Africa - Use Paystack
-  if (currency === 'NGN' || country === 'NG') return 'paystack'; // Nigeria
-  if (currency === 'KES' || country === 'KE') return 'paystack'; // Kenya
-  if (currency === 'GHS' || country === 'GH') return 'paystack'; // Ghana
-  if (currency === 'ZAR' || country === 'ZA') return 'paystack'; // South Africa
-  
-  // Rest of world - Use Stripe
-  return 'stripe';
+function selectProvider(currency) {
+  // Only Stripe, supporting EUR, USD, GBP
+  if (['EUR', 'USD', 'GBP'].includes(currency)) return 'stripe';
+  throw new Error(`Unsupported currency: ${currency}. Supported currencies: EUR, USD, GBP`);
 }
 ```
 
 ### 2. Money Flow
 
 **Collection:**
-- Stripe/Paystack charges user's card → Money goes to YOUR provider account
+- Stripe charges user's card → Money goes to YOUR Stripe account
 - You credit recipient's wallet.balance in your database
 - User sees balance increase in app
 
 **Withdrawal:**
 - User requests withdrawal from wallet
-- You use Stripe Payouts API or Paystack Transfer API
+- You use Stripe Payouts API
 - Money sent directly to user's bank account
 
 ### 3. Fee Calculation
 
 **Model: Contributor Pays (Transparent) - AUTO-DEBIT ONLY**
 ```
-User wants to contribute: ₦5,000 (via auto-debit)
-├─ Payment processor fee (Paystack): ~₦175 (1.5% + ₦100)
-├─ Platform fee (your fee): ₦50 (1% - keeping it low)
-└─ Total charged to user: ₦5,225
+User wants to contribute: $50 (via auto-debit)
+├─ Payment processor fee (Stripe): ~$1.75 (2.9% + $0.30)
+├─ Platform fee (your fee): $0.50 (1% - keeping it low)
+└─ Total charged to user: $52.25
 
-Recipient receives: ₦5,000 (full amount)
-Your profit: ₦50 per transaction
+Recipient receives: $50 (full amount)
+Your profit: $0.50 per transaction
 ```
 
 **Manual Payments: NO FEES**
@@ -286,7 +278,6 @@ Your profit: ₦50 per transaction
 
 ```sql
 -- Store payment methods for auto-pay
-ALTER TABLE users ADD COLUMN IF NOT EXISTS paystack_customer_code VARCHAR(255);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(255);
 
 -- Auto-pay preferences per group
@@ -297,7 +288,7 @@ CREATE TABLE IF NOT EXISTS user_payment_preferences (
   auto_pay_enabled BOOLEAN DEFAULT FALSE,
   payment_method_type VARCHAR(20), -- 'card', 'bank_account', etc.
   payment_method_id VARCHAR(255), -- Provider-specific ID
-  provider VARCHAR(20), -- 'stripe', 'paystack', 'flutterwave'
+  provider VARCHAR(20) DEFAULT 'stripe', -- 'stripe' only
   payment_timing VARCHAR(20) DEFAULT 'same_day', -- '1_day_before' or 'same_day'
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -321,10 +312,10 @@ ALTER TABLE transactions ADD COLUMN IF NOT EXISTS platform_fee DECIMAL(10, 2) DE
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS processor_fee DECIMAL(10, 2) DEFAULT 0;
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS gross_amount DECIMAL(10, 2); -- Amount charged to user
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS net_amount DECIMAL(10, 2); -- Amount recipient receives
-ALTER TABLE transactions ADD COLUMN IF NOT EXISTS payment_provider VARCHAR(20); -- 'stripe', 'paystack', 'manual'
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS payment_provider VARCHAR(20) DEFAULT 'stripe'; -- 'stripe', 'manual'
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS payment_method_id VARCHAR(255); -- Provider transaction ID
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS withdrawal_fee DECIMAL(10, 2) DEFAULT 0; -- Fee for withdrawals (if any)
-ALTER TABLE transactions ADD COLUMN IF NOT EXISTS payout_fee DECIMAL(10, 2) DEFAULT 0; -- Payout provider fee (Stripe/Paystack charges)
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS payout_fee DECIMAL(10, 2) DEFAULT 0; -- Payout provider fee (Stripe charges)
 ```
 
 ### 3. Automatic Payment Attempts
@@ -374,10 +365,10 @@ POST /api/payments/methods/request-otp
 
 POST /api/payments/methods
 - Step 3: Add payment method (requires password + OTP verification)
-- Body: { password_verification_token, otp, payment_method_data, provider }
+- Body: { password_verification_token, otp, payment_method_data }
 - Verify password token and OTP before proceeding
 - Add payment method (debit card only - not wallet balance)
-- Provider: Stripe or Paystack
+- Provider: Stripe only
 - Store securely
 - Note: Wallet balance cannot be used as payment method
 
@@ -564,7 +555,7 @@ DELETE /api/users/account
 - Delete user account
 - **CRITICAL: Check wallet balance before deletion**
   - If balance > 0: Return error 400 "Cannot delete account. Please withdraw all funds ({amount} {currency_symbol} remaining) before deleting your account."
-  - Format: Use user's currency symbol (e.g., "₦100 remaining" for NGN, "$50 remaining" for USD, "£30 remaining" for GBP)
+  - Format: Use user's currency symbol (e.g., "$50 remaining" for USD, "€50 remaining" for EUR, "£30 remaining" for GBP)
   - If balance = 0: Allow deletion (cascade will handle related records)
 - Requires: Authentication
 - Returns: { message: "Account deleted successfully" } or error
@@ -608,7 +599,7 @@ POST /api/contributions/withdraw
   - Subject: "Withdrawal Request Received"
   - Content: "Your withdrawal request of {amount} {currency_symbol} has been received. Funds will be sent to your bank account within 24 hours. If you didn't make this withdrawal, please contact security@groupfund.app immediately."
 - **Scheduled processing**: Process withdrawal after 24-hour hold (scheduled job)
-- Uses Stripe Payouts API or Paystack Transfer API after hold period
+- Uses Stripe Payouts API after hold period
 ```
 
 ### 4. Webhooks (Provider Callbacks)
@@ -616,9 +607,6 @@ POST /api/contributions/withdraw
 ```
 POST /api/webhooks/stripe
 - Handle Stripe webhook events (payment succeeded, failed, etc.)
-
-POST /api/webhooks/paystack
-- Handle Paystack webhook events (charge.success, transfer.success, etc.)
 ```
 
 ---
@@ -627,8 +615,7 @@ POST /api/webhooks/paystack
 
 ### Phase 1: Foundation (Week 1-2)
 - [ ] Set up Stripe account and API keys (store in environment variables)
-- [ ] Set up Paystack account and API keys (store in environment variables)
-- [ ] Create payment service abstraction layer
+- [ ] Create payment service layer for Stripe
 - [ ] Database migrations (payment methods, fees, preferences)
 - [ ] Basic payment method storage endpoints
 - [ ] **Security**: Set up webhook signature verification
@@ -637,7 +624,7 @@ POST /api/webhooks/paystack
 - [ ] **Security**: Set up audit logging for payment attempts
 
 ### Phase 2: Payment Collection (Week 3-4)
-- [ ] Implement card charging (Stripe & Paystack)
+- [ ] Implement card charging (Stripe)
 - [ ] Fee calculation logic
 - [ ] Wallet credit on successful payment
 - [ ] Webhook handlers for payment confirmation
@@ -684,7 +671,6 @@ POST /api/webhooks/paystack
 
 ### Phase 5: Withdrawals (Week 9-10)
 - [ ] Stripe Payouts API integration
-- [ ] Paystack Transfer API integration
 - [ ] Withdrawal request handling (24-hour hold period)
 - [ ] **Security email notification** - Send email when withdrawal requested (with security warning)
 - [ ] **Scheduled job** - Process pending withdrawals after 24-hour hold period
@@ -737,15 +723,15 @@ POST /api/webhooks/paystack
 - Email notifications for failures
 - User-friendly error messages
 
-### 4. **Multi-Currency Support**
-- Your app already supports: NGN, USD, GBP, EUR, KES, GHS, ZAR, CAD, AUD, JPY
-- Provider routing based on currency
+### 4. **Currency Support**
+- Your app supports: EUR, USD, GBP only
+- All payments processed via Stripe
 - Fee calculation per currency
 
 ### 5. **Security (Critical - Protect Users' Money)**
-- **PCI Compliance**: Never store card details directly (use Stripe/Paystack tokens only)
+- **PCI Compliance**: Never store card details directly (use Stripe tokens only)
 - **Payment Method Storage**: Only store payment method IDs/tokens (never actual card numbers)
-- **Webhook Verification**: Always verify webhook signatures from Stripe/Paystack
+- **Webhook Verification**: Always verify webhook signatures from Stripe
 - **Encryption**: Encrypt sensitive payment data at rest and in transit (HTTPS required)
 - **Authentication**: JWT tokens required for all payment endpoints
 - **Authorization**: Users can only access their own payment methods and transactions
@@ -777,7 +763,7 @@ POST /api/webhooks/paystack
 
 ### 8. **Wallet Usage Rules (Critical)**
 - **Wallet balance CANNOT be used to pay contributions**
-- **All contributions must come from debit cards** (Stripe/Paystack)
+- **All contributions must come from debit cards** (Stripe)
 - Wallet is ONLY for:
   - Receiving money (credited when others contribute to you)
   - Withdrawing money to bank account
@@ -805,7 +791,7 @@ POST /api/webhooks/paystack
    ↓
 6. System checks: Does user have debit card saved?
    ├─ NO → Prompt to add debit card
-   │   ├─ User adds card (Paystack/Stripe handles securely)
+   │   ├─ User adds card (Stripe handles securely)
    │   ├─ Card details never touch your server
    │   └─ Provider returns payment method token
    └─ YES → Use existing card
@@ -857,7 +843,7 @@ POST /api/webhooks/paystack
    ├─ Charge card via appropriate provider (based on payment_timing)
    ├─ Webhook confirms payment success
    ├─ On success: Credit recipient's wallet.balance
-   │   ├─ Status: 'confirmed' (auto-confirmed - payment verified by Stripe/Paystack)
+   │   ├─ Status: 'confirmed' (auto-confirmed - payment verified by Stripe)
    │   ├─ Auto-confirm because it's auto-debit (no manual confirmation needed)
    │   └─ Send notification
    ├─ On failure: Retry (max 3 times)
@@ -870,7 +856,7 @@ POST /api/webhooks/paystack
 6. Recipient can withdraw to bank when ready
    ├─ Must have withdrawal account (bank details already required)
    ├─ **Wallet balance can ONLY be withdrawn** (cannot be used to pay contributions)
-   └─ Use Paystack/Stripe Payout API
+   └─ Use Stripe Payout API
 ```
 
 ### Group Join/Create Validation
@@ -907,7 +893,7 @@ IMPORTANT: Wallet Balance Rules
 - Any payments (must use debit card)
 
 Why?
-- All contributions must go through payment processors (Stripe/Paystack)
+- All contributions must go through payment processors (Stripe)
 - Ensures fees are collected properly
 - Better security and tracking
 - Consistent payment flow
@@ -921,20 +907,20 @@ Why?
 
 **Primary Revenue: Platform Fees on Auto-Debit Contributions ONLY**
 - **Platform fee**: 1-2% of contribution amount (contributor pays)
-- **Applies to**: Auto-debit contributions ONLY (payments processed via Stripe/Paystack)
+- **Applies to**: Auto-debit contributions ONLY (payments processed via Stripe)
 - Revenue source: Every time someone uses auto-debit to contribute
-- Example: ₦5,000 auto-debit contribution → ₦50 platform fee (1%) → Your revenue: ₦50
+- Example: $50 auto-debit contribution → $0.50 platform fee (1%) → Your revenue: $0.50
 
 **NO Revenue from Manual Payments**
 - **Manual payments**: User pays directly to recipient's bank account (outside the app)
 - **No platform fee**: Payment didn't go through the app, so no fee can be collected
 - User just marks as "paid" in the app (they already paid outside)
-- Your revenue: ₦0 on manual payments (payment happened outside the app)
+- Your revenue: $0 on manual payments (payment happened outside the app)
 
 **NO Revenue from Withdrawals (Recommended)**
 - Withdrawal fees: Pass-through only (no platform fee)
-- Users pay: Provider fees only (₦10 Paystack, $0.25 Stripe)
-- Your revenue: ₦0 on withdrawals (keep it user-friendly)
+- Users pay: Provider fees only ($0.25 USD, €0.35 EUR, £0.25 GBP)
+- Your revenue: $0 on withdrawals (keep it user-friendly)
 
 **Revenue Summary:**
 - ✅ **Auto-debit contributions**: Platform fee (1-2%) = YOUR REVENUE
@@ -944,20 +930,20 @@ Why?
 
 ### Revenue Examples
 
-**Scenario 1: Birthday Group - All Auto-Debit (5 members, ₦5,000 each)**
+**Scenario 1: Birthday Group - All Auto-Debit (5 members, $50 each)**
 ```
-Total contributions: ₦25,000 (5 × ₦5,000)
+Total contributions: $250 (5 × $50)
 All via auto-debit
-Platform fee (1%): ₦250 (5 × ₦50)
-Your revenue: ₦250
+Platform fee (1%): $2.50 (5 × $0.50)
+Your revenue: $2.50
 ```
 
-**Scenario 2: Birthday Group - Mixed (3 auto-debit, 2 manual, ₦5,000 each)**
+**Scenario 2: Birthday Group - Mixed (3 auto-debit, 2 manual, $50 each)**
 ```
-Total contributions: ₦25,000 (5 × ₦5,000)
-Auto-debit: ₦15,000 (3 × ₦5,000) → Platform fee: ₦150 → Your revenue: ₦150
-Manual: ₦10,000 (2 × ₦5,000) → Platform fee: ₦0 → Your revenue: ₦0
-Total revenue: ₦150 (only from auto-debit)
+Total contributions: $250 (5 × $50)
+Auto-debit: $150 (3 × $50) → Platform fee: $1.50 → Your revenue: $1.50
+Manual: $100 (2 × $50) → Platform fee: $0 → Your revenue: $0
+Total revenue: $1.50 (only from auto-debit)
 ```
 
 **Scenario 3: Subscription Group (10 members, $50/month each, all auto-debit)**
@@ -971,14 +957,14 @@ Annual revenue per group: $60/year
 
 **Scenario 4: Withdrawals (NO revenue)**
 ```
-User withdraws ₦10,000
-Provider fee (Paystack): ₦10
-Your revenue: ₦0 (no platform fee on withdrawals)
+User withdraws $100
+Provider fee (Stripe): $0.25
+Your revenue: $0 (no platform fee on withdrawals)
 ```
 
 ### Why Revenue Only from Auto-Debit?
 
-1. **Auto-debit payments go through the app** - Stripe/Paystack processes payment, you can collect fees
+1. **Auto-debit payments go through the app** - Stripe processes payment, you can collect fees
 2. **Manual payments happen outside the app** - User pays directly to recipient's bank account, no way to collect fees
 3. **Manual is just marking as paid** - User already paid outside, just updating status in app
 4. **This incentivizes auto-debit usage** - Users benefit from convenience, you benefit from fees
@@ -987,7 +973,7 @@ Your revenue: ₦0 (no platform fee on withdrawals)
 ### Revenue Model: Platform Fee on Auto-Debit Contributions Only
 
 - **Revenue source**: Platform fees (1-2%) on AUTO-DEBIT contributions only
-- **Applies to**: Payments processed via Stripe/Paystack (auto-debit)
+- **Applies to**: Payments processed via Stripe (auto-debit)
 - **NOT from**: Manual payments (payment happened outside the app)
 - **NOT from**: Withdrawals (pass-through fees only)
 - **Rationale**: Only charge fees when providing payment processing service (auto-debit). Manual payments are free because payment happens outside the app.
@@ -996,14 +982,10 @@ Your revenue: ₦0 (no platform fee on withdrawals)
 
 ## Fee Structure Details
 
-### Paystack Fees (Africa)
-- **Nigeria**: 1.5% + ₦100 per transaction
-- **Ghana**: 2.9% + ₵1 per transaction
-- **Kenya**: 3.0% + KSh 10 per transaction
-- **South Africa**: 3.5% + R2 per transaction
-
-### Stripe Fees (Global)
-- **Cards**: 2.9% + $0.30 per transaction
+### Stripe Fees
+- **Cards**: 2.9% + $0.30 per transaction (USD)
+- **Cards**: 1.4% + €0.25 per transaction (EUR)
+- **Cards**: 1.4% + £0.20 per transaction (GBP)
 - Varies slightly by country
 - Lower fees for higher volumes
 
@@ -1011,21 +993,11 @@ Your revenue: ₦0 (no platform fee on withdrawals)
 - **Recommendation**: 1-2% maximum
 - Keep competitive with WhatsApp groups (free but manual)
 - Consider: 1% for low amounts, 2% cap
-- Display transparently: "Platform fee: ₦50 (1%)"
+- Display transparently: "Platform fee: $0.50 (1%)"
 
 ### Example Calculations
 
-**Nigeria (NGN 5,000 contribution):**
-```
-Contribution: ₦5,000
-Paystack fee: ₦175 (1.5% + ₦100)
-Platform fee: ₦50 (1%)
-Total charged: ₦5,225
-Recipient receives: ₦5,000
-Your profit: ₦50
-```
-
-**USA (USD 50 contribution):**
+**USD ($50 contribution):**
 ```
 Contribution: $50
 Stripe fee: $1.75 (2.9% + $0.30)
@@ -1035,49 +1007,66 @@ Recipient receives: $50
 Your profit: $0.50
 ```
 
+**EUR (€50 contribution):**
+```
+Contribution: €50
+Stripe fee: €0.95 (1.4% + €0.25)
+Platform fee: €0.50 (1%)
+Total charged: €51.45
+Recipient receives: €50
+Your profit: €0.50
+```
+
+**GBP (£50 contribution):**
+```
+Contribution: £50
+Stripe fee: £0.90 (1.4% + £0.20)
+Platform fee: £0.50 (1%)
+Total charged: £51.40
+Recipient receives: £50
+Your profit: £0.50
+```
+
 ---
 
 ## Withdrawal Fees
 
 ### Provider Payout Fees
 
-**Paystack (Nigeria & Africa):**
-- **Nigerian Naira (NGN)**: ₦10 flat fee per transfer (very minimal)
-- **Other currencies**: Varies by country, typically small flat fees
-
-**Stripe (International):**
-- **US Bank**: $0.25 per payout (very minimal)
-- **Other countries**: Varies by country (typically $0.25 - $2.00)
-- **International**: Higher fees (1-2% for some countries)
+**Stripe:**
+- **USD**: $0.25 per payout (very minimal)
+- **EUR**: €0.35 per payout
+- **GBP**: £0.25 per payout
+- Varies by country (typically $0.25 - $2.00)
 
 ### Platform Withdrawal Fee (Recommendation)
 
 **Option 1: No Platform Fee (Recommended)**
-- Only charge what Stripe/Paystack charges (pass-through fees)
+- Only charge what Stripe charges (pass-through fees)
 - Most user-friendly approach
-- Users pay: Provider fee only (₦10 for NGN, $0.25 for USD, etc.)
-- Example: Withdraw ₦10,000 → Pay ₦10 (Paystack fee) → Receive ₦9,990
+- Users pay: Provider fee only ($0.25 for USD, €0.35 for EUR, £0.25 for GBP)
+- Example: Withdraw $100 → Pay $0.25 (Stripe fee) → Receive $99.75
 
 **Option 2: Minimal Platform Fee (If Needed)**
 - Small flat fee on top of provider fee (if you need extra revenue)
-- **Recommended: ₦25-50 (NGN) or $0.50 (USD) maximum**
+- **Recommended: $0.50 (USD), €0.50 (EUR), £0.50 (GBP) maximum**
 - Keep it minimal so users don't feel discouraged
-- Example: Withdraw ₦10,000 → Pay ₦60 (₦10 provider + ₦50 platform) → Receive ₦9,940
+- Example: Withdraw $100 → Pay $0.75 ($0.25 provider + $0.50 platform) → Receive $99.25
 
 **Recommendation: Option 1 (No Platform Fee)**
 - Users already pay platform fees on contributions (1-2%)
 - Withdrawals should be as frictionless as possible
-- Paystack/Stripe fees are already minimal (₦10, $0.25)
+- Stripe fees are already minimal ($0.25, €0.35, £0.25)
 - Better user experience = more usage
 
 ### Fee Transparency
 - Show fees clearly before withdrawal
-- Display: "Withdrawal fee: ₦10 (Paystack processing fee)"
-- Show: "You'll receive: ₦9,990"
+- Display: "Withdrawal fee: $0.25 (Stripe processing fee)"
+- Show: "You'll receive: $99.75"
 - User sees exactly what they'll get
 
 ### Minimum Withdrawal Amount
-- **Recommendation: ₦1,000 (NGN) or $10 (USD) minimum**
+- **Recommendation: $10 (USD), €10 (EUR), £10 (GBP) minimum**
 - Ensures withdrawal is worth the fee
 - Prevents micro-withdrawals that cost more in fees than value
 
@@ -1093,11 +1082,6 @@ Your profit: $0.50
 - `charge.dispute.closed` - Chargeback/dispute closed (resolved)
 - `payout.paid` - Withdrawal completed
 
-### Paystack Webhooks
-- `charge.success` - Payment successful
-- `charge.failed` - Payment failed
-- `transfer.success` - Withdrawal completed
-- `transfer.failed` - Withdrawal failed
 
 ---
 
@@ -1106,7 +1090,7 @@ Your profit: $0.50
 ### Payment Failures & Retry Logic
 
 **Retry Strategy (One-Time Payments):**
-- **Note**: Contributions are one-time payments (not subscriptions), so Stripe/Paystack don't automatically retry
+- **Note**: Contributions are one-time payments (not subscriptions), so Stripe don't automatically retry
 - **Our retry strategy**: Simple - max 2 attempts total (initial + 1 retry)
   - Attempt 1: Initial charge attempt
   - Attempt 2: Retry after initial failure (only for recoverable errors like network issues)
@@ -1143,7 +1127,7 @@ Before retry attempt:
 ```
 
 **Card Expiration Handling:**
-- Detect expired cards via Stripe/Paystack notifications
+- Detect expired cards via Stripe notifications
 - Email user 30 days before expiration
 - Email user when card expires
 - Disable auto-pay for expired cards
@@ -1254,9 +1238,9 @@ SUBSCRIPTION/GENERAL EXAMPLE:
    - **Rationale**: Can't charge a card that doesn't exist, user must re-enable auto-pay after adding new card
 13. **User tries to delete account with wallet balance** → Prevent deletion, require withdrawal first
 14. **Different currencies in same group** → ✅ Same currency per group (set at group creation, no conversion needed)
-15. **Chargeback received** → Handle via Stripe/Paystack dispute system, respond with evidence, update records
+15. **Chargeback received** → Handle via Stripe dispute system, respond with evidence, update records
 17. **Partial payment failure** → Some members charged, others failed → Notify admin, retry failures
-18. **Webhook delayed/missing** → Fallback to polling Stripe/Paystack API for payment status
+18. **Webhook delayed/missing** → Fallback to polling Stripe API for payment status
 19. **Recipient is defaulter (has overdue payments)** → Skip ALL auto-payments to them, notify recipient
 20. **Member is defaulter (has overdue payments)** → Skip charging their card, notify member
 21. **Recipient has overdue in one group but not others** → Skip ALL payments until all overdue cleared? (recommended: check ALL groups)
@@ -1294,17 +1278,16 @@ SUBSCRIPTION/GENERAL EXAMPLE:
 ## Security Checklist (Protect Users' Money)
 
 ### Payment Data Security
-- [ ] **Never store card details directly** - Only store payment method tokens from Stripe/Paystack
-- [ ] **PCI Compliance** - Use Stripe/Paystack for all card handling (they're PCI compliant)
-- [ ] **Payment Method IDs** - Only store payment method IDs (pm_xxx from Stripe, authorization_code from Paystack)
+- [ ] **Never store card details directly** - Only store payment method tokens from Stripe
+- [ ] **PCI Compliance** - Use Stripe for all card handling (they're PCI compliant)
+- [ ] **Payment Method IDs** - Only store payment method IDs (pm_xxx from Stripe)
 - [ ] **Encrypt sensitive data at rest** - Encrypt payment tokens, API keys in database
 - [ ] **HTTPS everywhere** - All API endpoints must use HTTPS (no HTTP)
-- [ ] **Environment variables** - Store Stripe/Paystack API keys in environment variables (never in code)
+- [ ] **Environment variables** - Store Stripe API keys in environment variables (never in code)
 - [ ] **Secrets management** - Use secure secret management (AWS Secrets Manager, HashiCorp Vault, or similar)
 
 ### Webhook Security
 - [ ] **Verify webhook signatures** - Always verify Stripe webhook signatures (stripe-signature header)
-- [ ] **Verify Paystack signatures** - Always verify Paystack webhook signatures (x-paystack-signature header)
 - [ ] **Webhook endpoint authentication** - Restrict webhook endpoints (IP whitelist if possible)
 - [ ] **Idempotency** - Handle duplicate webhook events (use event IDs to prevent double-processing)
 - [ ] **Webhook timeout** - Return 200 OK quickly, process webhook asynchronously
@@ -1329,8 +1312,8 @@ SUBSCRIPTION/GENERAL EXAMPLE:
 - [ ] **Velocity checks** - Limit number of transactions per user per day
 - [ ] **Amount validation** - Validate transaction amounts (min/max limits)
 - [ ] **Geolocation checks** - Monitor for transactions from unusual locations (optional)
-- [ ] **Card verification** - Require CVV for one-time payments (Stripe/Paystack handle this)
-- [ ] **3D Secure** - Enable 3D Secure for additional verification (Stripe/Paystack support)
+- [ ] **Card verification** - Require CVV for one-time payments (Stripe handle this)
+- [ ] **3D Secure** - Enable 3D Secure for additional verification (Stripe support)
 
 ### Database Security
 - [ ] **Parameterized queries** - Use parameterized queries (prevent SQL injection)
@@ -1377,7 +1360,7 @@ SUBSCRIPTION/GENERAL EXAMPLE:
 - [ ] **Webhook delivery failures** - Alert if webhooks fail to process
 - [ ] **Security event alerts** - Alert on authentication failures, unauthorized access attempts
 - [ ] **System monitoring** - Monitor API response times, error rates
-- [ ] **Payment provider status** - Monitor Stripe/Paystack status (downtime alerts)
+- [ ] **Payment provider status** - Monitor Stripe status (downtime alerts)
 
 ### Compliance & Auditing
 - [ ] **Regular security audits** - Quarterly security reviews
@@ -1430,7 +1413,7 @@ SUBSCRIPTION/GENERAL EXAMPLE:
 - Failed payment reasons
 - Auto-pay adoption rate
 - Withdrawal processing time
-- Provider performance (Stripe vs Paystack)
+- Provider performance (Stripe)
 
 ### Alerts to Set Up
 - High failure rate (>10%)
@@ -1445,7 +1428,7 @@ SUBSCRIPTION/GENERAL EXAMPLE:
 ### 1. **Never Store Card Details**
 ```
 ❌ DON'T: Store card number in database
-✅ DO: Store only payment method token from Stripe/Paystack
+✅ DO: Store only payment method token from Stripe
 
 Example:
 - User adds card → Stripe returns token: pm_1ABC123
@@ -1462,10 +1445,6 @@ Stripe:
 - Check stripe-signature header
 - Use Stripe.webhooks.constructEvent() to verify
 
-Paystack:
-- Check x-paystack-signature header
-- Verify HMAC SHA512 signature
-
 If signature doesn't match → Reject webhook (possible attack)
 ```
 
@@ -1476,8 +1455,7 @@ If signature doesn't match → Reject webhook (possible attack)
 
 .env file:
 STRIPE_SECRET_KEY=sk_test_...
-PAYSTACK_SECRET_KEY=sk_test_...
-WEBHOOK_SECRET=whsec_...
+STRIPE_WEBHOOK_SECRET=whsec_...
 
 Never commit .env to git (add to .gitignore)
 ```
@@ -1534,7 +1512,7 @@ Log detailed errors server-side (not returned to user)
 ### 8. **Use HTTPS Everywhere**
 ```
 ✅ Required for all payment endpoints
-- Stripe/Paystack require HTTPS for webhooks
+- Stripe require HTTPS for webhooks
 - Protects data in transit
 - SSL/TLS encryption
 
@@ -1551,7 +1529,6 @@ Already should have HTTPS in production
 
 Use monitoring tools:
 - Stripe Dashboard (has fraud detection)
-- Paystack Dashboard
 - Your own monitoring (logs, alerts)
 ```
 
@@ -1560,7 +1537,7 @@ Use monitoring tools:
 ✅ Keep dependencies updated:
 npm audit (check for vulnerabilities)
 npm update (update packages)
-Update Stripe/Paystack SDKs regularly
+Update Stripe SDKs regularly
 
 ✅ Regular security reviews:
 - Quarterly security audits
@@ -1574,7 +1551,7 @@ Update Stripe/Paystack SDKs regularly
 1. Immediately disable affected accounts
 2. Review logs to understand scope
 3. Notify affected users
-4. Contact Stripe/Paystack support
+4. Contact Stripe support
 5. Document incident
 6. Implement fixes
 7. Learn and improve
@@ -1597,7 +1574,7 @@ Update Stripe/Paystack SDKs regularly
 **Attack**: Hackers try to steal card numbers
 **Prevention**: 
 - ✅ Never store card numbers (only tokens)
-- ✅ Use Stripe/Paystack (they handle card data securely)
+- ✅ Use Stripe (they handle card data securely)
 - ✅ HTTPS for all communication
 
 ### 2. **Webhook Spoofing**
@@ -1639,7 +1616,7 @@ Update Stripe/Paystack SDKs regularly
 ### 7. **Replay Attacks**
 **Attack**: Replay old payment requests
 **Prevention**:
-- ✅ Use idempotency keys (Stripe/Paystack support)
+- ✅ Use idempotency keys (Stripe support)
 - ✅ Check transaction IDs (prevent duplicates)
 - ✅ Webhook event IDs (prevent duplicate processing)
 
@@ -1785,7 +1762,7 @@ USER WANTS TO ADD DEBIT CARD:
 5. System verifies OTP → Shows card form
    User enters card details
    ↓
-6. System adds card (Stripe/Paystack handles securely)
+6. System adds card (Stripe handles securely)
    Success!
 ```
 
@@ -1877,7 +1854,7 @@ Action: [Action type]
 Details: [Masked/partial details]
 
 Examples:
-- "Withdrawal request of ₦5,000 received. Funds will be sent within 24 hours."
+- "Withdrawal request of $50 received. Funds will be sent within 24 hours."
 - "Debit card ending in ****1234 was added"
 - "Account details were updated (Bank: [Bank Name])"
 - "Auto-pay was enabled for group: [Group Name]"
@@ -1928,7 +1905,7 @@ The GroupFund Security Team
 ## Next Steps
 
 1. **Review this plan** - Make sure everything aligns with your vision
-2. **Set up provider accounts** - Stripe and Paystack
+2. **Set up Stripe account** - Stripe only
 3. **Design database migrations** - Create migration files
 4. **Start with Phase 1** - Foundation work
 5. **Test thoroughly** - Especially fee calculations
@@ -1947,7 +1924,7 @@ The GroupFund Security Team
 - ❌ **Cannot use wallet for any payments** → All payments must use debit card
 
 **Why this rule?**
-- All contributions must go through payment processors (Stripe/Paystack)
+- All contributions must go through payment processors (Stripe)
 - Ensures fees are collected properly
 - Better security and fraud prevention
 - Consistent payment tracking
@@ -1964,7 +1941,7 @@ The GroupFund Security Team
 2. **Debit Card Required for Auto-Pay**
    - Users MUST add debit card details if they want to enable auto-pay
    - Not required if user wants manual payment only
-   - Stored securely via Stripe/Paystack (never on your server)
+   - Stored securely via Stripe (never on your server)
 
 3. **Withdrawal Account**
    - Already covered by bank details requirement
@@ -1981,7 +1958,7 @@ The GroupFund Security Team
 
 2. **Payment Confirmation (Final Decision)**
    - **Auto-debit payments**: Automatic confirmation (status = 'confirmed' immediately)
-     - Payment processed by Stripe/Paystack → Verified by webhook → Auto-confirm
+     - Payment processed by Stripe → Verified by webhook → Auto-confirm
      - No manual confirmation needed (already verified by payment processor)
    - **Manual payments**: Manual confirmation required (status = 'paid' → 'confirmed')
      - User marked as paid manually → Status = 'paid' → Recipient confirms → Status = 'confirmed'
@@ -1994,28 +1971,27 @@ The GroupFund Security Team
 ### 1. **Transaction Limits**
 - **Minimum contribution amounts?**
   - To cover fees, need minimum amounts
-  - Example: Minimum ₦100 (NGN), $1 (USD), etc.
+  - Example: Minimum $0.50 (USD), €0.50 (EUR), £0.30 (GBP)
   - Different minimums per currency?
   - Consider: Platform fee + processor fee must be less than contribution
 
 - **Maximum transaction amounts?**
   - Daily limit per user? (prevent fraud)
   - Per transaction limit? (risk management)
-  - Example: Maximum ₦100,000 per transaction, ₦500,000 per day
+  - Example: Maximum $10,000 per transaction, $50,000 per day
 
 - **Withdrawal limits?**
   - Minimum withdrawal amount? (processing costs)
-    - **Recommended: ₦1,000 (NGN) or $10 (USD) minimum**
+    - **Recommended: $10 (USD), €10 (EUR), £10 (GBP) minimum**
     - Ensures withdrawal is worth the fee
   - Maximum withdrawal amount? (per day/month)
-    - Example: Maximum ₦1,000,000 per day, ₦5,000,000 per month
+    - Example: Maximum $10,000 per day, $50,000 per month
   - Limits help prevent fraud and manage risk
 
 - **Withdrawal fees?**
   - **Recommended: No platform fee (pass-through provider fees only)**
-  - Paystack: ₦10 flat fee per transfer (NGN)
-  - Stripe: $0.25 per payout (USD)
-  - **Alternative (if needed): Minimal platform fee (₦25-50 NGN, $0.50 USD max)**
+  - Stripe: $0.25 per payout (USD), €0.35 per payout (EUR), £0.25 per payout (GBP)
+  - **Alternative (if needed): Minimal platform fee ($0.50 USD, €0.50 EUR, £0.50 GBP max)**
   - Keep fees minimal to encourage usage
   - Show fees transparently before withdrawal
 
@@ -2026,11 +2002,11 @@ The GroupFund Security Team
 - **Not the same as refund** - Refund is you giving money back, chargeback is bank forcing reversal
 - **Common reasons**: Fraudulent transaction, card stolen, unauthorized use, goods/services not received
 - **Who reverses**: Bank/card issuer reverses the payment (takes money back from you)
-- **You're notified**: Stripe/Paystack notifies you, you can dispute the chargeback
+- **You're notified**: Stripe notifies you, you can dispute the chargeback
 - **Example**: Someone's card was stolen, thief used it on your app, real owner reports fraud → bank reverses payment
 
 **Chargeback Handling Process:**
-- **Stripe/Paystack notifies you** via webhook (e.g., `charge.dispute.created`)
+- **Stripe notifies you** via webhook (e.g., `charge.dispute.created`)
 - **Review the transaction** - Check if it's legitimate or fraudulent
 - **Submit evidence** - If legitimate, provide proof (payment was authorized, service delivered)
 - **Decision**: Bank decides - you win (keep money) or lose (money reversed)
@@ -2038,7 +2014,7 @@ The GroupFund Security Team
 
 **For GroupFund:**
 - **Not common** - Group contributions are usually legitimate (people know each other)
-- **Handle via Stripe/Paystack** - Use their dispute system to respond
+- **Handle via Stripe** - Use their dispute system to respond
 - **Document transactions** - Keep records (payment method, user ID, contribution details)
 - **Respond promptly** - Usually 7-14 days to respond or you automatically lose
 - **Account monitoring** - High chargeback rate = account suspension risk
@@ -2052,7 +2028,7 @@ The GroupFund Security Team
 ### 3. **Failed Payment Retry Logic (Details)**
 
 **Payment Attempt Strategy (One-Time Payments):**
-- **Note**: Contributions are one-time payments (not subscriptions), so Stripe/Paystack don't automatically retry
+- **Note**: Contributions are one-time payments (not subscriptions), so Stripe don't automatically retry
 - **Our retry strategy**: Simple - try once, if it fails, retry once more (max 2 attempts total)
   - Attempt 1: Initial charge attempt
   - Attempt 2: Retry after initial failure (only for recoverable errors like network issues)
@@ -2082,7 +2058,7 @@ The GroupFund Security Team
   - If status = 'paid' or 'confirmed' → Skip auto-debit, log "Already paid manually"
 
 - **Card expiration handling:**
-  - Detect expired cards (Stripe/Paystack notifications)
+  - Detect expired cards (Stripe notifications)
   - Notify user to update card
   - Disable auto-pay for expired cards
   - Email reminder to update card
@@ -2099,7 +2075,7 @@ The GroupFund Security Team
 ### 4. **Currency Handling (DECIDED)**
 - ✅ **Same currency per group** - Currency selected at group creation
 - ✅ **No currency conversion** - All members must use the group's currency
-- ✅ **Admin selects currency** when creating group (NGN, USD, GBP, EUR, KES, GHS, ZAR, CAD, AUD, JPY)
+- ✅ **Admin selects currency** when creating group (EUR, USD, GBP only)
 - ✅ **Validation**: Users joining group must use same currency (can check user's currency preference or enforce group currency)
 - **Rationale**: Simpler implementation, avoids conversion fees, clearer for users, prevents confusion
 
@@ -2131,7 +2107,7 @@ The GroupFund Security Team
   - **Prevent deletion if wallet balance > 0** - User must withdraw all money first
   - **Validation check**: Before allowing account deletion, check wallet balance
   - **Error message**: "Cannot delete account. Please withdraw all funds ({amount} {currency_symbol} remaining) before deleting your account."
-  - **Format**: Use user's currency (e.g., "₦100 remaining" for NGN, "$50 remaining" for USD, "£30 remaining" for GBP)
+  - **Format**: Use user's currency (e.g., "$50 remaining" for USD, "€50 remaining" for EUR, "£30 remaining" for GBP)
   - **User must**: Withdraw all money first, then delete account
   - **Exception**: If balance is exactly 0 (in user's currency), allow deletion
   - **Rationale**: Prevents users from losing their money, avoids orphaned balances
@@ -2193,13 +2169,13 @@ The GroupFund Security Team
 
 3. **Minimum/Maximum transaction amounts?**
    - ✅ **Recommended defaults** (can be adjusted per currency during implementation):
-     - **Minimum**: Based on payment processor minimums (typically ₦100 NGN, $0.50 USD, £0.30 GBP, €0.50 EUR)
+     - **Minimum**: Based on payment processor minimums (typically $0.50 USD, €0.50 EUR, £0.30 GBP)
      - **Maximum**: No strict maximum (let payment processors handle fraud detection)
      - **Rationale**: Minimum covers processor fees, maximum not needed (processors handle limits)
    - Can be configured per currency in settings
 
 4. **Chargeback handling?**
-   - ✅ Handle via Stripe/Paystack dispute system
+   - ✅ Handle via Stripe dispute system
    - ✅ Monitor and respond to chargebacks
    - ✅ Keep transaction records for evidence
 
