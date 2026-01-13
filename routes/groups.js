@@ -63,20 +63,25 @@ router.post('/create', authenticate, [
     const adminId = req.user.id;
     const groupCurrency = currency.toUpperCase();
 
-    // Validate bank account required for group creation (per-currency)
-    // Check for a bank account in wallet_bank_accounts for the group's currency
-    const bankAccountCheck = await pool.query(
-      `SELECT id FROM wallet_bank_accounts 
-       WHERE user_id = $1 AND currency = $2`,
-      [adminId, groupCurrency]
-    );
+    // Only require bank account for currencies that support withdrawals (USD, EUR, GBP)
+    // For other currencies, bank accounts aren't required since withdrawals aren't supported
+    const withdrawalSupportedCurrencies = ['USD', 'EUR', 'GBP'];
+    if (withdrawalSupportedCurrencies.includes(groupCurrency)) {
+      // Validate bank account required for group creation (per-currency)
+      // Check for a bank account in wallet_bank_accounts for the group's currency
+      const bankAccountCheck = await pool.query(
+        `SELECT id FROM wallet_bank_accounts 
+         WHERE user_id = $1 AND currency = $2`,
+        [adminId, groupCurrency]
+      );
 
-    if (bankAccountCheck.rows.length === 0) {
-      return res.status(400).json({
-        error: `Bank account required for ${groupCurrency} to create groups. Please add a bank account for ${groupCurrency} in your wallet.`,
-        currency: groupCurrency,
-        code: 'BANK_ACCOUNT_REQUIRED',
-      });
+      if (bankAccountCheck.rows.length === 0) {
+        return res.status(400).json({
+          error: `Bank account required for ${groupCurrency} to create groups. Please add a bank account for ${groupCurrency} in your wallet.`,
+          currency: groupCurrency,
+          code: 'BANK_ACCOUNT_REQUIRED',
+        });
+      }
     }
 
     // Validate birthday group: user must have birthday set
@@ -274,21 +279,27 @@ router.post('/join', authenticate, [
     }
 
     const group = groupResult.rows[0];
+    const groupCurrency = group.currency?.toUpperCase();
 
-    // Validate bank account required for group joining (per-currency)
-    // Check for a bank account in wallet_bank_accounts for the group's currency
-    const bankAccountCheck = await pool.query(
-      `SELECT id FROM wallet_bank_accounts 
-       WHERE user_id = $1 AND currency = $2`,
-      [userId, group.currency]
-    );
+    // Only require bank account for currencies that support withdrawals (USD, EUR, GBP)
+    // For other currencies, bank accounts aren't required since withdrawals aren't supported
+    const withdrawalSupportedCurrencies = ['USD', 'EUR', 'GBP'];
+    if (groupCurrency && withdrawalSupportedCurrencies.includes(groupCurrency)) {
+      // Validate bank account required for group joining (per-currency)
+      // Check for a bank account in wallet_bank_accounts for the group's currency
+      const bankAccountCheck = await pool.query(
+        `SELECT id FROM wallet_bank_accounts 
+         WHERE user_id = $1 AND currency = $2`,
+        [userId, groupCurrency]
+      );
 
-    if (bankAccountCheck.rows.length === 0) {
-      return res.status(400).json({
-        error: `Bank account required for ${group.currency} to join groups. Please add a bank account for ${group.currency} in your wallet.`,
-        currency: group.currency,
-        code: 'BANK_ACCOUNT_REQUIRED',
-      });
+      if (bankAccountCheck.rows.length === 0) {
+        return res.status(400).json({
+          error: `Bank account required for ${groupCurrency} to join groups. Please add a bank account for ${groupCurrency} in your wallet.`,
+          currency: groupCurrency,
+          code: 'BANK_ACCOUNT_REQUIRED',
+        });
+      }
     }
 
     // Check birthday requirement for birthday groups

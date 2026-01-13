@@ -356,13 +356,22 @@ router.post('/methods', authenticate, require2FA, contributionLimiter, [
       // Use single currency if provided (backward compatibility)
       currencies = [requestedCurrency.toUpperCase()];
     } else {
-      // Default to USD for Stripe (can be changed to any supported currency)
+      // Default to USD for Stripe
       currencies = ['USD'];
     }
 
+    // Only support USD, EUR, GBP for payment methods
+    const supportedCurrencies = ['USD', 'EUR', 'GBP'];
+    const unsupportedCurrencies = currencies.filter(c => !supportedCurrencies.includes(c));
+    if (unsupportedCurrencies.length > 0) {
+      return res.status(400).json({
+        error: `Payment methods for ${unsupportedCurrencies.join(', ')} are coming soon. Currently supported currencies: USD, EUR, GBP.`,
+        unsupportedCurrencies,
+        supportedCurrencies,
+      });
+    }
+
     // Validate currencies are compatible with provider (Stripe supports most currencies)
-    // Note: Stripe supports NGN for accepting payments from Nigerian customers (if merchant is US-based)
-    // All currencies will use Stripe now
     const invalidCurrencies = [];
     for (const currency of currencies) {
       const currencyProvider = paymentService.selectProvider(currency, null);
@@ -373,7 +382,7 @@ router.post('/methods', authenticate, require2FA, contributionLimiter, [
 
     if (invalidCurrencies.length > 0) {
       return res.status(400).json({
-        error: `The following currencies are not compatible with ${provider}: ${invalidCurrencies.join(', ')}. Stripe supports most international currencies including USD, EUR, GBP, NGN, CAD, AUD, JPY, etc.`,
+        error: `The following currencies are not compatible with ${provider}: ${invalidCurrencies.join(', ')}.`,
         invalidCurrencies,
         provider,
       });
@@ -815,6 +824,17 @@ router.put('/methods/bulk-update-currencies', authenticate, require2FA, contribu
     // Normalize requested currencies
     const requestedCurrenciesUpper = [...new Set(requestedCurrencies.map(c => c.toUpperCase()))];
 
+    // Only support USD, EUR, GBP for payment methods
+    const supportedCurrencies = ['USD', 'EUR', 'GBP'];
+    const unsupportedCurrencies = requestedCurrenciesUpper.filter(c => !supportedCurrencies.includes(c));
+    if (unsupportedCurrencies.length > 0) {
+      return res.status(400).json({
+        error: `Payment methods for ${unsupportedCurrencies.join(', ')} are coming soon. Currently supported currencies: USD, EUR, GBP.`,
+        unsupportedCurrencies,
+        supportedCurrencies,
+      });
+    }
+
     // Validate all currencies are compatible with provider
     const paystackCurrencies = ['NGN', 'KES', 'GHS', 'ZAR'];
     const invalidCurrencies = [];
@@ -1060,11 +1080,21 @@ router.put('/methods/:methodId', authenticate, require2FA, contributionLimiter, 
     if (newCurrency !== undefined) {
       const newCurrencyUpper = newCurrency.toUpperCase();
       
+      // Only support USD, EUR, GBP for payment methods
+      const supportedCurrencies = ['USD', 'EUR', 'GBP'];
+      if (!supportedCurrencies.includes(newCurrencyUpper)) {
+        return res.status(400).json({
+          error: `Payment methods for ${newCurrencyUpper} are coming soon. Currently supported currencies: USD, EUR, GBP.`,
+          requestedCurrency: newCurrencyUpper,
+          supportedCurrencies,
+        });
+      }
+      
       // Check if currency is compatible with provider
       const currencyProvider = paymentService.selectProvider(newCurrencyUpper, null);
       if (currencyProvider !== currentMethod.provider) {
         return res.status(400).json({
-          error: `Currency ${newCurrencyUpper} is not compatible with ${currentMethod.provider}. ${currentMethod.provider === 'paystack' ? 'Paystack supports: NGN, KES, GHS, ZAR' : 'Stripe supports: USD, EUR, GBP, CAD, AUD, JPY, and other international currencies'}.`,
+          error: `Currency ${newCurrencyUpper} is not compatible with ${currentMethod.provider}.`,
           currentProvider: currentMethod.provider,
           requestedCurrency: newCurrencyUpper,
         });

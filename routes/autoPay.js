@@ -240,7 +240,18 @@ router.post('/:groupId/auto-pay/enable', authenticate, require2FA, contributionL
       });
     }
 
-    const groupCurrency = group.currency;
+    const groupCurrency = group.currency.toUpperCase();
+
+    // Only support USD, EUR, GBP for auto-pay
+    const supportedCurrencies = ['USD', 'EUR', 'GBP'];
+    if (!supportedCurrencies.includes(groupCurrency)) {
+      return res.status(400).json({
+        error: `Auto-pay is not supported for ${groupCurrency}. Currently supported currencies: USD, EUR, GBP. Coming soon!`,
+        currency: groupCurrency,
+        supportedCurrencies,
+      });
+    }
+
     const provider = paymentService.selectProvider(groupCurrency, null);
 
     // Validate bank account required for group's currency

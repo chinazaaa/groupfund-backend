@@ -180,6 +180,15 @@ router.post('/request', authenticate, require2FA, contributionLimiter, [
     }
     const currency = requestedCurrency.toUpperCase();
 
+    // Only support USD, EUR, GBP for withdrawals
+    const supportedCurrencies = ['USD', 'EUR', 'GBP'];
+    if (!supportedCurrencies.includes(currency)) {
+      return res.status(400).json({
+        error: `Withdrawals for ${currency} are coming soon. Currently supported currencies: USD, EUR, GBP.`,
+        supportedCurrencies: supportedCurrencies,
+      });
+    }
+
     // Get currency-specific bank account for withdrawal
     const bankAccountResult = await pool.query(
       `SELECT wba.id, wba.account_name, wba.bank_name, wba.account_number, wba.iban, wba.swift_bic,

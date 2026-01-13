@@ -903,24 +903,28 @@ class PaymentService {
    */
   calculateWithdrawalFee(amount, currency, provider = 'stripe') {
     let fee = 0;
-    
+
     // Pass-through provider fees only (no platform fee)
-    if (provider === 'paystack') {
+    if (provider === 'stripe') {
+      // Stripe payout fees:
+      // USD: 1% fee
+      // EUR: Free (0%)
+      // GBP: Free (0%)
+      if (currency === 'USD') {
+        fee = amount * 0.01; // 1% fee for USD
+      } else if (currency === 'EUR' || currency === 'GBP') {
+        fee = 0; // Free for EUR and GBP
+      } else {
+        // Other currencies not supported yet
+        fee = 0;
+      }
+    } else if (provider === 'paystack') {
       // Paystack: ₦10 flat fee per transfer (NGN)
       if (currency === 'NGN') {
         fee = 10; // ₦10
       } else {
         // Other currencies may have different fees
         fee = this.convertToSmallestUnit(10, 'NGN'); // Estimate
-      }
-    } else if (provider === 'stripe') {
-      // Stripe: $0.25 per payout (USD)
-      if (currency === 'USD') {
-        fee = 0.25;
-      } else {
-        // Convert $0.25 to other currencies (approximate)
-        // In production, you'd use actual exchange rates
-        fee = 0.25;
       }
     }
 
