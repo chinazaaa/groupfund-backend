@@ -24,7 +24,7 @@ async function processPendingWithdrawals() {
 
     // Get all pending withdrawals where scheduled_at has passed
     const pendingWithdrawals = await pool.query(
-      `SELECT w.*, u.email, u.name, u.currency as user_currency
+      `SELECT w.*, u.email, u.name
        FROM withdrawals w
        JOIN users u ON w.user_id = u.id
        WHERE w.status = 'pending'
@@ -151,11 +151,12 @@ async function processPendingWithdrawals() {
           // Send email notification
           try {
             if (withdrawal.email) {
-              const currencySymbol = paymentService.formatCurrency(withdrawal.net_amount, currency).replace(/[\d.,]+/g, '');
+              const netAmount = typeof withdrawal.net_amount === 'string' ? parseFloat(withdrawal.net_amount) : Number(withdrawal.net_amount);
+              const currencySymbol = paymentService.formatCurrency(netAmount, currency).replace(/[\d.,]+/g, '');
               await sendWithdrawalCompletedEmail(
                 withdrawal.email,
                 withdrawal.name,
-                withdrawal.net_amount,
+                netAmount,
                 currency,
                 currencySymbol,
                 payoutResult.transferId || payoutResult.payoutId
@@ -228,11 +229,12 @@ async function processPendingWithdrawals() {
           // Send email notification
           try {
             if (withdrawal.email) {
-              const currencySymbol = paymentService.formatCurrency(withdrawal.amount, currency).replace(/[\d.,]+/g, '');
+              const amount = typeof withdrawal.amount === 'string' ? parseFloat(withdrawal.amount) : Number(withdrawal.amount);
+              const currencySymbol = paymentService.formatCurrency(amount, currency).replace(/[\d.,]+/g, '');
               await sendWithdrawalFailedEmail(
                 withdrawal.email,
                 withdrawal.name,
-                withdrawal.amount,
+                amount,
                 currency,
                 currencySymbol,
                 payoutResult.error || 'Payout processing failed'
@@ -302,11 +304,12 @@ async function processPendingWithdrawals() {
           // Send email notification
           try {
             if (withdrawal.email) {
-              const currencySymbol = paymentService.formatCurrency(withdrawal.amount, withdrawal.currency).replace(/[\d.,]+/g, '');
+              const amount = typeof withdrawal.amount === 'string' ? parseFloat(withdrawal.amount) : Number(withdrawal.amount);
+              const currencySymbol = paymentService.formatCurrency(amount, withdrawal.currency).replace(/[\d.,]+/g, '');
               await sendWithdrawalFailedEmail(
                 withdrawal.email,
                 withdrawal.name,
-                withdrawal.amount,
+                amount,
                 withdrawal.currency,
                 currencySymbol,
                 error.message
