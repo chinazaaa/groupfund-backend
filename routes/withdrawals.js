@@ -167,7 +167,9 @@ router.post('/request', authenticate, require2FA, contributionLimiter, [
     // Verify code (2FA code if 2FA enabled, otherwise OTP)
     const isValidCode = await verifyPaymentCode(userId, otp, password_verification_token, 'withdrawal');
     if (!isValidCode) {
-      return res.status(401).json({ error: 'Invalid or expired code' });
+      return res.status(401).json({ 
+        error: 'Invalid or expired code. If using an authenticator app, make sure you\'re using the current code. If the issue persists, try disabling and re-adding 2FA in your security settings.' 
+      });
     }
 
     // Validate currency - MUST be provided (comes from user's groups)
