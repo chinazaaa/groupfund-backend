@@ -364,9 +364,47 @@ router.get('/:userId', authenticate, async (req, res) => {
 
     // If no shared active groups, return empty data
     if (groupsResult.rows.length === 0) {
+      // Get bank accounts for the birthday user (even if no shared groups)
+      const bankAccountsResult = await pool.query(
+        `SELECT id, currency, account_name, bank_name, account_number, iban, swift_bic,
+                routing_number, sort_code, branch_code, branch_address, bank_code, is_default,
+                created_at, updated_at
+         FROM wallet_bank_accounts
+         WHERE user_id = $1
+         ORDER BY currency, is_default DESC`,
+        [userId]
+      );
+
+      // Group bank accounts by currency
+      const bankAccountsByCurrency = {};
+      for (const account of bankAccountsResult.rows) {
+        const currency = account.currency;
+        if (!bankAccountsByCurrency[currency]) {
+          bankAccountsByCurrency[currency] = [];
+        }
+        bankAccountsByCurrency[currency].push({
+          id: account.id,
+          account_name: account.account_name,
+          bank_name: account.bank_name,
+          account_number: account.account_number,
+          iban: account.iban,
+          swift_bic: account.swift_bic,
+          routing_number: account.routing_number,
+          sort_code: account.sort_code,
+          branch_code: account.branch_code,
+          branch_address: account.branch_address,
+          bank_code: account.bank_code,
+          is_default: account.is_default,
+          createdAt: account.created_at,
+          updatedAt: account.updated_at,
+        });
+      }
+
       return res.json({
         user: userResult.rows[0],
-        wallet: null,
+        wallet: {
+          bankAccountsByCurrency,
+        },
         sharedGroups: [],
         contributions: [],
       });
@@ -386,21 +424,47 @@ router.get('/:userId', authenticate, async (req, res) => {
       [userId]
     );
 
-    // Get wallet info for the birthday user (only if payment details exist)
-    const walletResult = await pool.query(
-      'SELECT account_number, bank_name, account_name, iban, swift_bic, routing_number, sort_code, branch_code, branch_address FROM wallets WHERE user_id = $1',
+    // Get bank accounts for the birthday user (grouped by currency)
+    const bankAccountsResult = await pool.query(
+      `SELECT id, currency, account_name, bank_name, account_number, iban, swift_bic,
+              routing_number, sort_code, branch_code, branch_address, bank_code, is_default,
+              created_at, updated_at
+       FROM wallet_bank_accounts
+       WHERE user_id = $1
+       ORDER BY currency, is_default DESC`,
       [userId]
     );
 
-    // Only return wallet if it has all payment details set
-    const wallet = walletResult.rows[0];
-    const walletResponse = wallet && wallet.account_name && wallet.bank_name && wallet.account_number
-      ? wallet
-      : null;
+    // Group bank accounts by currency
+    const bankAccountsByCurrency = {};
+    for (const account of bankAccountsResult.rows) {
+      const currency = account.currency;
+      if (!bankAccountsByCurrency[currency]) {
+        bankAccountsByCurrency[currency] = [];
+      }
+      bankAccountsByCurrency[currency].push({
+        id: account.id,
+        account_name: account.account_name,
+        bank_name: account.bank_name,
+        account_number: account.account_number, // Return full account number (this is for the celebrant's own account)
+        iban: account.iban,
+        swift_bic: account.swift_bic,
+        routing_number: account.routing_number,
+        sort_code: account.sort_code,
+        branch_code: account.branch_code,
+        branch_address: account.branch_address,
+        bank_code: account.bank_code,
+        is_default: account.is_default,
+        createdAt: account.created_at,
+        updatedAt: account.updated_at,
+      });
+    }
 
     res.json({
       user,
-      wallet: walletResponse,
+      wallet: {
+        bankAccountsByCurrency,
+      },
       sharedGroups: groupsResult.rows,
       contributions: contributionsResult.rows,
     });
