@@ -1,8 +1,11 @@
 const express = require('express');
+const bcrypt = require('bcryptjs');
 const { body, validationResult } = require('express-validator');
 const pool = require('../config/database');
 const { requireAdmin } = require('../middleware/admin');
 const { adminLimiter } = require('../middleware/rateLimiter');
+const { generateOTP } = require('../utils/helpers');
+const { sendOTPEmail } = require('../utils/email');
 
 const router = express.Router();
 
@@ -192,6 +195,21 @@ router.get('/users/:userId', async (req, res) => {
       [userId]
     );
 
+    // Get reports count for this user (where they were reported)
+    const reportsCount = await pool.query(
+      `SELECT 
+        COUNT(*) as total,
+        COUNT(*) FILTER (WHERE status = 'pending') as pending,
+        COUNT(*) FILTER (WHERE status = 'reviewed') as reviewed,
+        COUNT(*) FILTER (WHERE status = 'resolved') as resolved,
+        COUNT(*) FILTER (WHERE status = 'dismissed') as dismissed
+       FROM reports
+       WHERE reported_user_id = $1`,
+      [userId]
+    );
+
+    const reportsData = reportsCount.rows[0];
+
     res.json({
       user: {
         ...userResult.rows[0],
@@ -199,6 +217,15 @@ router.get('/users/:userId', async (req, res) => {
       },
       groups: groupsResult.rows,
       transaction_count: parseInt(transactionCount.rows[0].count || 0),
+      reports: {
+        total: parseInt(reportsData.total || 0),
+        by_status: {
+          pending: parseInt(reportsData.pending || 0),
+          reviewed: parseInt(reportsData.reviewed || 0),
+          resolved: parseInt(reportsData.resolved || 0),
+          dismissed: parseInt(reportsData.dismissed || 0),
+        },
+      },
     });
   } catch (error) {
     console.error('Get user by ID error:', error);
@@ -280,9 +307,11 @@ router.get('/groups', async (req, res) => {
       SELECT 
         g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, 
         g.currency, g.status, g.group_type, g.created_at, g.updated_at,
-        u.name as admin_name, u.email as admin_email,
+        g.chat_enabled, g.accepting_requests, g.notes,
+        u.id as admin_id, u.name as admin_name, u.email as admin_email,
         COUNT(gm.id) FILTER (WHERE gm.status = 'active') as active_members,
-        COUNT(gm.id) FILTER (WHERE gm.status = 'pending') as pending_members
+        COUNT(gm.id) FILTER (WHERE gm.status = 'pending') as pending_members,
+        COUNT(gm.id) FILTER (WHERE gm.status = 'active' AND gm.role = 'co-admin') as co_admin_count
       FROM groups g
       LEFT JOIN users u ON g.admin_id = u.id
       LEFT JOIN group_members gm ON g.id = gm.group_id
@@ -316,11 +345,48 @@ router.get('/groups', async (req, res) => {
     const countResult = await pool.query(countQuery, countParams);
     const total = parseInt(countResult.rows[0].total);
 
-    query += ` GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.group_type, g.created_at, g.updated_at, u.name, u.email
+    query += ` GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.group_type, g.created_at, g.updated_at, g.chat_enabled, g.accepting_requests, g.notes, u.id, u.name, u.email
                ORDER BY g.created_at DESC LIMIT $${paramCount++} OFFSET $${paramCount++}`;
     params.push(parseInt(limit), offset);
 
     const result = await pool.query(query, params);
+
+    // Get co-admins for each group
+    const groupIds = result.rows.map(g => g.id);
+    let coAdminsMap = {};
+    
+    if (groupIds.length > 0) {
+      const placeholders = groupIds.map((_, i) => `$${i + 1}`).join(', ');
+      const coAdminsResult = await pool.query(
+        `SELECT 
+          gm.group_id,
+          u.id as user_id,
+          u.name as user_name,
+          u.email as user_email,
+          gm.joined_at
+         FROM group_members gm
+         JOIN users u ON gm.user_id = u.id
+         WHERE gm.group_id IN (${placeholders})
+           AND gm.role = 'co-admin'
+           AND gm.status = 'active'
+         ORDER BY gm.joined_at ASC`,
+        groupIds
+      );
+
+      // Group co-admins by group_id
+      coAdminsMap = coAdminsResult.rows.reduce((acc, row) => {
+        if (!acc[row.group_id]) {
+          acc[row.group_id] = [];
+        }
+        acc[row.group_id].push({
+          id: row.user_id,
+          name: row.user_name,
+          email: row.user_email,
+          joined_at: row.joined_at,
+        });
+        return acc;
+      }, {});
+    }
 
     res.json({
       groups: result.rows.map(group => ({
@@ -329,6 +395,16 @@ router.get('/groups', async (req, res) => {
         max_members: parseInt(group.max_members),
         active_members: parseInt(group.active_members || 0),
         pending_members: parseInt(group.pending_members || 0),
+        chat_enabled: group.chat_enabled !== undefined ? group.chat_enabled : false,
+        accepting_requests: group.accepting_requests !== undefined ? group.accepting_requests : true,
+        notes: group.notes || null,
+        admin: {
+          id: group.admin_id,
+          name: group.admin_name,
+          email: group.admin_email,
+        },
+        co_admins: coAdminsMap[group.id] || [],
+        co_admin_count: parseInt(group.co_admin_count || 0),
       })),
       pagination: {
         page: parseInt(page),
@@ -636,8 +712,10 @@ router.get('/contributions', async (req, res) => {
         group_id, group_name, currency,
         birthday_user_id, birthday_user_name,
         contributor_id, contributor_name,
+        receiver_id, receiver_name,
         transaction_type, contribution_type,
-        subscription_period_start, subscription_period_end
+        subscription_period_start, subscription_period_end,
+        payment_method, payment_provider, provider_transaction_id
       FROM (
         -- Birthday contributions
         SELECT 
@@ -645,10 +723,14 @@ router.get('/contributions', async (req, res) => {
           g.id as group_id, g.name as group_name, g.currency,
           u1.id as birthday_user_id, u1.name as birthday_user_name,
           u2.id as contributor_id, u2.name as contributor_name,
+          u1.id as receiver_id, u1.name as receiver_name, -- Birthday person is the receiver
           t.type as transaction_type,
           'birthday' as contribution_type,
           NULL::DATE as subscription_period_start,
-          NULL::DATE as subscription_period_end
+          NULL::DATE as subscription_period_end,
+          bc.payment_method,
+          bc.payment_provider,
+          bc.provider_transaction_id
         FROM birthday_contributions bc
         LEFT JOIN groups g ON bc.group_id = g.id
         LEFT JOIN users u1 ON bc.birthday_user_id = u1.id
@@ -664,13 +746,18 @@ router.get('/contributions', async (req, res) => {
           g.id as group_id, g.name as group_name, g.currency,
           NULL::UUID as birthday_user_id, NULL::TEXT as birthday_user_name,
           u.id as contributor_id, u.name as contributor_name,
+          admin_user.id as receiver_id, admin_user.name as receiver_name, -- Admin is the receiver
           t.type as transaction_type,
           'subscription' as contribution_type,
           sc.subscription_period_start,
-          sc.subscription_period_end
+          sc.subscription_period_end,
+          sc.payment_method,
+          sc.payment_provider,
+          sc.provider_transaction_id
         FROM subscription_contributions sc
         LEFT JOIN groups g ON sc.group_id = g.id
         LEFT JOIN users u ON sc.contributor_id = u.id
+        LEFT JOIN users admin_user ON g.admin_id = admin_user.id
         LEFT JOIN transactions t ON sc.transaction_id = t.id
         WHERE 1=1 ${subscriptionWhere}
         
@@ -682,13 +769,18 @@ router.get('/contributions', async (req, res) => {
           g.id as group_id, g.name as group_name, g.currency,
           NULL::UUID as birthday_user_id, NULL::TEXT as birthday_user_name,
           u.id as contributor_id, u.name as contributor_name,
+          admin_user.id as receiver_id, admin_user.name as receiver_name, -- Admin is the receiver
           t.type as transaction_type,
           'general' as contribution_type,
           NULL::DATE as subscription_period_start,
-          NULL::DATE as subscription_period_end
+          NULL::DATE as subscription_period_end,
+          gc.payment_method,
+          gc.payment_provider,
+          gc.provider_transaction_id
         FROM general_contributions gc
         LEFT JOIN groups g ON gc.group_id = g.id
         LEFT JOIN users u ON gc.contributor_id = u.id
+        LEFT JOIN users admin_user ON g.admin_id = admin_user.id
         LEFT JOIN transactions t ON gc.transaction_id = t.id
         WHERE 1=1 ${generalWhere}
       ) all_contributions
@@ -754,6 +846,25 @@ router.get('/contributions', async (req, res) => {
       contributions: result.rows.map(contribution => ({
         ...contribution,
         amount: parseFloat(contribution.amount),
+        payment_method: contribution.payment_method || 'manual', // 'auto-debit' or 'manual'
+        payment_provider: contribution.payment_provider || null, // 'stripe', 'paystack', or null
+        provider_transaction_id: contribution.provider_transaction_id || null,
+        payment_info: {
+          method: contribution.payment_method || 'manual',
+          provider: contribution.payment_provider || null,
+          provider_transaction_id: contribution.provider_transaction_id || null,
+          is_auto_pay: contribution.payment_method === 'auto-debit',
+        },
+        // Contributor information
+        contributor: {
+          id: contribution.contributor_id,
+          name: contribution.contributor_name,
+        },
+        // Receiver information (who receives the money)
+        receiver: {
+          id: contribution.receiver_id || contribution.birthday_user_id, // Fallback for birthday
+          name: contribution.receiver_name || contribution.birthday_user_name, // Fallback for birthday
+        },
       })),
       pagination: {
         page: parseInt(page),
@@ -3046,6 +3157,8 @@ router.get('/autopay/attempts', async (req, res) => {
     res.json({
       attempts: result.rows.map(apa => ({
         id: apa.id,
+        user_id: apa.user_id, // Top-level for easy access when processing
+        group_id: apa.group_id, // Top-level for easy access when processing
         user: {
           id: apa.user_id,
           name: apa.user_name,
@@ -3232,6 +3345,8 @@ router.get('/autopay/preferences', async (req, res) => {
     res.json({
       preferences: result.rows.map(upp => ({
         id: upp.id,
+        user_id: upp.user_id, // Top-level for easy access when processing
+        group_id: upp.group_id, // Top-level for easy access when processing
         user: {
           id: upp.user_id,
           name: upp.user_name,
@@ -3300,6 +3415,130 @@ router.post('/payments/process-stripe-payment/:paymentIntentId', async (req, res
   } catch (error) {
     console.error('Error processing Stripe payment:', error);
     res.status(500).json({ error: 'Server error processing payment', message: error.message });
+  }
+});
+
+// Step 1: Request OTP for password change (verify current password first)
+router.post('/change-password/request-otp', [
+  body('currentPassword').notEmpty().withMessage('Current password is required'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { currentPassword } = req.body;
+    const userId = req.user.id;
+
+    // Get current password hash
+    const userResult = await pool.query(
+      'SELECT password_hash, email FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userResult.rows[0];
+
+    // Verify current password
+    const isValidPassword = await bcrypt.compare(currentPassword, user.password_hash);
+
+    if (!isValidPassword) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    // Generate OTP
+    const otp = generateOTP();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    // Store OTP
+    await pool.query(
+      'INSERT INTO otps (user_id, phone, email, code, type, expires_at) VALUES ($1, $2, $3, $4, $5, $6)',
+      [userId, null, user.email, otp, 'change-password', expiresAt]
+    );
+
+    // Send OTP via email
+    await sendOTPEmail(user.email, otp, 'change-password');
+
+    res.json({
+      message: 'OTP sent to your email. Please check your inbox and verify to change your password.',
+      userId: userId,
+    });
+  } catch (error) {
+    console.error('Request password change OTP error:', error);
+    res.status(500).json({ error: 'Server error requesting password change OTP' });
+  }
+});
+
+// Step 2: Change password (verify OTP first)
+router.post('/change-password', [
+  body('currentPassword').notEmpty().withMessage('Current password is required'),
+  body('newPassword').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+  body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { currentPassword, newPassword, otp } = req.body;
+    const userId = req.user.id;
+
+    // Get current password hash
+    const userResult = await pool.query(
+      'SELECT password_hash, email FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userResult.rows[0];
+
+    // Verify current password
+    const isValidPassword = await bcrypt.compare(currentPassword, user.password_hash);
+
+    if (!isValidPassword) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    // Verify OTP
+    const otpResult = await pool.query(
+      `SELECT * FROM otps 
+       WHERE user_id = $1 AND code = $2 AND type = 'change-password' AND is_used = FALSE AND expires_at > NOW()
+       ORDER BY created_at DESC LIMIT 1`,
+      [userId, otp]
+    );
+
+    if (otpResult.rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid or expired OTP' });
+    }
+
+    // Mark OTP as used
+    await pool.query('UPDATE otps SET is_used = TRUE WHERE id = $1', [otpResult.rows[0].id]);
+
+    // Check if new password is same as current password
+    const isSamePassword = await bcrypt.compare(newPassword, user.password_hash);
+    if (isSamePassword) {
+      return res.status(400).json({ error: 'New password must be different from current password' });
+    }
+
+    // Update password
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    await pool.query('UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', [
+      passwordHash,
+      userId,
+    ]);
+
+    res.json({ message: 'Password changed successfully' });
+  } catch (error) {
+    console.error('Change password error:', error);
+    res.status(500).json({ error: 'Server error changing password' });
   }
 });
 
