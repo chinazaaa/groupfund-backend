@@ -1,8 +1,11 @@
 const express = require('express');
+const bcrypt = require('bcryptjs');
 const { body, validationResult } = require('express-validator');
 const pool = require('../config/database');
 const { requireAdmin } = require('../middleware/admin');
 const { adminLimiter } = require('../middleware/rateLimiter');
+const { generateOTP } = require('../utils/helpers');
+const { sendOTPEmail } = require('../utils/email');
 
 const router = express.Router();
 
@@ -3412,6 +3415,130 @@ router.post('/payments/process-stripe-payment/:paymentIntentId', async (req, res
   } catch (error) {
     console.error('Error processing Stripe payment:', error);
     res.status(500).json({ error: 'Server error processing payment', message: error.message });
+  }
+});
+
+// Step 1: Request OTP for password change (verify current password first)
+router.post('/change-password/request-otp', [
+  body('currentPassword').notEmpty().withMessage('Current password is required'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { currentPassword } = req.body;
+    const userId = req.user.id;
+
+    // Get current password hash
+    const userResult = await pool.query(
+      'SELECT password_hash, email FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userResult.rows[0];
+
+    // Verify current password
+    const isValidPassword = await bcrypt.compare(currentPassword, user.password_hash);
+
+    if (!isValidPassword) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    // Generate OTP
+    const otp = generateOTP();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    // Store OTP
+    await pool.query(
+      'INSERT INTO otps (user_id, phone, email, code, type, expires_at) VALUES ($1, $2, $3, $4, $5, $6)',
+      [userId, null, user.email, otp, 'change-password', expiresAt]
+    );
+
+    // Send OTP via email
+    await sendOTPEmail(user.email, otp, 'change-password');
+
+    res.json({
+      message: 'OTP sent to your email. Please check your inbox and verify to change your password.',
+      userId: userId,
+    });
+  } catch (error) {
+    console.error('Request password change OTP error:', error);
+    res.status(500).json({ error: 'Server error requesting password change OTP' });
+  }
+});
+
+// Step 2: Change password (verify OTP first)
+router.post('/change-password', [
+  body('currentPassword').notEmpty().withMessage('Current password is required'),
+  body('newPassword').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+  body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { currentPassword, newPassword, otp } = req.body;
+    const userId = req.user.id;
+
+    // Get current password hash
+    const userResult = await pool.query(
+      'SELECT password_hash, email FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userResult.rows[0];
+
+    // Verify current password
+    const isValidPassword = await bcrypt.compare(currentPassword, user.password_hash);
+
+    if (!isValidPassword) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    // Verify OTP
+    const otpResult = await pool.query(
+      `SELECT * FROM otps 
+       WHERE user_id = $1 AND code = $2 AND type = 'change-password' AND is_used = FALSE AND expires_at > NOW()
+       ORDER BY created_at DESC LIMIT 1`,
+      [userId, otp]
+    );
+
+    if (otpResult.rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid or expired OTP' });
+    }
+
+    // Mark OTP as used
+    await pool.query('UPDATE otps SET is_used = TRUE WHERE id = $1', [otpResult.rows[0].id]);
+
+    // Check if new password is same as current password
+    const isSamePassword = await bcrypt.compare(newPassword, user.password_hash);
+    if (isSamePassword) {
+      return res.status(400).json({ error: 'New password must be different from current password' });
+    }
+
+    // Update password
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    await pool.query('UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', [
+      passwordHash,
+      userId,
+    ]);
+
+    res.json({ message: 'Password changed successfully' });
+  } catch (error) {
+    console.error('Change password error:', error);
+    res.status(500).json({ error: 'Server error changing password' });
   }
 });
 

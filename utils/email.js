@@ -8,9 +8,14 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 // Send OTP email using Resend
 const sendOTPEmail = async (email, otp, type = 'verification') => {
   try {
-    const subject = type === 'forgot-password' 
-      ? 'Password Reset OTP - GroupFund' 
-      : 'Email Verification OTP - GroupFund';
+    let subject;
+    if (type === 'forgot-password') {
+      subject = 'Password Reset OTP - GroupFund';
+    } else if (type === 'change-password') {
+      subject = 'Password Change OTP - GroupFund';
+    } else {
+      subject = 'Email Verification OTP - GroupFund';
+    }
 
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
