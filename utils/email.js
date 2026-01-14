@@ -1,5 +1,6 @@
 const { Resend } = require('resend');
 require('dotenv').config();
+const { shouldSendEmail } = require('./emailHelpers');
 
 // Initialize Resend
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -251,6 +252,12 @@ const sendBirthdayEmail = async (email, name) => {
 // Send birthday reminder email (7 days before, 1 day before, or same day)
 const sendBirthdayReminderEmail = async (email, userName, memberName, daysUntil, contributionAmount, currency, groupName) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'birthday_reminder');
+    if (!canSend) {
+      console.log(`Birthday reminder email skipped for ${email} (preference disabled)`);
+      return true; // Return true to indicate "processed" even though not sent
+    }
     let subject = '';
     let titleText = '';
     let messageText = '';
@@ -352,6 +359,12 @@ const sendBirthdayReminderEmail = async (email, userName, memberName, daysUntil,
 // groupsWithBirthdays: array of { groupName, currency, birthdays: [{ name, hasPaid, contributionAmount, currency }] }
 const sendComprehensiveBirthdayReminderEmail = async (email, userName, daysUntil, groupsWithBirthdays) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'comprehensive_birthday_reminder');
+    if (!canSend) {
+      console.log(`Comprehensive birthday reminder email skipped for ${email} (preference disabled)`);
+      return true;
+    }
     const { formatAmount } = require('./currency');
     
     let subject = '';
@@ -482,6 +495,12 @@ const sendComprehensiveBirthdayReminderEmail = async (email, userName, daysUntil
 //   - general: { groupName, currency, contributionAmount, deadlineDate }
 const sendComprehensiveReminderEmail = async (email, userName, daysUntil, groups) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'comprehensive_reminder');
+    if (!canSend) {
+      console.log(`Comprehensive reminder email skipped for ${email} (preference disabled)`);
+      return true;
+    }
     const { formatAmount } = require('./currency');
     
     // Separate groups by type
@@ -741,6 +760,12 @@ const sendComprehensiveReminderEmail = async (email, userName, daysUntil, groups
 // generalGroups: array of { groupName, currency, contributionAmount, deadline }
 const sendMonthlyNewsletter = async (email, userName, userId, monthName, groupsWithBirthdays = [], subscriptionGroups = [], generalGroups = []) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'monthly_newsletter');
+    if (!canSend) {
+      console.log(`Monthly newsletter skipped for ${email} (preference disabled)`);
+      return true;
+    }
     const { formatAmount } = require('./currency');
     
     // Determine newsletter type and build subject/title
@@ -1129,6 +1154,12 @@ const sendBetaInvitationEmail = async (email, firstName) => {
 // overdueContributions: array of { groupName, currency, contributionAmount, birthdayUserName, birthdayDate }
 const sendOverdueContributionEmail = async (email, userName, daysOverdue, overdueContributions) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'overdue_contribution');
+    if (!canSend) {
+      console.log(`Overdue contribution email skipped for ${email} (preference disabled)`);
+      return true;
+    }
     const { formatAmount } = require('./currency');
     
     let subject = '';
@@ -1263,6 +1294,12 @@ const sendOverdueContributionEmail = async (email, userName, daysOverdue, overdu
 // overdueMembers: array of { memberName, memberEmail, contributionAmount, currency, eventName, deadlineDate, daysOverdue, groupType, subscriptionPlatform, subscriptionFrequency }
 const sendAdminOverdueNotificationEmail = async (adminEmail, adminName, groupName, groupType, daysOverdue, overdueMembers) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(adminEmail, 'admin_overdue_notification');
+    if (!canSend) {
+      console.log(`Admin overdue notification email skipped for ${adminEmail} (preference disabled)`);
+      return true;
+    }
     const { formatAmount } = require('./currency');
     
     let subject = '';
@@ -1404,6 +1441,12 @@ const sendAdminOverdueNotificationEmail = async (adminEmail, adminName, groupNam
 // upcomingMembers: array of { memberName, memberEmail, contributionAmount, currency, eventName, deadlineDate, daysUntil, groupType, subscriptionPlatform, subscriptionFrequency, isAdmin }
 const sendAdminUpcomingDeadlineEmail = async (adminEmail, adminName, groupName, groupType, daysUntil, upcomingMembers) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(adminEmail, 'admin_upcoming_deadline');
+    if (!canSend) {
+      console.log(`Admin upcoming deadline email skipped for ${adminEmail} (preference disabled)`);
+      return true;
+    }
     const { formatAmount } = require('./currency');
     
     let subject = '';
@@ -1539,6 +1582,12 @@ const sendAdminUpcomingDeadlineEmail = async (adminEmail, adminName, groupName, 
 // Send email notification when group admin updates contribution amount
 const sendContributionAmountUpdateEmail = async (email, memberName, groupName, oldAmount, newAmount, currency, adminName) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'contribution_amount_update');
+    if (!canSend) {
+      console.log(`Contribution amount update email skipped for ${email} (preference disabled)`);
+      return true;
+    }
     const { formatAmount } = require('./currency');
     
     const subject = `Contribution Amount Updated - ${groupName}`;
@@ -1633,6 +1682,12 @@ const sendContributionAmountUpdateEmail = async (email, memberName, groupName, o
 // Send email notification when group admin updates deadline
 const sendDeadlineUpdateEmail = async (email, memberName, groupName, groupType, oldDeadline, newDeadline, subscriptionFrequency, adminName) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'deadline_update');
+    if (!canSend) {
+      console.log(`Deadline update email skipped for ${email} (preference disabled)`);
+      return true;
+    }
     const subject = `Deadline Updated - ${groupName}`;
     
     let oldDeadlineFormatted = '';
@@ -1753,6 +1808,12 @@ const sendDeadlineUpdateEmail = async (email, memberName, groupName, groupType, 
 // Send email notification when group admin updates max members for birthday groups
 const sendMaxMembersUpdateEmail = async (email, memberName, groupName, oldMaxMembers, newMaxMembers, adminName) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'max_members_update');
+    if (!canSend) {
+      console.log(`Max members update email skipped for ${email} (preference disabled)`);
+      return true;
+    }
     const subject = `Max Members Updated - ${groupName}`;
     const isIncrease = newMaxMembers > oldMaxMembers;
     const changeType = isIncrease ? 'increased' : 'decreased';
@@ -1869,6 +1930,12 @@ const sendMonthlyBirthdayNewsletter = async (email, userName, userId, monthName,
 // Send email to admin when a member leaves or is removed from a subscription group
 const sendMemberLeftSubscriptionEmail = async (adminEmail, adminName, memberName, groupName, subscriptionPlatform, isRemoved = false) => {
   try {
+    // Check email preference
+    const canSend = await shouldSendEmail(adminEmail, 'member_left_subscription');
+    if (!canSend) {
+      console.log(`Member left subscription email skipped for ${adminEmail} (preference disabled)`);
+      return true;
+    }
     const action = isRemoved ? 'removed from' : 'left';
     const subject = `Member ${action.charAt(0).toUpperCase() + action.slice(1)} Subscription Group - ${groupName}`;
     const platformName = subscriptionPlatform || 'the subscription';
@@ -2109,6 +2176,538 @@ const sendCustomEmail = async (email, subject, html) => {
   }
 };
 
+// Send payment success notification email to recipient
+const sendPaymentSuccessEmail = async (email, name, amount, currency, contributorName, groupName, currencySymbol) => {
+  try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'payment_success');
+    if (!canSend) {
+      console.log(`Payment success email skipped for ${email} (preference disabled)`);
+      return true; // Return true to indicate "processed" even though not sent
+    }
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">🎂 GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1a1a1a; font-size: 24px; margin-top: 0;">Payment Received! 💰</h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${name},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            You've received a contribution from <strong>${contributorName}</strong> in the group <strong>${groupName}</strong>.
+          </p>
+          <div style="background: white; padding: 30px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981; text-align: center;">
+            <p style="color: #6b7280; font-size: 14px; margin: 0 0 10px 0;">Amount received:</p>
+            <h1 style="color: #10b981; font-size: 36px; margin: 0; font-weight: bold;">${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</h1>
+            <p style="color: #9ca3af; font-size: 12px; margin-top: 10px;">${currency}</p>
+          </div>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            The funds have been credited to your wallet. You can withdraw them anytime from your wallet.
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Best regards,<br>
+            <strong>The GroupFund Team</strong>
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject: `Payment Received: ${currencySymbol}${amount} from ${contributorName}`,
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error:', error);
+      return false;
+    }
+
+    console.log('Payment success email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending payment success email:', error);
+    return false;
+  }
+};
+
+// Send auto-pay disabled notification email
+const sendAutoPayDisabledEmail = async (email, name, groupName, reason) => {
+  try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'autopay_disabled');
+    if (!canSend) {
+      console.log(`Auto-pay disabled email skipped for ${email} (preference disabled)`);
+      return true; // Return true to indicate "processed" even though not sent
+    }
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">🎂 GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1a1a1a; font-size: 24px; margin-top: 0;">Auto-Pay Disabled</h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${name},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Your auto-pay has been disabled for the group <strong>${groupName}</strong>.
+          </p>
+          <div style="background: #fef3c7; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f59e0b;">
+            <p style="color: #92400e; font-size: 14px; margin: 0;">
+              <strong>Reason:</strong> ${reason || 'Payment failed after multiple attempts'}
+            </p>
+          </div>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            You can re-enable auto-pay after fixing the issue (update your payment method, etc.) in the app settings.
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Best regards,<br>
+            <strong>The GroupFund Team</strong>
+          </p>
+          <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            If you have questions or need assistance, please contact support at ${process.env.SECURITY_EMAIL || 'support@groupfund.app'}
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject: `Auto-Pay Disabled: ${groupName}`,
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error:', error);
+      return false;
+    }
+
+    console.log('Auto-pay disabled email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending auto-pay disabled email:', error);
+    return false;
+  }
+};
+
+// Send security email notification for critical payment actions
+// NOTE: Security emails are always sent - they cannot be disabled for security reasons
+const sendSecurityEmail = async (email, name, action, details, metadata = {}) => {
+  try {
+    const actionTitles = {
+      'enable_auto_pay': 'Auto-Pay Enabled',
+      'disable_auto_pay': 'Auto-Pay Disabled',
+      'update_auto_pay_preferences': 'Auto-Pay Preferences Updated',
+      'add_payment_method': 'Payment Method Added',
+      'delete_payment_method': 'Payment Method Removed',
+    };
+
+    const actionTitle = actionTitles[action] || 'Account Activity';
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">🎂 GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1a1a1a; font-size: 24px; margin-top: 0;">Security Alert: ${actionTitle}</h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${name},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            We're writing to confirm that ${details} was performed on your GroupFund account.
+          </p>
+          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
+            <p style="color: #374151; font-size: 14px; margin: 5px 0;"><strong>Date:</strong> ${new Date().toLocaleString('en-US', { dateStyle: 'long', timeStyle: 'short' })}</p>
+            <p style="color: #374151; font-size: 14px; margin: 5px 0;"><strong>Action:</strong> ${actionTitle}</p>
+            ${metadata.groupName ? `<p style="color: #374151; font-size: 14px; margin: 5px 0;"><strong>Group:</strong> ${metadata.groupName}</p>` : ''}
+            ${metadata.paymentTiming ? `<p style="color: #374151; font-size: 14px; margin: 5px 0;"><strong>Payment Timing:</strong> ${metadata.paymentTiming === '1_day_before' ? '1 Day Before' : 'Same Day'}</p>` : ''}
+          </div>
+          <div style="background: #fef3c7; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f59e0b;">
+            <p style="color: #92400e; font-size: 14px; margin: 0; font-weight: bold;">
+              ⚠️ Security Warning
+            </p>
+            <p style="color: #92400e; font-size: 14px; margin: 10px 0 0 0;">
+              If you didn't make this change, please contact us immediately at <strong>${process.env.SECURITY_EMAIL || 'security@groupfund.app'}</strong> to secure your account. We take account security seriously and will investigate any unauthorized activity.
+            </p>
+          </div>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            You can review your account security settings in the app.
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Best regards,<br>
+            <strong>The GroupFund Security Team</strong>
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject: `Security Alert: ${actionTitle} on Your GroupFund Account`,
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error:', error);
+      return false;
+    }
+
+    console.log('Security email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending security email:', error);
+    return false;
+  }
+};
+
+// Send payment failure notification email
+const sendPaymentFailureEmail = async (email, name, amount, currency, groupName, errorMessage, retryCount, currencySymbol) => {
+  try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'payment_failure');
+    if (!canSend) {
+      console.log(`Payment failure email skipped for ${email} (preference disabled)`);
+      return true; // Return true to indicate "processed" even though not sent
+    }
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">🎂 GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1a1a1a; font-size: 24px; margin-top: 0;">Payment Failed</h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${name},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Your automatic payment for <strong>${groupName}</strong> failed.
+          </p>
+          <div style="background: #fee2e2; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ef4444;">
+            <p style="color: #991b1b; font-size: 14px; margin: 0 0 10px 0;"><strong>Amount:</strong> ${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+            <p style="color: #991b1b; font-size: 14px; margin: 0 0 10px 0;"><strong>Reason:</strong> ${errorMessage || 'Payment declined'}</p>
+            ${retryCount > 0 ? `<p style="color: #991b1b; font-size: 14px; margin: 0;">We'll retry this payment automatically (Attempt ${retryCount + 1}/2)</p>` : ''}
+          </div>
+          ${retryCount >= 1 ? '<p style="color: #dc2626; font-size: 16px; line-height: 1.7; font-weight: bold;">After 2 failed attempts, auto-pay will be disabled. Please update your payment method to continue using auto-pay.</p>' : ''}
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Please check your payment method and ensure there are sufficient funds, or update your card details in the app.
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Best regards,<br>
+            <strong>The GroupFund Team</strong>
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject: `Payment Failed: ${groupName}`,
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error:', error);
+      return false;
+    }
+
+    console.log('Payment failure email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending payment failure email:', error);
+    return false;
+  }
+};
+
+// Send withdrawal request email
+const sendWithdrawalRequestEmail = async (email, name, amount, currency, currencySymbol, scheduledAt, accountNumber, fee = null, netAmount = null) => {
+  try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'withdrawal_request');
+    if (!canSend) {
+      console.log(`Withdrawal request email skipped for ${email} (preference disabled)`);
+      return true;
+    }
+    const scheduledDate = new Date(scheduledAt).toLocaleString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+    // Mask account number (show last 4 digits)
+    const maskedAccount = accountNumber ? `ending with ${accountNumber.slice(-4)}` : '';
+
+    // Build amount display - show breakdown if fee information is available
+    let amountDisplay = '';
+    if (fee !== null && netAmount !== null && fee > 0) {
+      // Show breakdown: Requested amount - Fee = Net amount (what they'll receive)
+      amountDisplay = `
+            <p style="color: #374151; font-size: 16px; margin: 0 0 8px 0;"><strong>Requested Amount:</strong> ${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>
+            <p style="color: #6b7280; font-size: 14px; margin: 0 0 8px 0; padding-left: 20px;">Fee (${currency === 'USD' ? '1%' : '0%'}): - ${currencySymbol}${fee.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>
+            <p style="color: #374151; font-size: 16px; margin: 10px 0 0 0; padding-top: 8px; border-top: 1px solid #e5e7eb;"><strong>Amount You'll Receive:</strong> ${currencySymbol}${netAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>
+      `;
+    } else {
+      // Just show the requested amount (for backward compatibility or when fee info isn't available)
+      amountDisplay = `<p style="color: #374151; font-size: 16px; margin: 0 0 10px 0;"><strong>Amount:</strong> ${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>`;
+    }
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">🎂 GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1a1a1a; font-size: 24px; margin-top: 0;">Withdrawal Request Received</h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${name},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Your withdrawal request has been received and is being processed.
+          </p>
+          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
+            ${amountDisplay}
+            ${accountNumber ? `<p style="color: #374151; font-size: 16px; margin: 15px 0 0 0; padding-top: 15px; border-top: 1px solid #e5e7eb;"><strong>Account:</strong> ${maskedAccount}</p>` : ''}
+            <p style="color: #374151; font-size: 16px; margin: 15px 0 0 0; padding-top: 15px; border-top: 1px solid #e5e7eb;"><strong>Scheduled for:</strong> ${scheduledDate}</p>
+          </div>
+          <div style="background: #fef3c7; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f59e0b;">
+            <p style="color: #92400e; font-size: 14px; margin: 0; font-weight: bold;">⏰ 24-Hour Security Hold</p>
+            <p style="color: #92400e; font-size: 14px; margin: 10px 0 0 0;">
+              Your funds are held for 24 hours as a security measure. This helps us detect and prevent fraudulent withdrawals.
+            </p>
+          </div>
+          <div style="background: #fee2e2; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ef4444;">
+            <p style="color: #991b1b; font-size: 14px; margin: 0; font-weight: bold;">🔒 Security Alert</p>
+            <p style="color: #991b1b; font-size: 14px; margin: 10px 0 0 0;">
+              If you didn't make this withdrawal, please contact us immediately at <strong>${process.env.SECURITY_EMAIL || 'security@groupfund.app'}</strong>
+            </p>
+          </div>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Best regards,<br>
+            <strong>The GroupFund Team</strong>
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject: 'Withdrawal Request Received - GroupFund',
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error:', error);
+      return false;
+    }
+
+    console.log('Withdrawal request email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending withdrawal request email:', error);
+    return false;
+  }
+};
+
+// Send withdrawal completed email
+const sendWithdrawalCompletedEmail = async (email, name, amount, currency, currencySymbol, transactionId, requestedAmount = null, fee = null) => {
+  try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'withdrawal_completed');
+    if (!canSend) {
+      console.log(`Withdrawal completed email skipped for ${email} (preference disabled)`);
+      return true;
+    }
+    
+    // Build amount display - show breakdown if fee information is available
+    let amountDisplay = '';
+    if (requestedAmount !== null && fee !== null && fee > 0) {
+      // Show breakdown: Requested amount - Fee = Net amount
+      amountDisplay = `
+            <p style="color: #374151; font-size: 16px; margin: 0 0 8px 0;"><strong>Requested Amount:</strong> ${currencySymbol}${requestedAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>
+            <p style="color: #6b7280; font-size: 14px; margin: 0 0 8px 0; padding-left: 20px;">Fee (${currency === 'USD' ? '1%' : '0%'}): - ${currencySymbol}${fee.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>
+            <p style="color: #374151; font-size: 16px; margin: 10px 0 0 0; padding-top: 8px; border-top: 1px solid #e5e7eb;"><strong>Amount Received:</strong> ${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>
+      `;
+    } else {
+      // Just show the amount received (for backward compatibility or when fee info isn't available)
+      amountDisplay = `<p style="color: #374151; font-size: 16px; margin: 0 0 10px 0;"><strong>Amount:</strong> ${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>`;
+    }
+    
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">🎂 GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1a1a1a; font-size: 24px; margin-top: 0;">✅ Withdrawal Completed</h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${name},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Your withdrawal has been processed successfully and funds have been sent to your bank account.
+          </p>
+          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;">
+            ${amountDisplay}
+            <p style="color: #374151; font-size: 16px; margin: 15px 0 0 0; padding-top: 15px; border-top: 1px solid #e5e7eb;"><strong>Transaction ID:</strong> ${transactionId}</p>
+          </div>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Funds should appear in your bank account within 1-3 business days, depending on your bank's processing time.
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Best regards,<br>
+            <strong>The GroupFund Team</strong>
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject: 'Withdrawal Completed - GroupFund',
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error:', error);
+      return false;
+    }
+
+    console.log('Withdrawal completed email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending withdrawal completed email:', error);
+    return false;
+  }
+};
+
+// Send withdrawal failed email
+const sendWithdrawalFailedEmail = async (email, name, amount, currency, currencySymbol, errorMessage) => {
+  try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'withdrawal_failed');
+    if (!canSend) {
+      console.log(`Withdrawal failed email skipped for ${email} (preference disabled)`);
+      return true;
+    }
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">🎂 GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1a1a1a; font-size: 24px; margin-top: 0;">❌ Withdrawal Failed</h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${name},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Unfortunately, your withdrawal request could not be processed.
+          </p>
+          <div style="background: #fee2e2; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ef4444;">
+            <p style="color: #991b1b; font-size: 16px; margin: 0 0 10px 0;"><strong>Amount:</strong> ${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}</p>
+          </div>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Unfortunately, an error occurred while processing your withdrawal. Your funds have been safely returned to your wallet. Please try again, or contact support if the issue persists.
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Best regards,<br>
+            <strong>The GroupFund Team</strong>
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject: 'Withdrawal Failed - GroupFund',
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error:', error);
+      return false;
+    }
+
+    console.log('Withdrawal failed email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending withdrawal failed email:', error);
+    return false;
+  }
+};
+
+// Send auto-pay success email to contributor
+const sendAutoPaySuccessEmail = async (email, name, amount, currency, groupName, currencySymbol) => {
+  try {
+    // Check email preference
+    const canSend = await shouldSendEmail(email, 'autopay_success');
+    if (!canSend) {
+      console.log(`Auto-pay success email skipped for ${email} (preference disabled)`);
+      return true; // Return true to indicate "processed" even though not sent
+    }
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">🎂 GroupFund</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1a1a1a; font-size: 24px; margin-top: 0;">Auto-Pay Successful! ✅</h2>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Hi ${name},
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Your automatic payment for the group <strong>${groupName}</strong> has been processed successfully.
+          </p>
+          <div style="background: white; padding: 30px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981; text-align: center;">
+            <p style="color: #6b7280; font-size: 14px; margin: 0 0 10px 0;">Amount paid:</p>
+            <h1 style="color: #10b981; font-size: 36px; margin: 0; font-weight: bold;">${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</h1>
+            <p style="color: #9ca3af; font-size: 12px; margin-top: 10px;">${currency}</p>
+          </div>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7;">
+            Your payment has been automatically processed and confirmed. The recipient has been notified and the funds have been credited to their wallet.
+          </p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.7; margin-top: 30px;">
+            Best regards,<br>
+            <strong>The GroupFund Team</strong>
+          </p>
+          <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            This is an automated notification email. You can manage your auto-pay settings in the app.
+          </p>
+        </div>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'GroupFund <onboarding@resend.dev>',
+      to: email,
+      subject: `Auto-Pay Successful: ${currencySymbol}${amount} for ${groupName}`,
+      html,
+    });
+
+    if (error) {
+      console.error('Resend error:', error);
+      return false;
+    }
+
+    console.log('Auto-pay success email sent successfully:', data);
+    return true;
+  } catch (error) {
+    console.error('Error sending auto-pay success email:', error);
+    return false;
+  }
+};
+
 module.exports = {
   sendOTPEmail,
   sendOTPSMS,
@@ -2132,4 +2731,12 @@ module.exports = {
   sendMerryChristmasEmail,
   sendHappyNewYearEmail,
   sendCustomEmail,
+  sendPaymentSuccessEmail,
+  sendAutoPaySuccessEmail,
+  sendAutoPayDisabledEmail,
+  sendPaymentFailureEmail,
+  sendSecurityEmail,
+  sendWithdrawalRequestEmail,
+  sendWithdrawalCompletedEmail,
+  sendWithdrawalFailedEmail,
 };

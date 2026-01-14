@@ -8,7 +8,10 @@
     "dev": "nodemon server.js",
     "migrate": "node migrations/runMigrations.js",
     "migrate:all": "node migrations/runAllMigrations.js",
-    "birthday-reminders": "node jobs/contributionsReminders.js"
+    "birthday-reminders": "node jobs/contributionsReminders.js",
+    "process-payments": "node jobs/autoPaymentProcessor.js",
+    "retry-payments": "node jobs/paymentRetryProcessor.js",
+    "process-withdrawals": "node jobs/withdrawalProcessor.js"
   },
   "keywords": [
     "birthday",
@@ -27,8 +30,12 @@
     "express-validator": "^7.0.1",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
+    "paystack": "^2.0.1",
     "pg": "^8.11.3",
-    "resend": "^6.6.0"
+    "qrcode": "^1.5.4",
+    "resend": "^6.6.0",
+    "speakeasy": "^2.0.0",
+    "stripe": "^20.1.2"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

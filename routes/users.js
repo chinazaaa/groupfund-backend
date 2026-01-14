@@ -2,6 +2,19 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const pool = require('../config/database');
 const { authenticate } = require('../middleware/auth');
+const { require2FA } = require('../middleware/require2FA');
+const { otpLimiter, contributionLimiter } = require('../middleware/rateLimiter');
+const {
+  verifyPassword,
+  generatePasswordVerificationToken,
+  verifyPasswordVerificationToken,
+  storePasswordVerificationToken,
+  requestPaymentOTP,
+  verifyPaymentOTP,
+  verifyPaymentCode,
+  logPaymentAction,
+} = require('../utils/paymentHelpers');
+const { sendSecurityEmail } = require('../utils/email');
 
 const router = express.Router();
 
@@ -412,29 +425,323 @@ router.put('/profile', authenticate, [
   }
 });
 
-// Get wallet balance
+// Get wallet balances (all currencies)
 router.get('/wallet', authenticate, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const result = await pool.query(
-      'SELECT balance, account_number, bank_name, account_name, iban, swift_bic, routing_number, sort_code, branch_code, branch_address FROM wallets WHERE user_id = $1',
+    // Get wallet details (bank account info)
+    const walletResult = await pool.query(
+      'SELECT account_number, bank_name, account_name, iban, swift_bic, routing_number, sort_code, branch_code, branch_address FROM wallets WHERE user_id = $1',
       [userId]
     );
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Wallet not found' });
+    // Get all currency balances
+    const { getAllCurrencyBalances } = require('../utils/walletHelpers');
+    const balances = await getAllCurrencyBalances(userId);
+
+    // Get bank accounts per currency
+    const bankAccountsResult = await pool.query(
+      `SELECT id, currency, account_name, bank_name, account_number, iban, swift_bic,
+              routing_number, sort_code, branch_code, branch_address, bank_code, is_default,
+              created_at, updated_at
+       FROM wallet_bank_accounts
+       WHERE user_id = $1
+       ORDER BY currency, is_default DESC`,
+      [userId]
+    );
+
+    // Group bank accounts by currency
+    const bankAccountsByCurrency = {};
+    for (const account of bankAccountsResult.rows) {
+      const currency = account.currency;
+      if (!bankAccountsByCurrency[currency]) {
+        bankAccountsByCurrency[currency] = [];
+      }
+      bankAccountsByCurrency[currency].push({
+        id: account.id,
+        account_name: account.account_name,
+        bank_name: account.bank_name,
+        account_number: account.account_number ? `****${account.account_number.slice(-4)}` : null, // Mask for security
+        iban: account.iban,
+        swift_bic: account.swift_bic,
+        routing_number: account.routing_number,
+        sort_code: account.sort_code,
+        branch_code: account.branch_code,
+        branch_address: account.branch_address,
+        bank_code: account.bank_code,
+        is_default: account.is_default,
+        createdAt: account.created_at,
+        updatedAt: account.updated_at,
+      });
     }
 
-    res.json(result.rows[0]);
+    // Merge balances with bank accounts per currency
+    const balancesWithAccounts = balances.map(balance => ({
+      ...balance,
+      bankAccount: bankAccountsByCurrency[balance.currency]?.[0] || null, // Default account for this currency
+      hasBankAccount: !!bankAccountsByCurrency[balance.currency]?.length,
+      bankAccountsCount: bankAccountsByCurrency[balance.currency]?.length || 0,
+    }));
+
+    // Always return bank accounts, even if no balances exist
+    // This allows users to see their bank accounts and create groups before receiving contributions
+    res.json({
+      wallet: {
+        balances: balancesWithAccounts, // Array of { currency, balance, updatedAt, bankAccount, hasBankAccount }
+        totalBalances: balances.length, // Number of currencies with balances
+        bankAccountsByCurrency, // All bank accounts grouped by currency (always included, even if empty)
+      }
+    });
   } catch (error) {
     console.error('Get wallet error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Update wallet/payment details
-router.put('/wallet', authenticate, [
+// Get wallet transaction history (credits and debits/withdrawals)
+router.get('/wallet/history', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { currency, type, limit = 50, offset = 0 } = req.query;
+
+    // Build query to get wallet transactions (credits that entered wallet and withdrawals)
+    // Only include transactions that actually affected wallet_balances:
+    // 1. Credits with payment_provider (created via creditWallet - money entered wallet)
+    // 2. Withdrawals (money left wallet)
+    let query = `
+      SELECT 
+        t.id, t.type, t.amount, t.currency, t.description, t.status, t.created_at,
+        t.reference, t.withdrawal_fee, t.payment_provider, t.payment_method_id,
+        t.platform_fee, t.processor_fee, t.gross_amount, t.net_amount,
+        g.id as group_id, g.name as group_name,
+        w.id as withdrawal_id, w.net_amount as withdrawal_net_amount, w.scheduled_at, w.processed_at
+      FROM transactions t
+      LEFT JOIN groups g ON t.group_id = g.id
+      LEFT JOIN withdrawals w ON w.id::text = t.reference::text AND t.type = 'withdrawal'
+      WHERE t.user_id = $1
+        AND (
+          (t.type = 'credit' AND t.payment_provider IS NOT NULL) -- Credits that entered wallet via creditWallet
+          OR t.type = 'withdrawal' -- Withdrawals from wallet
+        )
+    `;
+    const params = [userId];
+    let paramCount = 2;
+
+    // Filter by currency if provided
+    if (currency) {
+      query += ` AND t.currency = $${paramCount++}`;
+      params.push(currency.toUpperCase());
+    }
+
+    // Filter by type if provided (credit or withdrawal)
+    if (type) {
+      if (type === 'credit') {
+        query += ` AND t.type = 'credit' AND t.payment_provider IS NOT NULL`;
+      } else if (type === 'withdrawal') {
+        query += ` AND t.type = $${paramCount++}`;
+        params.push(type);
+      }
+      // Note: 'debit' type is not used for wallet history (only withdrawals)
+    }
+
+    query += ` ORDER BY t.created_at DESC LIMIT $${paramCount++} OFFSET $${paramCount++}`;
+    params.push(parseInt(limit), parseInt(offset));
+
+    const result = await pool.query(query, params);
+
+    // Format transactions
+    const transactions = result.rows.map(row => {
+      const transaction = {
+        id: row.id,
+        type: row.type,
+        amount: parseFloat(row.amount),
+        currency: row.currency || 'NGN',
+        description: row.description,
+        status: row.status,
+        createdAt: row.created_at,
+        reference: row.reference,
+        paymentProvider: row.payment_provider,
+        paymentMethodId: row.payment_method_id,
+      };
+
+      // Add group info if available
+      if (row.group_id) {
+        transaction.group = {
+          id: row.group_id,
+          name: row.group_name,
+        };
+      }
+
+      // Add withdrawal-specific info
+      if (row.type === 'withdrawal') {
+        transaction.withdrawalFee = row.withdrawal_fee ? parseFloat(row.withdrawal_fee) : 0;
+        transaction.netAmount = row.withdrawal_net_amount ? parseFloat(row.withdrawal_net_amount) : parseFloat(row.amount) - (row.withdrawal_fee ? parseFloat(row.withdrawal_fee) : 0);
+        transaction.withdrawalId = row.withdrawal_id;
+        transaction.scheduledAt = row.scheduled_at;
+        transaction.processedAt = row.processed_at;
+      }
+
+      // Add fee info for credits (if available)
+      if (row.type === 'credit') {
+        if (row.platform_fee !== null) {
+          transaction.fees = {
+            platformFee: parseFloat(row.platform_fee || 0),
+            processorFee: parseFloat(row.processor_fee || 0),
+            grossAmount: row.gross_amount ? parseFloat(row.gross_amount) : parseFloat(row.amount),
+            netAmount: row.net_amount ? parseFloat(row.net_amount) : parseFloat(row.amount),
+          };
+        }
+      }
+
+      return transaction;
+    });
+
+    // Get total count
+    let countQuery = `
+      SELECT COUNT(*) as total
+      FROM transactions
+      WHERE user_id = $1
+        AND (
+          (type = 'credit' AND payment_provider IS NOT NULL)
+          OR type = 'withdrawal'
+        )
+    `;
+    const countParams = [userId];
+    let countParamCount = 2;
+
+    if (currency) {
+      countQuery += ` AND currency = $${countParamCount++}`;
+      countParams.push(currency.toUpperCase());
+    }
+
+    if (type) {
+      if (type === 'credit') {
+        countQuery += ` AND type = 'credit' AND payment_provider IS NOT NULL`;
+      } else if (type === 'withdrawal') {
+        countQuery += ` AND type = $${countParamCount++}`;
+        countParams.push(type);
+      }
+    }
+
+    const countResult = await pool.query(countQuery, countParams);
+
+    res.json({
+      transactions,
+      total: parseInt(countResult.rows[0].total),
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+    });
+  } catch (error) {
+    console.error('Get wallet history error:', error);
+    res.status(500).json({ error: 'Server error retrieving wallet history' });
+  }
+});
+
+// Step 1: Verify password before updating wallet (requires 2FA)
+router.post('/wallet/verify-password', authenticate, require2FA, contributionLimiter, [
+  body('password').notEmpty().withMessage('Password is required'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const userId = req.user.id;
+    const { password } = req.body;
+
+    // Verify password
+    const isValid = await verifyPassword(userId, password);
+    if (!isValid) {
+      return res.status(401).json({ error: 'Invalid password' });
+    }
+
+    // Generate password verification token
+    const token = generatePasswordVerificationToken(userId, 'update_wallet');
+
+    // Store token in database
+    await storePasswordVerificationToken(userId, token, 'update_wallet');
+
+    res.json({
+      verified: true,
+      token,
+      expiresIn: 300, // 5 minutes in seconds
+    });
+  } catch (error) {
+    console.error('Password verification error:', error);
+    res.status(500).json({ error: 'Server error during password verification' });
+  }
+});
+
+// Step 2: Request OTP after password verification
+router.post('/wallet/request-otp', authenticate, otpLimiter, [
+  body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const userId = req.user.id;
+    const { password_verification_token } = req.body;
+
+    // Check if user has 2FA enabled with authenticator
+    const userResult = await pool.query(
+      'SELECT two_factor_enabled, two_factor_method, two_factor_secret, email FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userResult.rows[0];
+
+    // 2FA must be enabled (require2FA middleware should have already checked this)
+    if (!user.two_factor_enabled) {
+      return res.status(403).json({
+        error: 'Two-factor authentication (2FA) is required for this feature',
+        code: '2FA_REQUIRED',
+        message: 'Please enable 2FA in your security settings to use this feature',
+      });
+    }
+
+    // If 2FA is enabled with authenticator, skip OTP request (user gets code from authenticator)
+    if (user.two_factor_method === 'authenticator' && user.two_factor_secret) {
+      return res.json({
+        message: 'Please enter the code from your authenticator app',
+        requires2FA: true,
+      });
+    }
+
+    // If 2FA is enabled with email, send email OTP
+    if (user.two_factor_method === 'email') {
+      const email = user.email;
+
+      // Request OTP
+      await requestPaymentOTP(userId, email, 'update_wallet', password_verification_token);
+
+      return res.json({
+        message: 'OTP sent to your email',
+        requires2FA: true,
+        method: 'email',
+      });
+    }
+
+    // Unknown 2FA method or invalid state
+    return res.status(400).json({ error: 'Invalid 2FA configuration' });
+  } catch (error) {
+    console.error('OTP request error:', error);
+    res.status(500).json({ error: error.message || 'Server error during OTP request' });
+  }
+});
+
+// Step 3: Update wallet/payment details (requires password + 2FA/OTP verification + 2FA enabled)
+router.put('/wallet', authenticate, require2FA, contributionLimiter, [
+  body('password_verification_token').notEmpty().withMessage('Password verification token is required'),
+  body('otp').notEmpty().isLength({ min: 6, max: 6 }).withMessage('OTP is required (6 digits)'),
   body('account_name').optional().trim().notEmpty().withMessage('Account name is required if provided'),
   body('bank_name').optional().trim().notEmpty().withMessage('Bank name is required if provided'),
   body('account_number').optional().trim().notEmpty().withMessage('Account number is required if provided'),
@@ -452,15 +759,67 @@ router.put('/wallet', authenticate, [
     }
 
     const userId = req.user.id;
-    const { account_name, bank_name, account_number, iban, swift_bic, routing_number, sort_code, branch_code, branch_address } = req.body;
+    const { password_verification_token, otp, account_name, bank_name, account_number, iban, swift_bic, routing_number, sort_code, branch_code, branch_address } = req.body;
 
-    // Check if wallet exists
+    // Verify password token
+    const tokenData = verifyPasswordVerificationToken(password_verification_token);
+    if (!tokenData || tokenData.action !== 'update_wallet' || tokenData.userId !== userId) {
+      return res.status(401).json({ error: 'Invalid or expired password verification token' });
+    }
+
+    // Verify code (2FA code if 2FA enabled, otherwise OTP)
+    const isValidCode = await verifyPaymentCode(userId, otp, password_verification_token, 'update_wallet');
+    if (!isValidCode) {
+      return res.status(401).json({ 
+        error: 'Invalid or expired code. If using an authenticator app, make sure you\'re using the current code. If the issue persists, try disabling and re-adding 2FA in your security settings.' 
+      });
+    }
+
+    // Check if wallet exists and get current bank details
     const walletCheck = await pool.query(
-      'SELECT id FROM wallets WHERE user_id = $1',
+      'SELECT id, account_name, bank_name, account_number FROM wallets WHERE user_id = $1',
       [userId]
     );
 
+    const currentWallet = walletCheck.rows.length > 0 ? walletCheck.rows[0] : null;
+
+    // Check if user is trying to remove bank details (setting to null/empty)
+    // Only check removal if wallet exists and has bank details currently
+    if (currentWallet && currentWallet.account_name && currentWallet.bank_name && currentWallet.account_number) {
+      const isRemovingAccountName = account_name !== undefined && (!account_name || account_name.trim() === '');
+      const isRemovingBankName = bank_name !== undefined && (!bank_name || bank_name.trim() === '');
+      const isRemovingAccountNumber = account_number !== undefined && (!account_number || account_number.trim() === '');
+
+      // If trying to remove any critical bank detail, check if user is in active groups
+      if (isRemovingAccountName || isRemovingBankName || isRemovingAccountNumber) {
+        // Check if user is in any active groups
+        const activeGroupsCheck = await pool.query(
+          `SELECT COUNT(*) as group_count
+           FROM group_members gm
+           JOIN groups g ON gm.group_id = g.id
+           WHERE gm.user_id = $1 AND gm.status = $2 AND g.status != $3`,
+          [userId, 'active', 'closed']
+        );
+
+        const activeGroupsCount = parseInt(activeGroupsCheck.rows[0].group_count) || 0;
+
+        if (activeGroupsCount > 0) {
+          return res.status(400).json({
+            error: `Cannot remove bank details. You must leave all groups first. You are currently a member of ${activeGroupsCount} group(s).`,
+            activeGroupsCount,
+          });
+        }
+      }
+    }
+
     if (walletCheck.rows.length === 0) {
+      // Validate that required bank details are provided when creating wallet
+      if (!account_name || !bank_name || !account_number) {
+        return res.status(400).json({
+          error: 'Account name, bank name, and account number are required',
+        });
+      }
+
       // Create wallet if it doesn't exist (only when user explicitly adds payment details)
       await pool.query(
         'INSERT INTO wallets (user_id, account_name, bank_name, account_number, iban, swift_bic, routing_number, sort_code, branch_code, branch_address, balance) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0)',
@@ -528,13 +887,87 @@ router.put('/wallet', authenticate, [
       );
     }
 
-    // Return updated wallet
-    const result = await pool.query(
-      'SELECT balance, account_number, bank_name, account_name, iban, swift_bic, routing_number, sort_code, branch_code, branch_address FROM wallets WHERE user_id = $1',
+    // Get user info for email notification
+    const userResult = await pool.query(
+      'SELECT email, name FROM users WHERE id = $1',
       [userId]
     );
 
-    res.json({ wallet: result.rows[0] });
+    const userEmail = userResult.rows[0]?.email;
+    const userName = userResult.rows[0]?.name;
+
+    // Return updated wallet with all currency balances
+    const walletDetailsResult = await pool.query(
+      'SELECT account_number, bank_name, account_name, iban, swift_bic, routing_number, sort_code, branch_code, branch_address FROM wallets WHERE user_id = $1',
+      [userId]
+    );
+
+    // Get all currency balances
+    const { getAllCurrencyBalances } = require('../utils/walletHelpers');
+    const balances = await getAllCurrencyBalances(userId);
+
+    const wallet = walletDetailsResult.rows[0] || {};
+    const result = {
+      account_number: wallet.account_number || null,
+      bank_name: wallet.bank_name || null,
+      account_name: wallet.account_name || null,
+      iban: wallet.iban || null,
+      swift_bic: wallet.swift_bic || null,
+      routing_number: wallet.routing_number || null,
+      sort_code: wallet.sort_code || null,
+      branch_code: wallet.branch_code || null,
+      branch_address: wallet.branch_address || null,
+      balances: balances,
+      totalBalances: balances.length,
+    };
+
+    // Send security email notification
+    try {
+      if (userEmail && userName) {
+        const updatedFields = [];
+        if (account_name !== undefined) updatedFields.push('account name');
+        if (bank_name !== undefined) updatedFields.push('bank name');
+        if (account_number !== undefined) updatedFields.push('account number');
+        if (iban !== undefined) updatedFields.push('IBAN');
+        if (swift_bic !== undefined) updatedFields.push('SWIFT/BIC');
+        if (routing_number !== undefined) updatedFields.push('routing number');
+        if (sort_code !== undefined) updatedFields.push('sort code');
+        if (branch_code !== undefined) updatedFields.push('branch code');
+        if (branch_address !== undefined) updatedFields.push('branch address');
+
+        await sendSecurityEmail(
+          userEmail,
+          userName,
+          'wallet_details_updated',
+          `You updated your wallet details: ${updatedFields.join(', ')}`,
+          {
+            updatedFields,
+            timestamp: new Date().toISOString(),
+          }
+        );
+      }
+    } catch (emailError) {
+      console.error('Error sending security email:', emailError);
+      // Don't fail the request if email fails
+    }
+
+    // Log action
+    await logPaymentAction({
+      userId,
+      action: 'wallet_details_updated',
+      amount: 0,
+      currency: null,
+      status: 'success',
+      paymentProvider: null,
+      metadata: {
+        updatedFields: account_name !== undefined ? 'account_name' : null,
+      },
+    });
+
+    res.json({
+      message: 'Wallet details updated successfully',
+      wallet: result,
+    });
   } catch (error) {
     console.error('Update wallet error:', error);
     res.status(500).json({ error: 'Server error updating wallet' });
@@ -677,6 +1110,365 @@ router.post('/push-token', authenticate, [
   } catch (error) {
     console.error('Register push token error:', error);
     res.status(500).json({ error: 'Server error registering push token' });
+  }
+});
+
+// Get email preferences
+router.get('/email-preferences', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const result = await pool.query(
+      `SELECT 
+        email_pref_payment_success,
+        email_pref_autopay_success,
+        email_pref_autopay_disabled,
+        email_pref_payment_failure,
+        email_pref_withdrawal_request,
+        email_pref_withdrawal_completed,
+        email_pref_withdrawal_failed,
+        email_pref_deadline_update,
+        email_pref_contribution_amount_update,
+        email_pref_birthday_reminder,
+        email_pref_comprehensive_birthday_reminder,
+        email_pref_comprehensive_reminder,
+        email_pref_overdue_contribution,
+        email_pref_admin_overdue_notification,
+        email_pref_admin_upcoming_deadline,
+        email_pref_max_members_update,
+        email_pref_member_left_subscription,
+        email_pref_monthly_newsletter
+       FROM users WHERE id = $1`,
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({
+      emailPreferences: {
+        // Payment & Transaction Emails
+        payment_success: result.rows[0].email_pref_payment_success ?? true,
+        autopay_success: result.rows[0].email_pref_autopay_success ?? true,
+        autopay_disabled: result.rows[0].email_pref_autopay_disabled ?? true,
+        payment_failure: result.rows[0].email_pref_payment_failure ?? true,
+        withdrawal_request: result.rows[0].email_pref_withdrawal_request ?? true,
+        withdrawal_completed: result.rows[0].email_pref_withdrawal_completed ?? true,
+        withdrawal_failed: result.rows[0].email_pref_withdrawal_failed ?? true,
+        
+        // Group Updates (Important)
+        deadline_update: result.rows[0].email_pref_deadline_update ?? true,
+        contribution_amount_update: result.rows[0].email_pref_contribution_amount_update ?? true,
+        
+        // Birthday Emails
+        birthday_reminder: result.rows[0].email_pref_birthday_reminder ?? false,
+        comprehensive_birthday_reminder: result.rows[0].email_pref_comprehensive_birthday_reminder ?? false,
+        
+        // Reminder Emails
+        comprehensive_reminder: result.rows[0].email_pref_comprehensive_reminder ?? false,
+        overdue_contribution: result.rows[0].email_pref_overdue_contribution ?? false,
+        admin_overdue_notification: result.rows[0].email_pref_admin_overdue_notification ?? false,
+        admin_upcoming_deadline: result.rows[0].email_pref_admin_upcoming_deadline ?? false,
+        
+        // Group Updates (Less Critical)
+        max_members_update: result.rows[0].email_pref_max_members_update ?? false,
+        member_left_subscription: result.rows[0].email_pref_member_left_subscription ?? false,
+        
+        // Newsletter
+        monthly_newsletter: result.rows[0].email_pref_monthly_newsletter ?? false,
+      },
+    });
+  } catch (error) {
+    console.error('Get email preferences error:', error);
+    res.status(500).json({ error: 'Server error retrieving email preferences' });
+  }
+});
+
+// Update email preferences
+router.put('/email-preferences', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const {
+      payment_success,
+      autopay_success,
+      autopay_disabled,
+      payment_failure,
+      withdrawal_request,
+      withdrawal_completed,
+      withdrawal_failed,
+      deadline_update,
+      contribution_amount_update,
+      birthday_reminder,
+      comprehensive_birthday_reminder,
+      comprehensive_reminder,
+      overdue_contribution,
+      admin_overdue_notification,
+      admin_upcoming_deadline,
+      max_members_update,
+      member_left_subscription,
+      monthly_newsletter,
+    } = req.body;
+
+    // Build update query dynamically
+    const updates = [];
+    const values = [];
+    let paramCount = 1;
+
+    const preferences = {
+      email_pref_payment_success: payment_success,
+      email_pref_autopay_success: autopay_success,
+      email_pref_autopay_disabled: autopay_disabled,
+      email_pref_payment_failure: payment_failure,
+      email_pref_withdrawal_request: withdrawal_request,
+      email_pref_withdrawal_completed: withdrawal_completed,
+      email_pref_withdrawal_failed: withdrawal_failed,
+      email_pref_deadline_update: deadline_update,
+      email_pref_contribution_amount_update: contribution_amount_update,
+      email_pref_birthday_reminder: birthday_reminder,
+      email_pref_comprehensive_birthday_reminder: comprehensive_birthday_reminder,
+      email_pref_comprehensive_reminder: comprehensive_reminder,
+      email_pref_overdue_contribution: overdue_contribution,
+      email_pref_admin_overdue_notification: admin_overdue_notification,
+      email_pref_admin_upcoming_deadline: admin_upcoming_deadline,
+      email_pref_max_members_update: max_members_update,
+      email_pref_member_left_subscription: member_left_subscription,
+      email_pref_monthly_newsletter: monthly_newsletter,
+    };
+
+    for (const [key, value] of Object.entries(preferences)) {
+      if (value !== undefined && value !== null) {
+        updates.push(`${key} = $${paramCount++}`);
+        values.push(value);
+      }
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No preferences provided to update' });
+    }
+
+    values.push(userId);
+    const query = `UPDATE users SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = $${paramCount}`;
+    
+    await pool.query(query, values);
+
+    res.json({ message: 'Email preferences updated successfully' });
+  } catch (error) {
+    console.error('Update email preferences error:', error);
+    res.status(500).json({ error: 'Server error updating email preferences' });
+  }
+});
+
+// Get in-app notification preferences
+router.get('/notification-preferences/in-app', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { INAPP_PREFERENCE_MAP } = require('../utils/notificationHelpers');
+
+    // Build dynamic SELECT query
+    const columns = Object.values(INAPP_PREFERENCE_MAP);
+    const query = `SELECT ${columns.join(', ')} FROM users WHERE id = $1`;
+    
+    const result = await pool.query(query, [userId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Build response object using the map keys
+    const preferences = {};
+    Object.entries(INAPP_PREFERENCE_MAP).forEach(([type, column]) => {
+      preferences[type] = result.rows[0][column] ?? true;
+    });
+
+    res.json({ inAppPreferences: preferences });
+  } catch (error) {
+    console.error('Get in-app notification preferences error:', error);
+    res.status(500).json({ error: 'Server error retrieving in-app notification preferences' });
+  }
+});
+
+// Update in-app notification preferences
+router.put('/notification-preferences/in-app', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { INAPP_PREFERENCE_MAP } = require('../utils/notificationHelpers');
+    const preferences = req.body;
+
+    const updates = [];
+    const values = [];
+    let paramCount = 1;
+
+    // Build dynamic UPDATE query
+    Object.entries(INAPP_PREFERENCE_MAP).forEach(([type, column]) => {
+      if (preferences[type] !== undefined && preferences[type] !== null) {
+        updates.push(`${column} = $${paramCount++}`);
+        values.push(preferences[type]);
+      }
+    });
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No preferences provided to update' });
+    }
+
+    values.push(userId);
+    const query = `UPDATE users SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = $${paramCount}`;
+    
+    await pool.query(query, values);
+
+    res.json({ message: 'In-app notification preferences updated successfully' });
+  } catch (error) {
+    console.error('Update in-app notification preferences error:', error);
+    res.status(500).json({ error: 'Server error updating in-app notification preferences' });
+  }
+});
+
+// Get push notification preferences
+router.get('/notification-preferences/push', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { PUSH_PREFERENCE_MAP } = require('../utils/notificationHelpers');
+
+    // Build dynamic SELECT query
+    const columns = Object.values(PUSH_PREFERENCE_MAP);
+    const query = `SELECT ${columns.join(', ')} FROM users WHERE id = $1`;
+    
+    const result = await pool.query(query, [userId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Build response object using the map keys
+    const preferences = {};
+    Object.entries(PUSH_PREFERENCE_MAP).forEach(([type, column]) => {
+      preferences[type] = result.rows[0][column] ?? true;
+    });
+
+    res.json({ pushPreferences: preferences });
+  } catch (error) {
+    console.error('Get push notification preferences error:', error);
+    res.status(500).json({ error: 'Server error retrieving push notification preferences' });
+  }
+});
+
+// Update push notification preferences
+router.put('/notification-preferences/push', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { PUSH_PREFERENCE_MAP } = require('../utils/notificationHelpers');
+    const preferences = req.body;
+
+    const updates = [];
+    const values = [];
+    let paramCount = 1;
+
+    // Build dynamic UPDATE query
+    Object.entries(PUSH_PREFERENCE_MAP).forEach(([type, column]) => {
+      if (preferences[type] !== undefined && preferences[type] !== null) {
+        updates.push(`${column} = $${paramCount++}`);
+        values.push(preferences[type]);
+      }
+    });
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No preferences provided to update' });
+    }
+
+    values.push(userId);
+    const query = `UPDATE users SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = $${paramCount}`;
+    
+    await pool.query(query, values);
+
+    res.json({ message: 'Push notification preferences updated successfully' });
+  } catch (error) {
+    console.error('Update push notification preferences error:', error);
+    res.status(500).json({ error: 'Server error updating push notification preferences' });
+  }
+});
+
+/**
+ * PUT /api/users/2fa/method
+ * Switch 2FA method (authenticator to email or vice versa)
+ * Requires password verification
+ */
+router.put('/2fa/method', authenticate, [
+  body('password').notEmpty().withMessage('Password is required'),
+  body('method').isIn(['authenticator', 'email']).withMessage('Method must be authenticator or email'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        error: errors.array()[0].msg || 'Validation failed',
+        errors: errors.array() 
+      });
+    }
+
+    const userId = req.user.id;
+    const { password, method } = req.body;
+
+    // Verify password
+    const { verifyPassword } = require('../utils/paymentHelpers');
+    const isValid = await verifyPassword(userId, password);
+    if (!isValid) {
+      return res.status(401).json({ error: 'Invalid password' });
+    }
+
+    // Check if 2FA is enabled
+    const userResult = await pool.query(
+      'SELECT two_factor_enabled, two_factor_method, email FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userResult.rows[0];
+
+    if (!user.two_factor_enabled) {
+      return res.status(400).json({ error: '2FA is not enabled' });
+    }
+
+    // If switching to authenticator, need to generate secret
+    if (method === 'authenticator') {
+      const { generateTOTPSecret } = require('../utils/twoFactor');
+      const { secret } = generateTOTPSecret(user.email);
+
+      await pool.query(
+        `UPDATE users 
+         SET two_factor_method = $1,
+             two_factor_secret = $2,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $3`,
+        [method, secret, userId]
+      );
+
+      res.json({
+        message: '2FA method switched to authenticator',
+        method: 'authenticator',
+        note: 'You will need to set up your authenticator app with the new secret',
+      });
+    } else {
+      // Switching to email - clear secret
+      await pool.query(
+        `UPDATE users 
+         SET two_factor_method = $1,
+             two_factor_secret = NULL,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $2`,
+        [method, userId]
+      );
+
+      res.json({
+        message: '2FA method switched to email',
+        method: 'email',
+      });
+    }
+  } catch (error) {
+    console.error('Switch 2FA method error:', error);
+    res.status(500).json({ error: 'Server error switching 2FA method' });
   }
 });
 

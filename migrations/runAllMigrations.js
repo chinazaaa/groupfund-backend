@@ -10,6 +10,7 @@ const migrations = [
   'add_waitlist.sql',
   'add_beta_email_sent_to_waitlist.sql',
   'add_currency_to_groups.sql',
+  'add_multi_currency_wallet_balances.sql',
   'add_expo_push_token.sql',
   'add_international_payment_fields.sql',
   'add_notification_preferences.sql',
@@ -36,7 +37,16 @@ const migrations = [
   'add_chat_enabled_to_groups.sql',
   'add_group_messages.sql',
   'add_chat_notification_preferences.sql',
-  'add_co_admin_role.sql'
+  'add_co_admin_role.sql',
+  'add_payment_automation.sql',
+  'fix_password_verification_token_length.sql',
+  'add_user_payment_methods.sql',
+  'add_currency_to_payment_methods.sql',
+  'update_payment_methods_unique_constraint.sql',
+  'add_currency_bank_accounts.sql',
+  'add_email_preferences.sql',
+  'add_inapp_push_notification_preferences.sql',
+  'add_two_factor_authentication.sql'
 ];
 
 async function runAllMigrations() {

@@ -15,10 +15,13 @@ router.get('/history', authenticate, async (req, res) => {
       SELECT 
         t.id, t.type, t.amount, t.description, t.status, t.created_at,
         g.id as group_id, g.name as group_name, g.currency,
-        bc.note
+        COALESCE(bc.note, sc.note, gc.note) as note,
+        COALESCE(bc.status, sc.status, gc.status) as contribution_status
       FROM transactions t
       LEFT JOIN groups g ON t.group_id = g.id
       LEFT JOIN birthday_contributions bc ON bc.transaction_id = t.id
+      LEFT JOIN subscription_contributions sc ON sc.transaction_id = t.id
+      LEFT JOIN general_contributions gc ON gc.transaction_id = t.id
       WHERE t.user_id = $1
     `;
     const params = [userId];
@@ -40,25 +43,12 @@ router.get('/history', authenticate, async (req, res) => {
     const result = await pool.query(query, params);
 
     // Map transaction status to contribution status for each row
-    const allContributions = await Promise.all(result.rows.map(async (row) => {
-      let contributionStatus = row.status || 'completed';
+    const allContributions = result.rows.map((row) => {
+      // Use contribution status if available, otherwise use transaction status
+      let contributionStatus = row.contribution_status || row.status || 'completed';
       
-      // If there's a note, it's likely a birthday contribution - check birthday_contributions table
-      if (row.note) {
-        const contributionResult = await pool.query(
-          `SELECT bc.status FROM birthday_contributions bc
-           WHERE bc.transaction_id = $1 LIMIT 1`,
-          [row.id]
-        );
-        if (contributionResult.rows.length > 0) {
-          contributionStatus = contributionResult.rows[0].status;
-          // Map: 'paid' = awaiting confirmation, 'confirmed', 'not_received', 'not_paid'
-        } else if (row.status === 'completed') {
-          // Legacy completed status
-          contributionStatus = 'confirmed';
-        }
-      } else if (row.status === 'completed') {
-        // Non-birthday transactions that are completed
+      // If no contribution status but transaction is completed, treat as confirmed
+      if (!row.contribution_status && row.status === 'completed') {
         contributionStatus = 'confirmed';
       }
 
@@ -67,7 +57,7 @@ router.get('/history', authenticate, async (req, res) => {
         status: contributionStatus,
         currency: row.currency || 'NGN',
       };
-    }));
+    });
 
     // Filter contributions based on type:
     // - For sent (debit): Filter out "not_paid" but keep "not_received", "paid", and "confirmed"
