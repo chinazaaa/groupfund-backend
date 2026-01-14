@@ -3046,6 +3046,8 @@ router.get('/autopay/attempts', async (req, res) => {
     res.json({
       attempts: result.rows.map(apa => ({
         id: apa.id,
+        user_id: apa.user_id, // Top-level for easy access when processing
+        group_id: apa.group_id, // Top-level for easy access when processing
         user: {
           id: apa.user_id,
           name: apa.user_name,
