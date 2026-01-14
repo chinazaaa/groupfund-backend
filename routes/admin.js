@@ -2841,12 +2841,23 @@ router.post('/withdrawals/process-pending', async (req, res) => {
 // Get all withdrawals (with filters)
 router.get('/withdrawals', async (req, res) => {
   try {
-    const { status, limit = 50, offset = 0 } = req.query;
+    const { status, userId, page = 1, limit = 50 } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
 
     let query = `
-      SELECT w.*, u.name, u.email
+      SELECT 
+        w.id, w.amount, w.currency, w.status, w.fee, w.net_amount,
+        w.payment_provider, w.provider_transaction_id,
+        w.scheduled_at, w.processed_at, w.error_message,
+        w.created_at, w.updated_at,
+        w.bank_account_number, w.bank_name, w.account_name,
+        u.id as user_id, u.name as user_name, u.email as user_email,
+        COALESCE(wba.account_number, w.bank_account_number) as account_number,
+        COALESCE(wba.bank_name, w.bank_name) as bank_name_final,
+        COALESCE(wba.account_name, w.account_name) as account_name_final
       FROM withdrawals w
       JOIN users u ON w.user_id = u.id
+      LEFT JOIN wallet_bank_accounts wba ON w.bank_account_id = wba.id
       WHERE 1=1
     `;
     const params = [];
@@ -2857,21 +2868,70 @@ router.get('/withdrawals', async (req, res) => {
       params.push(status);
     }
 
+    if (userId) {
+      query += ` AND w.user_id = $${paramCount++}`;
+      params.push(userId);
+    }
+
+    // Get total count
+    let countQuery = `
+      SELECT COUNT(*) as total
+      FROM withdrawals w
+      WHERE 1=1
+    `;
+    const countParams = [];
+    let countParamCount = 1;
+
+    if (status) {
+      countQuery += ` AND w.status = $${countParamCount++}`;
+      countParams.push(status);
+    }
+
+    if (userId) {
+      countQuery += ` AND w.user_id = $${countParamCount++}`;
+      countParams.push(userId);
+    }
+
+    const countResult = await pool.query(countQuery, countParams);
+    const total = parseInt(countResult.rows[0].total);
+
     query += ` ORDER BY w.created_at DESC LIMIT $${paramCount++} OFFSET $${paramCount++}`;
-    params.push(parseInt(limit), parseInt(offset));
+    params.push(parseInt(limit), offset);
 
     const result = await pool.query(query, params);
 
-    const totalResult = await pool.query(
-      `SELECT COUNT(*) as total FROM withdrawals ${status ? 'WHERE status = $1' : ''}`,
-      status ? [status] : []
-    );
-
     res.json({
-      withdrawals: result.rows,
-      total: parseInt(totalResult.rows[0].total),
-      limit: parseInt(limit),
-      offset: parseInt(offset),
+      withdrawals: result.rows.map(w => ({
+        id: w.id,
+        user: {
+          id: w.user_id,
+          name: w.user_name,
+          email: w.user_email,
+        },
+        amount: parseFloat(w.amount),
+        currency: w.currency,
+        fee: parseFloat(w.fee || 0),
+        net_amount: parseFloat(w.net_amount || w.amount),
+        status: w.status,
+        payment_provider: w.payment_provider,
+        provider_transaction_id: w.provider_transaction_id,
+        bank_account: w.account_number ? {
+          account_number: w.account_number,
+          bank_name: w.bank_name_final,
+          account_name: w.account_name_final,
+        } : null,
+        scheduled_at: w.scheduled_at,
+        processed_at: w.processed_at,
+        error_message: w.error_message,
+        created_at: w.created_at,
+        updated_at: w.updated_at,
+      })),
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / parseInt(limit)),
+      },
     });
   } catch (error) {
     console.error('Get withdrawals error:', error);
@@ -2902,6 +2962,306 @@ router.get('/withdrawals/:withdrawalId', async (req, res) => {
   } catch (error) {
     console.error('Get withdrawal details error:', error);
     res.status(500).json({ error: 'Server error retrieving withdrawal details', message: error.message });
+  }
+});
+
+// Get all autopay payment attempts (with filters)
+router.get('/autopay/attempts', async (req, res) => {
+  try {
+    const { status, userId, groupId, contributionType, page = 1, limit = 50 } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    let query = `
+      SELECT 
+        apa.id, apa.user_id, apa.group_id, apa.contribution_type, apa.contribution_id,
+        apa.amount, apa.currency, apa.status, apa.payment_provider, apa.provider_transaction_id,
+        apa.error_message, apa.retry_count, apa.attempted_at, apa.completed_at, apa.created_at,
+        u.name as user_name, u.email as user_email,
+        g.name as group_name, g.group_type, g.contribution_amount as group_contribution_amount
+      FROM automatic_payment_attempts apa
+      JOIN users u ON apa.user_id = u.id
+      LEFT JOIN groups g ON apa.group_id = g.id
+      WHERE 1=1
+    `;
+    const params = [];
+    let paramCount = 1;
+
+    if (status) {
+      query += ` AND apa.status = $${paramCount++}`;
+      params.push(status);
+    }
+
+    if (userId) {
+      query += ` AND apa.user_id = $${paramCount++}`;
+      params.push(userId);
+    }
+
+    if (groupId) {
+      query += ` AND apa.group_id = $${paramCount++}`;
+      params.push(groupId);
+    }
+
+    if (contributionType) {
+      query += ` AND apa.contribution_type = $${paramCount++}`;
+      params.push(contributionType);
+    }
+
+    // Get total count
+    let countQuery = `
+      SELECT COUNT(*) as total
+      FROM automatic_payment_attempts apa
+      WHERE 1=1
+    `;
+    const countParams = [];
+    let countParamCount = 1;
+
+    if (status) {
+      countQuery += ` AND apa.status = $${countParamCount++}`;
+      countParams.push(status);
+    }
+
+    if (userId) {
+      countQuery += ` AND apa.user_id = $${countParamCount++}`;
+      countParams.push(userId);
+    }
+
+    if (groupId) {
+      countQuery += ` AND apa.group_id = $${countParamCount++}`;
+      countParams.push(groupId);
+    }
+
+    if (contributionType) {
+      countQuery += ` AND apa.contribution_type = $${countParamCount++}`;
+      countParams.push(contributionType);
+    }
+
+    const countResult = await pool.query(countQuery, countParams);
+    const total = parseInt(countResult.rows[0].total);
+
+    query += ` ORDER BY apa.created_at DESC LIMIT $${paramCount++} OFFSET $${paramCount++}`;
+    params.push(parseInt(limit), offset);
+
+    const result = await pool.query(query, params);
+
+    res.json({
+      attempts: result.rows.map(apa => ({
+        id: apa.id,
+        user: {
+          id: apa.user_id,
+          name: apa.user_name,
+          email: apa.user_email,
+        },
+        group: apa.group_id ? {
+          id: apa.group_id,
+          name: apa.group_name,
+          group_type: apa.group_type,
+          contribution_amount: parseFloat(apa.group_contribution_amount || 0),
+        } : null,
+        contribution_type: apa.contribution_type,
+        contribution_id: apa.contribution_id,
+        amount: parseFloat(apa.amount),
+        currency: apa.currency,
+        status: apa.status,
+        payment_provider: apa.payment_provider,
+        provider_transaction_id: apa.provider_transaction_id,
+        error_message: apa.error_message,
+        retry_count: parseInt(apa.retry_count || 0),
+        attempted_at: apa.attempted_at,
+        completed_at: apa.completed_at,
+        created_at: apa.created_at,
+      })),
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / parseInt(limit)),
+      },
+    });
+  } catch (error) {
+    console.error('Get autopay attempts error:', error);
+    res.status(500).json({ error: 'Server error retrieving autopay attempts', message: error.message });
+  }
+});
+
+// Get autopay status summary (counts by status, type, etc.)
+router.get('/autopay/status', async (req, res) => {
+  try {
+    // Get counts by status
+    const statusCounts = await pool.query(`
+      SELECT status, COUNT(*) as count
+      FROM automatic_payment_attempts
+      GROUP BY status
+    `);
+
+    // Get counts by contribution type
+    const typeCounts = await pool.query(`
+      SELECT contribution_type, COUNT(*) as count
+      FROM automatic_payment_attempts
+      GROUP BY contribution_type
+    `);
+
+    // Get recent failures (last 24 hours)
+    const recentFailures = await pool.query(`
+      SELECT COUNT(*) as count
+      FROM automatic_payment_attempts
+      WHERE status = 'failed'
+        AND created_at >= NOW() - INTERVAL '24 hours'
+    `);
+
+    // Get total amount processed (successful)
+    const totalProcessed = await pool.query(`
+      SELECT 
+        SUM(amount) as total_amount,
+        currency,
+        COUNT(*) as count
+      FROM automatic_payment_attempts
+      WHERE status = 'success'
+      GROUP BY currency
+    `);
+
+    // Get users with auto-pay enabled
+    const autoPayUsers = await pool.query(`
+      SELECT COUNT(DISTINCT user_id) as count
+      FROM user_payment_preferences
+      WHERE auto_pay_enabled = TRUE
+    `);
+
+    // Get groups with auto-pay enabled
+    const autoPayGroups = await pool.query(`
+      SELECT COUNT(DISTINCT group_id) as count
+      FROM user_payment_preferences
+      WHERE auto_pay_enabled = TRUE
+    `);
+
+    res.json({
+      summary: {
+        by_status: statusCounts.rows.reduce((acc, row) => {
+          acc[row.status] = parseInt(row.count);
+          return acc;
+        }, {}),
+        by_type: typeCounts.rows.reduce((acc, row) => {
+          acc[row.contribution_type] = parseInt(row.count);
+          return acc;
+        }, {}),
+        recent_failures_24h: parseInt(recentFailures.rows[0].count || 0),
+        total_processed: totalProcessed.rows.map(row => ({
+          currency: row.currency,
+          total_amount: parseFloat(row.total_amount || 0),
+          count: parseInt(row.count),
+        })),
+        auto_pay_enabled: {
+          users: parseInt(autoPayUsers.rows[0].count || 0),
+          groups: parseInt(autoPayGroups.rows[0].count || 0),
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Get autopay status error:', error);
+    res.status(500).json({ error: 'Server error retrieving autopay status', message: error.message });
+  }
+});
+
+// Get user payment preferences (autopay settings)
+router.get('/autopay/preferences', async (req, res) => {
+  try {
+    const { userId, groupId, autoPayEnabled, page = 1, limit = 50 } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    let query = `
+      SELECT 
+        upp.id, upp.user_id, upp.group_id, upp.auto_pay_enabled,
+        upp.payment_method_type, upp.payment_method_id, upp.provider, upp.payment_timing,
+        upp.created_at, upp.updated_at,
+        u.name as user_name, u.email as user_email,
+        g.name as group_name, g.group_type, g.contribution_amount, g.currency
+      FROM user_payment_preferences upp
+      JOIN users u ON upp.user_id = u.id
+      LEFT JOIN groups g ON upp.group_id = g.id
+      WHERE 1=1
+    `;
+    const params = [];
+    let paramCount = 1;
+
+    if (userId) {
+      query += ` AND upp.user_id = $${paramCount++}`;
+      params.push(userId);
+    }
+
+    if (groupId) {
+      query += ` AND upp.group_id = $${paramCount++}`;
+      params.push(groupId);
+    }
+
+    if (autoPayEnabled !== undefined) {
+      query += ` AND upp.auto_pay_enabled = $${paramCount++}`;
+      params.push(autoPayEnabled === 'true');
+    }
+
+    // Get total count
+    let countQuery = `
+      SELECT COUNT(*) as total
+      FROM user_payment_preferences upp
+      WHERE 1=1
+    `;
+    const countParams = [];
+    let countParamCount = 1;
+
+    if (userId) {
+      countQuery += ` AND upp.user_id = $${countParamCount++}`;
+      countParams.push(userId);
+    }
+
+    if (groupId) {
+      countQuery += ` AND upp.group_id = $${countParamCount++}`;
+      countParams.push(groupId);
+    }
+
+    if (autoPayEnabled !== undefined) {
+      countQuery += ` AND upp.auto_pay_enabled = $${countParamCount++}`;
+      countParams.push(autoPayEnabled === 'true');
+    }
+
+    const countResult = await pool.query(countQuery, countParams);
+    const total = parseInt(countResult.rows[0].total);
+
+    query += ` ORDER BY upp.updated_at DESC LIMIT $${paramCount++} OFFSET $${paramCount++}`;
+    params.push(parseInt(limit), offset);
+
+    const result = await pool.query(query, params);
+
+    res.json({
+      preferences: result.rows.map(upp => ({
+        id: upp.id,
+        user: {
+          id: upp.user_id,
+          name: upp.user_name,
+          email: upp.user_email,
+        },
+        group: upp.group_id ? {
+          id: upp.group_id,
+          name: upp.group_name,
+          group_type: upp.group_type,
+          contribution_amount: parseFloat(upp.contribution_amount || 0),
+          currency: upp.currency,
+        } : null,
+        auto_pay_enabled: upp.auto_pay_enabled,
+        payment_method_type: upp.payment_method_type,
+        payment_method_id: upp.payment_method_id,
+        provider: upp.provider,
+        payment_timing: upp.payment_timing,
+        created_at: upp.created_at,
+        updated_at: upp.updated_at,
+      })),
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / parseInt(limit)),
+      },
+    });
+  } catch (error) {
+    console.error('Get autopay preferences error:', error);
+    res.status(500).json({ error: 'Server error retrieving autopay preferences', message: error.message });
   }
 });
 
