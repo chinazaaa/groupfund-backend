@@ -280,9 +280,11 @@ router.get('/groups', async (req, res) => {
       SELECT 
         g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, 
         g.currency, g.status, g.group_type, g.created_at, g.updated_at,
-        u.name as admin_name, u.email as admin_email,
+        g.chat_enabled, g.accepting_requests, g.notes,
+        u.id as admin_id, u.name as admin_name, u.email as admin_email,
         COUNT(gm.id) FILTER (WHERE gm.status = 'active') as active_members,
-        COUNT(gm.id) FILTER (WHERE gm.status = 'pending') as pending_members
+        COUNT(gm.id) FILTER (WHERE gm.status = 'pending') as pending_members,
+        COUNT(gm.id) FILTER (WHERE gm.status = 'active' AND gm.role = 'co-admin') as co_admin_count
       FROM groups g
       LEFT JOIN users u ON g.admin_id = u.id
       LEFT JOIN group_members gm ON g.id = gm.group_id
@@ -316,11 +318,48 @@ router.get('/groups', async (req, res) => {
     const countResult = await pool.query(countQuery, countParams);
     const total = parseInt(countResult.rows[0].total);
 
-    query += ` GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.group_type, g.created_at, g.updated_at, u.name, u.email
+    query += ` GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.group_type, g.created_at, g.updated_at, g.chat_enabled, g.accepting_requests, g.notes, u.id, u.name, u.email
                ORDER BY g.created_at DESC LIMIT $${paramCount++} OFFSET $${paramCount++}`;
     params.push(parseInt(limit), offset);
 
     const result = await pool.query(query, params);
+
+    // Get co-admins for each group
+    const groupIds = result.rows.map(g => g.id);
+    let coAdminsMap = {};
+    
+    if (groupIds.length > 0) {
+      const placeholders = groupIds.map((_, i) => `$${i + 1}`).join(', ');
+      const coAdminsResult = await pool.query(
+        `SELECT 
+          gm.group_id,
+          u.id as user_id,
+          u.name as user_name,
+          u.email as user_email,
+          gm.joined_at
+         FROM group_members gm
+         JOIN users u ON gm.user_id = u.id
+         WHERE gm.group_id IN (${placeholders})
+           AND gm.role = 'co-admin'
+           AND gm.status = 'active'
+         ORDER BY gm.joined_at ASC`,
+        groupIds
+      );
+
+      // Group co-admins by group_id
+      coAdminsMap = coAdminsResult.rows.reduce((acc, row) => {
+        if (!acc[row.group_id]) {
+          acc[row.group_id] = [];
+        }
+        acc[row.group_id].push({
+          id: row.user_id,
+          name: row.user_name,
+          email: row.user_email,
+          joined_at: row.joined_at,
+        });
+        return acc;
+      }, {});
+    }
 
     res.json({
       groups: result.rows.map(group => ({
@@ -329,6 +368,16 @@ router.get('/groups', async (req, res) => {
         max_members: parseInt(group.max_members),
         active_members: parseInt(group.active_members || 0),
         pending_members: parseInt(group.pending_members || 0),
+        chat_enabled: group.chat_enabled !== undefined ? group.chat_enabled : false,
+        accepting_requests: group.accepting_requests !== undefined ? group.accepting_requests : true,
+        notes: group.notes || null,
+        admin: {
+          id: group.admin_id,
+          name: group.admin_name,
+          email: group.admin_email,
+        },
+        co_admins: coAdminsMap[group.id] || [],
+        co_admin_count: parseInt(group.co_admin_count || 0),
       })),
       pagination: {
         page: parseInt(page),
@@ -636,8 +685,10 @@ router.get('/contributions', async (req, res) => {
         group_id, group_name, currency,
         birthday_user_id, birthday_user_name,
         contributor_id, contributor_name,
+        receiver_id, receiver_name,
         transaction_type, contribution_type,
-        subscription_period_start, subscription_period_end
+        subscription_period_start, subscription_period_end,
+        payment_method, payment_provider, provider_transaction_id
       FROM (
         -- Birthday contributions
         SELECT 
@@ -645,10 +696,14 @@ router.get('/contributions', async (req, res) => {
           g.id as group_id, g.name as group_name, g.currency,
           u1.id as birthday_user_id, u1.name as birthday_user_name,
           u2.id as contributor_id, u2.name as contributor_name,
+          u1.id as receiver_id, u1.name as receiver_name, -- Birthday person is the receiver
           t.type as transaction_type,
           'birthday' as contribution_type,
           NULL::DATE as subscription_period_start,
-          NULL::DATE as subscription_period_end
+          NULL::DATE as subscription_period_end,
+          bc.payment_method,
+          bc.payment_provider,
+          bc.provider_transaction_id
         FROM birthday_contributions bc
         LEFT JOIN groups g ON bc.group_id = g.id
         LEFT JOIN users u1 ON bc.birthday_user_id = u1.id
@@ -664,13 +719,18 @@ router.get('/contributions', async (req, res) => {
           g.id as group_id, g.name as group_name, g.currency,
           NULL::UUID as birthday_user_id, NULL::TEXT as birthday_user_name,
           u.id as contributor_id, u.name as contributor_name,
+          admin_user.id as receiver_id, admin_user.name as receiver_name, -- Admin is the receiver
           t.type as transaction_type,
           'subscription' as contribution_type,
           sc.subscription_period_start,
-          sc.subscription_period_end
+          sc.subscription_period_end,
+          sc.payment_method,
+          sc.payment_provider,
+          sc.provider_transaction_id
         FROM subscription_contributions sc
         LEFT JOIN groups g ON sc.group_id = g.id
         LEFT JOIN users u ON sc.contributor_id = u.id
+        LEFT JOIN users admin_user ON g.admin_id = admin_user.id
         LEFT JOIN transactions t ON sc.transaction_id = t.id
         WHERE 1=1 ${subscriptionWhere}
         
@@ -682,13 +742,18 @@ router.get('/contributions', async (req, res) => {
           g.id as group_id, g.name as group_name, g.currency,
           NULL::UUID as birthday_user_id, NULL::TEXT as birthday_user_name,
           u.id as contributor_id, u.name as contributor_name,
+          admin_user.id as receiver_id, admin_user.name as receiver_name, -- Admin is the receiver
           t.type as transaction_type,
           'general' as contribution_type,
           NULL::DATE as subscription_period_start,
-          NULL::DATE as subscription_period_end
+          NULL::DATE as subscription_period_end,
+          gc.payment_method,
+          gc.payment_provider,
+          gc.provider_transaction_id
         FROM general_contributions gc
         LEFT JOIN groups g ON gc.group_id = g.id
         LEFT JOIN users u ON gc.contributor_id = u.id
+        LEFT JOIN users admin_user ON g.admin_id = admin_user.id
         LEFT JOIN transactions t ON gc.transaction_id = t.id
         WHERE 1=1 ${generalWhere}
       ) all_contributions
@@ -754,6 +819,25 @@ router.get('/contributions', async (req, res) => {
       contributions: result.rows.map(contribution => ({
         ...contribution,
         amount: parseFloat(contribution.amount),
+        payment_method: contribution.payment_method || 'manual', // 'auto-debit' or 'manual'
+        payment_provider: contribution.payment_provider || null, // 'stripe', 'paystack', or null
+        provider_transaction_id: contribution.provider_transaction_id || null,
+        payment_info: {
+          method: contribution.payment_method || 'manual',
+          provider: contribution.payment_provider || null,
+          provider_transaction_id: contribution.provider_transaction_id || null,
+          is_auto_pay: contribution.payment_method === 'auto-debit',
+        },
+        // Contributor information
+        contributor: {
+          id: contribution.contributor_id,
+          name: contribution.contributor_name,
+        },
+        // Receiver information (who receives the money)
+        receiver: {
+          id: contribution.receiver_id || contribution.birthday_user_id, // Fallback for birthday
+          name: contribution.receiver_name || contribution.birthday_user_name, // Fallback for birthday
+        },
       })),
       pagination: {
         page: parseInt(page),
