@@ -364,9 +364,24 @@ router.get('/:userId', authenticate, async (req, res) => {
 
     // If no shared active groups, return empty data
     if (groupsResult.rows.length === 0) {
+      // Check if birthday user has bank accounts
+      const bankAccountsResult = await pool.query(
+        `SELECT COUNT(*) as count 
+         FROM wallet_bank_accounts 
+         WHERE user_id = $1 
+         AND account_name IS NOT NULL 
+         AND bank_name IS NOT NULL 
+         AND account_number IS NOT NULL`,
+        [userId]
+      );
+      const hasBankAccount = parseInt(bankAccountsResult.rows[0].count) > 0;
+
       return res.json({
         user: userResult.rows[0],
-        wallet: null,
+        wallet: {
+          hasBankAccount,
+          hasPaymentDetails: hasBankAccount,
+        },
         sharedGroups: [],
         contributions: [],
       });
@@ -386,21 +401,25 @@ router.get('/:userId', authenticate, async (req, res) => {
       [userId]
     );
 
-    // Get wallet info for the birthday user (only if payment details exist)
-    const walletResult = await pool.query(
-      'SELECT account_number, bank_name, account_name, iban, swift_bic, routing_number, sort_code, branch_code, branch_address FROM wallets WHERE user_id = $1',
+    // Check if birthday user has bank accounts (using wallet_bank_accounts table)
+    const bankAccountsResult = await pool.query(
+      `SELECT COUNT(*) as count 
+       FROM wallet_bank_accounts 
+       WHERE user_id = $1 
+       AND account_name IS NOT NULL 
+       AND bank_name IS NOT NULL 
+       AND account_number IS NOT NULL`,
       [userId]
     );
 
-    // Only return wallet if it has all payment details set
-    const wallet = walletResult.rows[0];
-    const walletResponse = wallet && wallet.account_name && wallet.bank_name && wallet.account_number
-      ? wallet
-      : null;
+    const hasBankAccount = parseInt(bankAccountsResult.rows[0].count) > 0;
 
     res.json({
       user,
-      wallet: walletResponse,
+      wallet: {
+        hasBankAccount,
+        hasPaymentDetails: hasBankAccount,
+      },
       sharedGroups: groupsResult.rows,
       contributions: contributionsResult.rows,
     });
