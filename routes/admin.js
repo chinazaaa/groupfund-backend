@@ -3234,6 +3234,8 @@ router.get('/autopay/preferences', async (req, res) => {
     res.json({
       preferences: result.rows.map(upp => ({
         id: upp.id,
+        user_id: upp.user_id, // Top-level for easy access when processing
+        group_id: upp.group_id, // Top-level for easy access when processing
         user: {
           id: upp.user_id,
           name: upp.user_name,
