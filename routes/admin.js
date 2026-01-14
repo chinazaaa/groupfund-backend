@@ -192,6 +192,21 @@ router.get('/users/:userId', async (req, res) => {
       [userId]
     );
 
+    // Get reports count for this user (where they were reported)
+    const reportsCount = await pool.query(
+      `SELECT 
+        COUNT(*) as total,
+        COUNT(*) FILTER (WHERE status = 'pending') as pending,
+        COUNT(*) FILTER (WHERE status = 'reviewed') as reviewed,
+        COUNT(*) FILTER (WHERE status = 'resolved') as resolved,
+        COUNT(*) FILTER (WHERE status = 'dismissed') as dismissed
+       FROM reports
+       WHERE reported_user_id = $1`,
+      [userId]
+    );
+
+    const reportsData = reportsCount.rows[0];
+
     res.json({
       user: {
         ...userResult.rows[0],
@@ -199,6 +214,15 @@ router.get('/users/:userId', async (req, res) => {
       },
       groups: groupsResult.rows,
       transaction_count: parseInt(transactionCount.rows[0].count || 0),
+      reports: {
+        total: parseInt(reportsData.total || 0),
+        by_status: {
+          pending: parseInt(reportsData.pending || 0),
+          reviewed: parseInt(reportsData.reviewed || 0),
+          resolved: parseInt(reportsData.resolved || 0),
+          dismissed: parseInt(reportsData.dismissed || 0),
+        },
+      },
     });
   } catch (error) {
     console.error('Get user by ID error:', error);
