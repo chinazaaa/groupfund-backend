@@ -37,6 +37,7 @@ const migrations = [
   'add_chat_enabled_to_groups.sql',
   'add_group_messages.sql',
   'add_chat_notification_preferences.sql',
+  'add_wishlist_enabled_to_groups.sql',
   'add_co_admin_role.sql',
   'add_payment_automation.sql',
   'fix_password_verification_token_length.sql',

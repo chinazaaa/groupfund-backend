@@ -39,6 +39,8 @@ router.post('/create', authenticate, [
   body('notes').optional().trim(),
   // Chat enabled toggle (optional, defaults to false)
   body('chatEnabled').optional().isBoolean().withMessage('chatEnabled must be a boolean'),
+  // Wishlist enabled toggle (optional, defaults to false, only for general groups)
+  body('wishlistEnabled').optional().isBoolean().withMessage('wishlistEnabled must be a boolean'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -58,7 +60,8 @@ router.post('/create', authenticate, [
       subscriptionDeadlineMonth,
       deadline,
       notes,
-      chatEnabled = false
+      chatEnabled = false,
+      wishlistEnabled = false
     } = req.body;
     const adminId = req.user.id;
     const groupCurrency = currency.toUpperCase();
@@ -132,6 +135,11 @@ router.post('/create', authenticate, [
       }
     }
 
+    // Validate wishlistEnabled can only be set for general groups
+    if (wishlistEnabled === true && groupType !== 'general') {
+      return res.status(400).json({ error: 'Wishlist can only be enabled for general groups' });
+    }
+
     // Generate unique invite code
     let inviteCode;
     let isUnique = false;
@@ -148,6 +156,13 @@ router.post('/create', authenticate, [
     let insertValues = '$1, $2, $3, $4, $5, $6, $7, $8';
     let params = [name, inviteCode, contributionAmount, maxMembers, adminId, currency, groupType, chatEnabled === true];
     let paramCount = 9;
+
+    // Add wishlist_enabled for general groups
+    if (groupType === 'general') {
+      insertFields += ', wishlist_enabled';
+      insertValues += `, $${paramCount++}`;
+      params.push(wishlistEnabled === true);
+    }
 
     // Add notes if provided
     if (notes !== undefined && notes !== null && notes.trim() !== '') {
@@ -176,7 +191,7 @@ router.post('/create', authenticate, [
     const groupResult = await pool.query(
       `INSERT INTO groups (${insertFields}) 
        VALUES (${insertValues}) 
-       RETURNING id, name, invite_code, contribution_amount, max_members, admin_id, currency, accepting_requests, group_type, is_public, subscription_frequency, subscription_platform, subscription_deadline_day, subscription_deadline_month, deadline, notes, chat_enabled, created_at`,
+       RETURNING id, name, invite_code, contribution_amount, max_members, admin_id, currency, accepting_requests, group_type, is_public, subscription_frequency, subscription_platform, subscription_deadline_day, subscription_deadline_month, deadline, notes, chat_enabled, wishlist_enabled, created_at`,
       params
     );
 
@@ -207,7 +222,7 @@ router.get('/preview/:inviteCode', authenticate, async (req, res) => {
     const groupResult = await pool.query(
       `SELECT 
         g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.group_type,
-        g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline, g.notes, g.chat_enabled,
+        g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline, g.notes, g.chat_enabled, g.wishlist_enabled,
         COUNT(gm.id) FILTER (WHERE gm.status = 'active') as current_members,
         u.name as admin_name
        FROM groups g
@@ -215,7 +230,7 @@ router.get('/preview/:inviteCode', authenticate, async (req, res) => {
        LEFT JOIN users u ON g.admin_id = u.id
        WHERE LOWER(g.invite_code) = LOWER($1)
        GROUP BY g.id, g.name, g.invite_code, g.contribution_amount, g.max_members, g.currency, g.status, g.accepting_requests, g.group_type,
-                g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline, g.notes, g.chat_enabled, g.created_at, u.name`,
+                g.subscription_frequency, g.subscription_platform, g.subscription_deadline_day, g.subscription_deadline_month, g.deadline, g.notes, g.chat_enabled, g.wishlist_enabled, g.created_at, u.name`,
       [inviteCode]
     );
 
@@ -245,6 +260,7 @@ router.get('/preview/:inviteCode', authenticate, async (req, res) => {
         deadline: group.deadline,
         notes: group.notes,
         chat_enabled: group.chat_enabled === true,
+        wishlist_enabled: group.wishlist_enabled === true,
         created_at: group.created_at,
       },
     });
@@ -2371,6 +2387,7 @@ router.put('/:groupId', authenticate, [
   body('subscriptionDeadlineDay').optional().isInt({ min: 1, max: 31 }).withMessage('Subscription deadline day must be between 1 and 31'),
   body('subscriptionDeadlineMonth').optional().isInt({ min: 1, max: 12 }).withMessage('Subscription deadline month must be between 1 and 12'),
   body('chatEnabled').optional().isBoolean().withMessage('chatEnabled must be a boolean'),
+  body('wishlistEnabled').optional().isBoolean().withMessage('wishlistEnabled must be a boolean'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -2415,7 +2432,8 @@ router.put('/:groupId', authenticate, [
       deadline,
       subscriptionDeadlineDay,
       subscriptionDeadlineMonth,
-      chatEnabled
+      chatEnabled,
+      wishlistEnabled
     } = req.body;
 
     // Co-admin restrictions: Cannot change critical settings
@@ -2431,6 +2449,11 @@ router.put('/:groupId', authenticate, [
     // Validate isPublic can only be set for subscription groups
     if (isPublic !== undefined && groupType !== 'subscription') {
       return res.status(400).json({ error: 'Only subscription groups can be made public' });
+    }
+
+    // Validate wishlistEnabled can only be set for general groups
+    if (wishlistEnabled !== undefined && groupType !== 'general') {
+      return res.status(400).json({ error: 'Wishlist can only be enabled for general groups' });
     }
 
     // Get current group details before updating (to check if contribution amount, deadline, or max_members changed)
@@ -2568,6 +2591,12 @@ router.put('/:groupId', authenticate, [
     if (chatEnabled !== undefined) {
       updates.push(`chat_enabled = $${paramCount++}`);
       values.push(chatEnabled === true);
+    }
+
+    // Update wishlist enabled (for general groups only)
+    if (groupType === 'general' && wishlistEnabled !== undefined) {
+      updates.push(`wishlist_enabled = $${paramCount++}`);
+      values.push(wishlistEnabled === true);
     }
 
     if (updates.length === 0) {

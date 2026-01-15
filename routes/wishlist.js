@@ -21,6 +21,107 @@ router.get('/currencies', authenticate, async (req, res) => {
   }
 });
 
+// Get admin's wishlist for a specific group (only if wishlist is enabled for the group)
+router.get('/group/:groupId', authenticate, async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const currentUserId = req.user.id;
+
+    // Check if user is an active member of the group
+    const memberCheck = await pool.query(
+      `SELECT gm.status, g.group_type, g.wishlist_enabled, g.admin_id
+       FROM group_members gm
+       JOIN groups g ON gm.group_id = g.id
+       WHERE gm.group_id = $1 AND gm.user_id = $2 AND gm.status = 'active'`,
+      [groupId, currentUserId]
+    );
+
+    if (memberCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'You are not an active member of this group' });
+    }
+
+    const group = memberCheck.rows[0];
+
+    // Check if this is a general group with wishlist enabled
+    if (group.group_type !== 'general' || !group.wishlist_enabled) {
+      return res.status(400).json({ error: 'Wishlist is not enabled for this group' });
+    }
+
+    const adminId = group.admin_id;
+
+    // Get wishlist items for the admin
+    const itemsResult = await pool.query(
+      `SELECT 
+        id, name, quantity, picture, price, currency, link, notes, is_done, created_at, updated_at
+       FROM wishlist_items
+       WHERE user_id = $1
+       ORDER BY created_at DESC`,
+      [adminId]
+    );
+
+    // Get claims for each item
+    const itemsWithClaims = await Promise.all(
+      itemsResult.rows.map(async (item) => {
+        const claimsResult = await pool.query(
+          `SELECT 
+            wc.id as claim_id,
+            wc.quantity_claimed,
+            wc.is_fulfilled,
+            wc.created_at as claimed_at,
+            u.id as claimed_by_user_id,
+            u.name as claimed_by_user_name
+           FROM wishlist_claims wc
+           JOIN users u ON wc.claimed_by_user_id = u.id
+           WHERE wc.wishlist_item_id = $1`,
+          [item.id]
+        );
+
+        const totalClaimed = claimsResult.rows.reduce(
+          (sum, claim) => sum + claim.quantity_claimed,
+          0
+        );
+        const totalFulfilled = claimsResult.rows.reduce(
+          (sum, claim) => sum + (claim.is_fulfilled ? claim.quantity_claimed : 0),
+          0
+        );
+        const remaining = Math.max(0, item.quantity - totalClaimed);
+        
+        // Item is fully done if:
+        // 1. Item is marked as done (is_done = true) - covers scenarios 2 & 3 (fulfilled outside app)
+        // 2. OR all claims are fulfilled and quantity is met
+        const isFullyDone = item.is_done || (totalClaimed > 0 && totalFulfilled === totalClaimed && totalClaimed >= item.quantity);
+
+        return {
+          ...item,
+          claims: claimsResult.rows,
+          total_claimed: totalClaimed,
+          total_fulfilled: totalFulfilled,
+          remaining: remaining,
+          is_available: remaining > 0 && !isFullyDone,
+          is_fully_done: isFullyDone,
+        };
+      })
+    );
+
+    // Get admin name
+    const adminResult = await pool.query(
+      'SELECT id, name FROM users WHERE id = $1',
+      [adminId]
+    );
+    const adminName = adminResult.rows[0]?.name || 'Group Admin';
+
+    res.json({
+      group_id: groupId,
+      admin_id: adminId,
+      admin_name: adminName,
+      items: itemsWithClaims,
+    });
+  } catch (error) {
+    console.error('Get group wishlist error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Get all claims for a user's wishlist items (who claimed what) - Celebrant view
 router.get('/:userId/claims', authenticate, async (req, res) => {
   try {
@@ -125,13 +226,13 @@ router.get('/my-claims', authenticate, async (req, res) => {
   }
 });
 
-// Get wishlist for a user (visible to group members)
+// Get wishlist for a user (visible to birthday and general group members)
 router.get('/:userId', authenticate, async (req, res) => {
   try {
     const { userId } = req.params;
     const currentUserId = req.user.id;
 
-    // Check if current user is in any shared birthday groups with the wishlist owner
+    // Check if current user is in any shared birthday or general groups with the wishlist owner
     const sharedGroupsCheck = await pool.query(
       `SELECT DISTINCT g.id
        FROM groups g
@@ -139,14 +240,14 @@ router.get('/:userId', authenticate, async (req, res) => {
        JOIN group_members gm2 ON g.id = gm2.group_id
        WHERE gm1.user_id = $1 AND gm2.user_id = $2
          AND gm1.status = 'active' AND gm2.status = 'active'
-         AND g.group_type = 'birthday'`,
+         AND g.group_type IN ('birthday', 'general')`,
       [currentUserId, userId]
     );
 
     // If viewing own wishlist, allow it
-    // Otherwise, only allow if they share at least one active birthday group
+    // Otherwise, only allow if they share at least one active birthday or general group
     if (currentUserId !== userId && sharedGroupsCheck.rows.length === 0) {
-      return res.status(403).json({ error: 'You can only view wishlists of users in your birthday groups' });
+      return res.status(403).json({ error: 'You can only view wishlists of users in your birthday or general groups' });
     }
 
     // Get wishlist items for the user
@@ -410,7 +511,7 @@ router.post('/:itemId/claim', authenticate, [
 
     const item = itemResult.rows[0];
 
-    // Check if user is in a shared birthday group with the item owner
+    // Check if user is in a shared birthday or general group with the item owner
     const sharedGroupsCheck = await pool.query(
       `SELECT DISTINCT g.id
        FROM groups g
@@ -418,12 +519,12 @@ router.post('/:itemId/claim', authenticate, [
        JOIN group_members gm2 ON g.id = gm2.group_id
        WHERE gm1.user_id = $1 AND gm2.user_id = $2
          AND gm1.status = 'active' AND gm2.status = 'active'
-         AND g.group_type = 'birthday'`,
+         AND g.group_type IN ('birthday', 'general')`,
       [claimedByUserId, item.owner_id]
     );
 
     if (sharedGroupsCheck.rows.length === 0) {
-      return res.status(403).json({ error: 'You can only claim items from users in your birthday groups' });
+      return res.status(403).json({ error: 'You can only claim items from users in your birthday or general groups' });
     }
 
     // Check if item is marked as done (fulfilled outside app)
@@ -508,7 +609,7 @@ router.post('/:itemId/claim', authenticate, [
     );
     const claimerName = claimerResult.rows[0]?.name || 'Someone';
 
-    // Get shared birthday groups to determine which group to associate with notification
+    // Get shared birthday or general groups to determine which group to associate with notification
     const sharedGroupResult = await pool.query(
       `SELECT g.id, g.name
        FROM groups g
@@ -516,7 +617,7 @@ router.post('/:itemId/claim', authenticate, [
        JOIN group_members gm2 ON g.id = gm2.group_id
        WHERE gm1.user_id = $1 AND gm2.user_id = $2
          AND gm1.status = 'active' AND gm2.status = 'active'
-         AND g.group_type = 'birthday'
+         AND g.group_type IN ('birthday', 'general')
        LIMIT 1`,
       [claimedByUserId, item.owner_id]
     );
@@ -584,7 +685,7 @@ router.delete('/:itemId/claim/:claimId', authenticate, async (req, res) => {
     );
     const claimerName = claimerResult.rows[0]?.name || 'Someone';
 
-    // Get shared birthday groups to determine which group to associate with notification
+    // Get shared birthday or general groups to determine which group to associate with notification
     const sharedGroupResult = await pool.query(
       `SELECT g.id, g.name
        FROM groups g
@@ -592,7 +693,7 @@ router.delete('/:itemId/claim/:claimId', authenticate, async (req, res) => {
        JOIN group_members gm2 ON g.id = gm2.group_id
        WHERE gm1.user_id = $1 AND gm2.user_id = $2
          AND gm1.status = 'active' AND gm2.status = 'active'
-         AND g.group_type = 'birthday'
+         AND g.group_type IN ('birthday', 'general')
        LIMIT 1`,
       [userId, ownerId]
     );
@@ -675,7 +776,7 @@ router.put('/claim/:claimId/fulfill', authenticate, [
     if (is_fulfilled && !previousStatus) {
       const quantityText = claim.quantity_claimed === 1 ? 'item' : `${claim.quantity_claimed} items`;
       
-      // Get shared birthday group for this specific claimer
+      // Get shared birthday or general group for this specific claimer
       const claimerGroupResult = await pool.query(
         `SELECT DISTINCT g.id, g.name
          FROM groups g
@@ -683,7 +784,7 @@ router.put('/claim/:claimId/fulfill', authenticate, [
          JOIN group_members gm2 ON g.id = gm2.group_id
          WHERE gm1.user_id = $1 AND gm2.user_id = $2
            AND gm1.status = 'active' AND gm2.status = 'active'
-           AND g.group_type = 'birthday'
+           AND g.group_type IN ('birthday', 'general')
          LIMIT 1`,
         [userId, claimerId]
       );
@@ -783,7 +884,7 @@ router.put('/:itemId/fulfill', authenticate, [
           const claimerId = claim.claimed_by_user_id;
           const quantityText = claim.quantity_claimed === 1 ? 'item' : `${claim.quantity_claimed} items`;
           
-          // Get shared birthday group for this specific claimer
+          // Get shared birthday or general group for this specific claimer
           const claimerGroupResult = await pool.query(
             `SELECT DISTINCT g.id, g.name
              FROM groups g
@@ -791,7 +892,7 @@ router.put('/:itemId/fulfill', authenticate, [
              JOIN group_members gm2 ON g.id = gm2.group_id
              WHERE gm1.user_id = $1 AND gm2.user_id = $2
                AND gm1.status = 'active' AND gm2.status = 'active'
-               AND g.group_type = 'birthday'
+               AND g.group_type IN ('birthday', 'general')
              LIMIT 1`,
             [userId, claimerId]
           );
