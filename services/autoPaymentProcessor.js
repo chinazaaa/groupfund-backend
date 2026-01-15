@@ -182,6 +182,48 @@ async function processBirthdayPayments(userId, groupId) {
           }
         }
 
+        // CRITICAL: Check for pending payment attempts to prevent duplicate charges
+        const contributionIdForCheck = existingContribution.rows.length > 0 ? existingContribution.rows[0].id : null;
+        
+        let pendingAttemptQuery;
+        let pendingAttemptParams;
+        
+        if (contributionIdForCheck) {
+          pendingAttemptQuery = `
+            SELECT id, status, created_at FROM automatic_payment_attempts
+            WHERE user_id = $1 AND group_id = $2 AND contribution_type = 'birthday'
+            AND (contribution_id = $3 OR contribution_id IS NULL)
+            AND status IN ('pending', 'retry')
+            ORDER BY created_at DESC
+            LIMIT 1
+          `;
+          pendingAttemptParams = [member.id, groupId, contributionIdForCheck];
+        } else {
+          pendingAttemptQuery = `
+            SELECT id, status, created_at FROM automatic_payment_attempts
+            WHERE user_id = $1 AND group_id = $2 AND contribution_type = 'birthday'
+            AND contribution_id IS NULL
+            AND status IN ('pending', 'retry')
+            ORDER BY created_at DESC
+            LIMIT 1
+          `;
+          pendingAttemptParams = [member.id, groupId];
+        }
+        
+        const pendingAttemptCheck = await pool.query(pendingAttemptQuery, pendingAttemptParams);
+
+        if (pendingAttemptCheck.rows.length > 0) {
+          const attempt = pendingAttemptCheck.rows[0];
+          const attemptAge = Date.now() - new Date(attempt.created_at).getTime();
+          const oneHour = 60 * 60 * 1000;
+
+          if (attemptAge < oneHour) {
+            console.log(`Skipping birthday payment for member ${member.id}: Pending payment attempt exists (attempt ID: ${attempt.id})`);
+            continue;
+          }
+          console.log(`Found old pending attempt (${Math.round(attemptAge / 1000 / 60)} minutes old) for member ${member.id}, proceeding with new attempt`);
+        }
+
         // Calculate payment timing (check if payment should happen today)
         const today = new Date();
         today.setHours(0, 0, 0, 0);
@@ -506,6 +548,48 @@ async function processSubscriptionPayments(groupId) {
           }
         }
 
+        // CRITICAL: Check for pending payment attempts to prevent duplicate charges
+        const contributionIdForCheck = existingContribution.rows.length > 0 ? existingContribution.rows[0].id : null;
+        
+        let pendingAttemptQuery;
+        let pendingAttemptParams;
+        
+        if (contributionIdForCheck) {
+          pendingAttemptQuery = `
+            SELECT id, status, created_at FROM automatic_payment_attempts
+            WHERE user_id = $1 AND group_id = $2 AND contribution_type = 'subscription'
+            AND (contribution_id = $3 OR contribution_id IS NULL)
+            AND status IN ('pending', 'retry')
+            ORDER BY created_at DESC
+            LIMIT 1
+          `;
+          pendingAttemptParams = [member.id, groupId, contributionIdForCheck];
+        } else {
+          pendingAttemptQuery = `
+            SELECT id, status, created_at FROM automatic_payment_attempts
+            WHERE user_id = $1 AND group_id = $2 AND contribution_type = 'subscription'
+            AND contribution_id IS NULL
+            AND status IN ('pending', 'retry')
+            ORDER BY created_at DESC
+            LIMIT 1
+          `;
+          pendingAttemptParams = [member.id, groupId];
+        }
+        
+        const pendingAttemptCheck = await pool.query(pendingAttemptQuery, pendingAttemptParams);
+
+        if (pendingAttemptCheck.rows.length > 0) {
+          const attempt = pendingAttemptCheck.rows[0];
+          const attemptAge = Date.now() - new Date(attempt.created_at).getTime();
+          const oneHour = 60 * 60 * 1000;
+
+          if (attemptAge < oneHour) {
+            console.log(`Skipping subscription payment for member ${member.id}: Pending payment attempt exists (attempt ID: ${attempt.id})`);
+            continue;
+          }
+          console.log(`Found old pending attempt (${Math.round(attemptAge / 1000 / 60)} minutes old) for member ${member.id}, proceeding with new attempt`);
+        }
+
         // Calculate payment timing
         const paymentDate = member.payment_timing === '1_day_before'
           ? new Date(deadlineDate.getTime() - 24 * 60 * 60 * 1000)
@@ -790,6 +874,53 @@ async function processGeneralPayments(groupId) {
           }
         }
 
+        // CRITICAL: Check for pending payment attempts to prevent duplicate charges
+        // This prevents charging the user multiple times if the job runs before webhook confirms payment
+        const contributionIdForCheck = existingContribution.rows.length > 0 ? existingContribution.rows[0].id : null;
+        
+        let pendingAttemptQuery;
+        let pendingAttemptParams;
+        
+        if (contributionIdForCheck) {
+          // Check for pending attempts with this specific contribution_id
+          pendingAttemptQuery = `
+            SELECT id, status, created_at FROM automatic_payment_attempts
+            WHERE user_id = $1 AND group_id = $2 AND contribution_type = 'general'
+            AND (contribution_id = $3 OR contribution_id IS NULL)
+            AND status IN ('pending', 'retry')
+            ORDER BY created_at DESC
+            LIMIT 1
+          `;
+          pendingAttemptParams = [member.id, groupId, contributionIdForCheck];
+        } else {
+          // Check for pending attempts for this group/user (contribution might not exist yet)
+          pendingAttemptQuery = `
+            SELECT id, status, created_at FROM automatic_payment_attempts
+            WHERE user_id = $1 AND group_id = $2 AND contribution_type = 'general'
+            AND contribution_id IS NULL
+            AND status IN ('pending', 'retry')
+            ORDER BY created_at DESC
+            LIMIT 1
+          `;
+          pendingAttemptParams = [member.id, groupId];
+        }
+        
+        const pendingAttemptCheck = await pool.query(pendingAttemptQuery, pendingAttemptParams);
+
+        if (pendingAttemptCheck.rows.length > 0) {
+          const attempt = pendingAttemptCheck.rows[0];
+          const attemptAge = Date.now() - new Date(attempt.created_at).getTime();
+          const oneHour = 60 * 60 * 1000; // 1 hour in milliseconds
+
+          // If there's a pending attempt less than 1 hour old, skip to prevent duplicate charge
+          if (attemptAge < oneHour) {
+            console.log(`Skipping payment for member ${member.id}: Pending payment attempt exists (attempt ID: ${attempt.id}, age: ${Math.round(attemptAge / 1000 / 60)} minutes)`);
+            continue;
+          }
+          // If attempt is older than 1 hour, it might be stuck - we'll proceed with new attempt
+          console.log(`Found old pending attempt (${Math.round(attemptAge / 1000 / 60)} minutes old) for member ${member.id}, proceeding with new attempt`);
+        }
+
         // Calculate payment timing
         const paymentDate = member.payment_timing === '1_day_before'
           ? new Date(deadlineDate.getTime() - 24 * 60 * 60 * 1000)
@@ -797,9 +928,13 @@ async function processGeneralPayments(groupId) {
 
         paymentDate.setHours(0, 0, 0, 0);
 
-        // Check if payment should be processed today
+        // CRITICAL: Only process on the payment date (deadline or 1 day before)
+        // This ensures general groups only charge ONCE when the deadline is reached,
+        // unlike subscription groups which charge monthly/annually (recurring).
+        // The job (processGeneralPaymentsJob) only calls this function for deadlines
+        // that are today or tomorrow, so it won't run again after the deadline passes.
         if (paymentDate.getTime() !== today.getTime()) {
-          continue;
+          continue; // Not the payment date - skip (ensures one-time charge only)
         }
 
         // Process payment

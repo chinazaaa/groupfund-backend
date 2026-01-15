@@ -220,8 +220,15 @@ router.post('/:groupId/auto-pay/enable', authenticate, require2FA, contributionL
       });
     }
 
-    // For general groups: Check if deadline has passed
-    if (group.group_type === 'general' && group.deadline) {
+    // For general groups: Require deadline and check if it has passed
+    if (group.group_type === 'general') {
+      if (!group.deadline) {
+        return res.status(400).json({
+          error: 'This group doesn\'t have a deadline set. Please ask the group admin to add a deadline before enabling auto-pay.',
+          code: 'DEADLINE_REQUIRED',
+        });
+      }
+
       const deadlineDate = new Date(group.deadline);
       const today = new Date();
       today.setHours(0, 0, 0, 0);
