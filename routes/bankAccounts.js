@@ -130,18 +130,8 @@ router.post('/verify-password', authenticate, contributionLimiter, [
     const userId = req.user.id;
     const { password, currency, action: requestedAction } = req.body;
 
-    // Only support USD, EUR, GBP for bank accounts (since withdrawals are only supported for these)
-    if (currency) {
-      const currencyUpper = currency.toUpperCase();
-      const supportedCurrencies = ['USD', 'EUR', 'GBP'];
-      if (!supportedCurrencies.includes(currencyUpper)) {
-        return res.status(400).json({
-          error: `Bank accounts for ${currencyUpper} are not supported. Currently supported currencies: USD, EUR, GBP. Coming soon!`,
-          currency: currencyUpper,
-          supportedCurrencies,
-        });
-      }
-    }
+    // Bank accounts can be created for any currency (needed for manual payment display)
+    // Withdrawals are restricted to USD, EUR, GBP only
 
     // Verify password first
     const isValid = await verifyPassword(userId, password);
@@ -308,15 +298,8 @@ router.post('/', authenticate, require2FA, contributionLimiter, [
 
     const currencyUpper = currency.toUpperCase();
 
-    // Only support USD, EUR, GBP for bank accounts (since withdrawals are only supported for these)
-    const supportedCurrencies = ['USD', 'EUR', 'GBP'];
-    if (!supportedCurrencies.includes(currencyUpper)) {
-      return res.status(400).json({
-        error: `Bank accounts for ${currencyUpper} are not supported. Currently supported currencies: USD, EUR, GBP. Coming soon!`,
-        currency: currencyUpper,
-        supportedCurrencies,
-      });
-    }
+    // Bank accounts can be created for any currency (needed for manual payment display)
+    // Withdrawals are restricted to USD, EUR, GBP only
 
     // Verify password token
     const action = `add_bank_account_${currencyUpper}`;
