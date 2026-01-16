@@ -1071,10 +1071,12 @@ class PaymentService {
     if (provider === 'stripe') {
       // Stripe payout fees:
       // USD: 1% fee
+      // CAD: 1% fee
+      // AUD: 1% fee
       // EUR: Free (0%)
       // GBP: Free (0%)
-      if (currency === 'USD') {
-        fee = amount * 0.01; // 1% fee for USD
+      if (currency === 'USD' || currency === 'CAD' || currency === 'AUD') {
+        fee = amount * 0.01; // 1% fee for USD, CAD, and AUD
       } else if (currency === 'EUR' || currency === 'GBP') {
         fee = 0; // Free for EUR and GBP
       } else {

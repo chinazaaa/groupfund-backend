@@ -360,12 +360,12 @@ router.post('/methods', authenticate, require2FA, contributionLimiter, [
       currencies = ['USD'];
     }
 
-    // Only support USD, EUR, GBP for payment methods
-    const supportedCurrencies = ['USD', 'EUR', 'GBP'];
+    // Only support USD, EUR, GBP, CAD, AUD for payment methods
+    const supportedCurrencies = ['USD', 'EUR', 'GBP', 'CAD', 'AUD'];
     const unsupportedCurrencies = currencies.filter(c => !supportedCurrencies.includes(c));
     if (unsupportedCurrencies.length > 0) {
       return res.status(400).json({
-        error: `Payment methods for ${unsupportedCurrencies.join(', ')} are coming soon. Currently supported currencies: USD, EUR, GBP.`,
+        error: `Payment methods for ${unsupportedCurrencies.join(', ')} are coming soon. Currently supported currencies: USD, EUR, GBP, CAD, AUD.`,
         unsupportedCurrencies,
         supportedCurrencies,
       });
@@ -824,12 +824,12 @@ router.put('/methods/bulk-update-currencies', authenticate, require2FA, contribu
     // Normalize requested currencies
     const requestedCurrenciesUpper = [...new Set(requestedCurrencies.map(c => c.toUpperCase()))];
 
-    // Only support USD, EUR, GBP for payment methods
-    const supportedCurrencies = ['USD', 'EUR', 'GBP'];
+    // Only support USD, EUR, GBP, CAD, AUD for payment methods
+    const supportedCurrencies = ['USD', 'EUR', 'GBP', 'CAD', 'AUD'];
     const unsupportedCurrencies = requestedCurrenciesUpper.filter(c => !supportedCurrencies.includes(c));
     if (unsupportedCurrencies.length > 0) {
       return res.status(400).json({
-        error: `Payment methods for ${unsupportedCurrencies.join(', ')} are coming soon. Currently supported currencies: USD, EUR, GBP.`,
+        error: `Payment methods for ${unsupportedCurrencies.join(', ')} are coming soon. Currently supported currencies: USD, EUR, GBP, CAD, AUD.`,
         unsupportedCurrencies,
         supportedCurrencies,
       });
@@ -1080,11 +1080,11 @@ router.put('/methods/:methodId', authenticate, require2FA, contributionLimiter, 
     if (newCurrency !== undefined) {
       const newCurrencyUpper = newCurrency.toUpperCase();
       
-      // Only support USD, EUR, GBP for payment methods
-      const supportedCurrencies = ['USD', 'EUR', 'GBP'];
+      // Only support USD, EUR, GBP, CAD, AUD for payment methods
+      const supportedCurrencies = ['USD', 'EUR', 'GBP', 'CAD', 'AUD'];
       if (!supportedCurrencies.includes(newCurrencyUpper)) {
         return res.status(400).json({
-          error: `Payment methods for ${newCurrencyUpper} are coming soon. Currently supported currencies: USD, EUR, GBP.`,
+          error: `Payment methods for ${newCurrencyUpper} are coming soon. Currently supported currencies: USD, EUR, GBP, CAD, AUD.`,
           requestedCurrency: newCurrencyUpper,
           supportedCurrencies,
         });

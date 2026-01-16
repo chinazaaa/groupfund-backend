@@ -249,11 +249,11 @@ router.post('/:groupId/auto-pay/enable', authenticate, require2FA, contributionL
 
     const groupCurrency = group.currency.toUpperCase();
 
-    // Only support USD, EUR, GBP for auto-pay
-    const supportedCurrencies = ['USD', 'EUR', 'GBP'];
+    // Only support USD, EUR, GBP, CAD, AUD for auto-pay
+    const supportedCurrencies = ['USD', 'EUR', 'GBP', 'CAD', 'AUD'];
     if (!supportedCurrencies.includes(groupCurrency)) {
       return res.status(400).json({
-        error: `Auto-pay is not supported for ${groupCurrency}. Currently supported currencies: USD, EUR, GBP. Coming soon!`,
+        error: `Auto-pay is not supported for ${groupCurrency}. Currently supported currencies: USD, EUR, GBP, CAD, AUD. Coming soon!`,
         currency: groupCurrency,
         supportedCurrencies,
       });

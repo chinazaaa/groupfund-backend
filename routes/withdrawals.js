@@ -180,11 +180,11 @@ router.post('/request', authenticate, require2FA, contributionLimiter, [
     }
     const currency = requestedCurrency.toUpperCase();
 
-    // Only support USD, EUR, GBP for withdrawals
-    const supportedCurrencies = ['USD', 'EUR', 'GBP'];
+    // Only support USD, EUR, GBP, CAD, AUD for withdrawals
+    const supportedCurrencies = ['USD', 'EUR', 'GBP', 'CAD', 'AUD'];
     if (!supportedCurrencies.includes(currency)) {
       return res.status(400).json({
-        error: `Withdrawals for ${currency} are coming soon. Currently supported currencies: USD, EUR, GBP.`,
+        error: `Withdrawals for ${currency} are coming soon. Currently supported currencies: USD, EUR, GBP, CAD, AUD.`,
         supportedCurrencies: supportedCurrencies,
       });
     }
