@@ -21,6 +21,7 @@ const {
   sendWithdrawalFailedEmail,
 } = require('../utils/email');
 const { createNotification } = require('../utils/notifications');
+const { getCurrencySymbol } = require('../utils/currency');
 
 const router = express.Router();
 
@@ -220,10 +221,11 @@ router.post('/request', authenticate, require2FA, contributionLimiter, [
     const withdrawalAmount = parseFloat(amount);
 
     // Check minimum withdrawal amount
-    const minWithdrawal = currency === 'NGN' ? 1000 : 10; // ₦1,000 or $10
+    const minWithdrawal = currency === 'NGN' ? 1000 : 10; // ₦1,000 or 10 for all other currencies
     if (withdrawalAmount < minWithdrawal) {
+      const currencySymbol = getCurrencySymbol(currency);
       return res.status(400).json({
-        error: `Minimum withdrawal amount is ${currency === 'NGN' ? '₦' : '$'}${minWithdrawal}`,
+        error: `Minimum withdrawal amount is ${currencySymbol}${minWithdrawal}`,
         minimum: minWithdrawal,
       });
     }
