@@ -180,6 +180,7 @@ app.use('/api/withdrawals', require('./routes/withdrawals'));
 app.use('/api/bank-accounts', require('./routes/bankAccounts'));
 app.use('/api/app', require('./routes/app'));
 app.use('/api/exports', require('./routes/exports'));
+app.use('/api/calendar', require('./routes/calendar'));
 
 
 // Error handling middleware
