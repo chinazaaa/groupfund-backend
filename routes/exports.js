@@ -6,6 +6,16 @@ const { authenticate } = require('../middleware/auth');
 
 const router = express.Router();
 
+// Helper function to format date as DD/MM/YYYY
+function formatDateDDMMYYYY(date) {
+  if (!date) return '';
+  const d = new Date(date);
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = d.getFullYear();
+  return `${day}/${month}/${year}`;
+}
+
 // Helper function to fetch contribution data for exports
 async function fetchContributionData(userId, filters = {}) {
   const {
@@ -20,31 +30,34 @@ async function fetchContributionData(userId, filters = {}) {
   const params = [];
   let paramCount = 1;
 
-  // Build WHERE conditions
-  const whereConditions = [];
+  // Build WHERE conditions for each contribution type with proper table aliases
+  let birthdayWhere = '';
+  let subscriptionWhere = '';
+  let generalWhere = '';
   
   if (groupId) {
-    whereConditions.push(`group_id = $${paramCount++}`);
+    const groupIdParam = `$${paramCount++}`;
     params.push(groupId);
+    birthdayWhere += ` AND bc.group_id = ${groupIdParam}`;
+    subscriptionWhere += ` AND sc.group_id = ${groupIdParam}`;
+    generalWhere += ` AND gc.group_id = ${groupIdParam}`;
   }
 
   if (status) {
-    whereConditions.push(`status = $${paramCount++}`);
+    const statusParam = `$${paramCount++}`;
     params.push(status);
+    birthdayWhere += ` AND bc.status = ${statusParam}`;
+    subscriptionWhere += ` AND sc.status = ${statusParam}`;
+    generalWhere += ` AND gc.status = ${statusParam}`;
   }
-
-  // Build WHERE conditions for each contribution type
-  let birthdayWhere = whereConditions.length > 0 ? ` AND ${whereConditions.join(' AND ')}` : '';
-  let subscriptionWhere = whereConditions.length > 0 ? ` AND ${whereConditions.join(' AND ')}` : '';
-  let generalWhere = whereConditions.length > 0 ? ` AND ${whereConditions.join(' AND ')}` : '';
 
   // Filter by user (contributor or receiver)
   if (userId) {
     const userIdParam = `$${paramCount++}`;
     params.push(userId);
-    birthdayWhere += ` AND (birthday_user_id = ${userIdParam} OR contributor_id = ${userIdParam})`;
-    subscriptionWhere += ` AND contributor_id = ${userIdParam}`;
-    generalWhere += ` AND contributor_id = ${userIdParam}`;
+    birthdayWhere += ` AND (bc.birthday_user_id = ${userIdParam} OR bc.contributor_id = ${userIdParam})`;
+    subscriptionWhere += ` AND sc.contributor_id = ${userIdParam}`;
+    generalWhere += ` AND gc.contributor_id = ${userIdParam}`;
   }
 
   // Date range filters (use created_at as fallback if contribution_date is NULL)
@@ -173,8 +186,8 @@ async function fetchContributionData(userId, filters = {}) {
   }));
 }
 
-// Helper function to calculate tax summary
-function calculateTaxSummary(contributions) {
+// Helper function to calculate contribution summary
+function calculateContributionSummary(contributions) {
   const summary = {
     totalContributions: contributions.length,
     totalAmount: 0,
@@ -365,7 +378,7 @@ router.get('/contributions/excel', authenticate, async (req, res) => {
 
     // Add summary sheet
     const summarySheet = workbook.addWorksheet('Summary');
-    const taxSummary = calculateTaxSummary(contributions);
+    const contributionSummary = calculateContributionSummary(contributions);
 
     summarySheet.columns = [
       { header: 'Metric', key: 'metric', width: 30 },
@@ -379,25 +392,25 @@ router.get('/contributions/excel', authenticate, async (req, res) => {
       fgColor: { argb: 'FFE0E0E0' },
     };
 
-    summarySheet.addRow({ metric: 'Total Contributions', value: taxSummary.totalContributions });
-    summarySheet.addRow({ metric: 'Total Amount', value: taxSummary.totalAmount });
-    summarySheet.addRow({ metric: 'Total Received', value: taxSummary.totalReceived });
-    summarySheet.addRow({ metric: 'Total Sent', value: taxSummary.totalSent });
+    summarySheet.addRow({ metric: 'Total Contributions', value: contributionSummary.totalContributions });
+    summarySheet.addRow({ metric: 'Total Amount', value: contributionSummary.totalAmount });
+    summarySheet.addRow({ metric: 'Total Received', value: contributionSummary.totalReceived });
+    summarySheet.addRow({ metric: 'Total Sent', value: contributionSummary.totalSent });
     summarySheet.addRow({ metric: '', value: '' }); // Empty row
-    summarySheet.addRow({ metric: 'Earliest Date', value: taxSummary.dateRange.earliest });
-    summarySheet.addRow({ metric: 'Latest Date', value: taxSummary.dateRange.latest });
+    summarySheet.addRow({ metric: 'Earliest Date', value: contributionSummary.dateRange.earliest });
+    summarySheet.addRow({ metric: 'Latest Date', value: contributionSummary.dateRange.latest });
     summarySheet.addRow({ metric: '', value: '' }); // Empty row
 
     // By type
     summarySheet.addRow({ metric: 'By Type', value: '' });
-    Object.entries(taxSummary.byType).forEach(([type, data]) => {
+    Object.entries(contributionSummary.byType).forEach(([type, data]) => {
       summarySheet.addRow({ metric: `  ${type}`, value: `${data.count} contributions - ${data.amount}` });
     });
 
     // By currency
     summarySheet.addRow({ metric: '', value: '' });
     summarySheet.addRow({ metric: 'By Currency', value: '' });
-    Object.entries(taxSummary.byCurrency).forEach(([currency, data]) => {
+    Object.entries(contributionSummary.byCurrency).forEach(([currency, data]) => {
       summarySheet.addRow({ metric: `  ${currency}`, value: `${data.count} contributions - ${data.amount}` });
     });
 
@@ -414,7 +427,7 @@ router.get('/contributions/excel', authenticate, async (req, res) => {
   }
 });
 
-// Export contributions as PDF with tax-ready summary
+// Export contributions as PDF with contribution summary
 router.get('/contributions/pdf', authenticate, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -434,7 +447,7 @@ router.get('/contributions/pdf', authenticate, async (req, res) => {
       transactionType,
     });
 
-    const taxSummary = calculateTaxSummary(contributions);
+    const contributionSummary = calculateContributionSummary(contributions);
 
     const doc = new PDFDocument({ margin: 50 });
     const filename = `contributions_export_${new Date().toISOString().split('T')[0]}.pdf`;
@@ -447,30 +460,30 @@ router.get('/contributions/pdf', authenticate, async (req, res) => {
     // Header
     doc.fontSize(20).text('Contribution Report', { align: 'center' });
     doc.moveDown();
-    doc.fontSize(12).text(`Generated: ${new Date().toLocaleDateString()}`, { align: 'center' });
+    doc.fontSize(12).text(`Generated: ${formatDateDDMMYYYY(new Date())}`, { align: 'center' });
     doc.fontSize(10).text(`For: ${userName}${userEmail ? ` (${userEmail})` : ''}`, { align: 'center' });
     doc.moveDown(2);
 
-    // Tax Summary Section
-    doc.fontSize(16).text('Tax Summary', { underline: true });
+    // Contribution Summary Section
+    doc.fontSize(16).text('Contribution Summary', { underline: true });
     doc.moveDown();
     doc.fontSize(11);
 
-    doc.text(`Total Contributions: ${taxSummary.totalContributions}`);
-    doc.text(`Total Amount: ${taxSummary.totalAmount.toFixed(2)}`);
-    doc.text(`Total Received: ${taxSummary.totalReceived.toFixed(2)}`);
-    doc.text(`Total Sent: ${taxSummary.totalSent.toFixed(2)}`);
+    doc.text(`Total Contributions: ${contributionSummary.totalContributions}`);
+    doc.text(`Total Amount: ${contributionSummary.totalAmount.toFixed(2)}`);
+    doc.text(`Total Received: ${contributionSummary.totalReceived.toFixed(2)}`);
+    doc.text(`Total Sent: ${contributionSummary.totalSent.toFixed(2)}`);
     doc.moveDown();
 
-    if (taxSummary.dateRange.earliest && taxSummary.dateRange.latest) {
-      doc.text(`Period: ${taxSummary.dateRange.earliest.toLocaleDateString()} to ${taxSummary.dateRange.latest.toLocaleDateString()}`);
+    if (contributionSummary.dateRange.earliest && contributionSummary.dateRange.latest) {
+      doc.text(`Period: ${formatDateDDMMYYYY(contributionSummary.dateRange.earliest)} to ${formatDateDDMMYYYY(contributionSummary.dateRange.latest)}`);
       doc.moveDown();
     }
 
     // By Type
     doc.text('By Contribution Type:');
     doc.moveDown(0.5);
-    Object.entries(taxSummary.byType).forEach(([type, data]) => {
+    Object.entries(contributionSummary.byType).forEach(([type, data]) => {
       if (data.count > 0) {
         doc.text(`  ${type.charAt(0).toUpperCase() + type.slice(1)}: ${data.count} contributions - ${data.amount.toFixed(2)}`, { indent: 20 });
       }
@@ -480,7 +493,7 @@ router.get('/contributions/pdf', authenticate, async (req, res) => {
     // By Currency
     doc.text('By Currency:');
     doc.moveDown(0.5);
-    Object.entries(taxSummary.byCurrency).forEach(([currency, data]) => {
+    Object.entries(contributionSummary.byCurrency).forEach(([currency, data]) => {
       doc.text(`  ${currency}: ${data.count} contributions - ${data.amount.toFixed(2)}`, { indent: 20 });
     });
     doc.moveDown(2);
@@ -510,7 +523,7 @@ router.get('/contributions/pdf', authenticate, async (req, res) => {
 
       doc.fontSize(10);
       const dateStr = contribution.contribution_date || contribution.created_at;
-      const date = new Date(dateStr).toLocaleDateString();
+      const date = formatDateDDMMYYYY(dateStr);
       
       doc.text(`Date: ${date}`, 50, yPosition);
       doc.text(`Type: ${contribution.contribution_type}`, 50, yPosition + 15);
@@ -543,7 +556,7 @@ router.get('/contributions/pdf', authenticate, async (req, res) => {
 
     // Footer
     doc.fontSize(8).text(
-      `This report was generated on ${new Date().toLocaleString()} and contains ${contributions.length} contribution records.`,
+      `This report was generated on ${formatDateDDMMYYYY(new Date())} and contains ${contributions.length} contribution records.`,
       50,
       doc.page.height - 50,
       { align: 'center', width: pageWidth }
@@ -571,11 +584,11 @@ router.get('/contributions/info', authenticate, async (req, res) => {
       transactionType,
     });
 
-    const taxSummary = calculateTaxSummary(contributions);
+    const contributionSummary = calculateContributionSummary(contributions);
 
     res.json({
       totalContributions: contributions.length,
-      summary: taxSummary,
+      summary: contributionSummary,
       exportFormats: ['csv', 'excel', 'pdf'],
       filters: {
         groupId: groupId || null,
